@@ -609,7 +609,7 @@ type ModelPriceOverride struct {
 	CacheCreationPricePerToken float64   `gorm:"not null;default:0" json:"cache_creation_price_per_token"`
 	CacheReadPricePerToken     float64   `gorm:"not null;default:0" json:"cache_read_price_per_token"`
 	PerRequestPrice            float64   `gorm:"not null;default:0" json:"per_request_price"`
-	PricingTiersJSON           string    `gorm:"type:text;not null;default:''" json:"pricing_tiers_json"`
+	PricingTiersJSON           string    `gorm:"type:text;not null" json:"pricing_tiers_json"`
 	ImagePrice1K               float64   `gorm:"not null;default:0" json:"image_price_1k"`
 	ImagePrice2K               float64   `gorm:"not null;default:0" json:"image_price_2k"`
 	ImagePrice4K               float64   `gorm:"not null;default:0" json:"image_price_4k"`
