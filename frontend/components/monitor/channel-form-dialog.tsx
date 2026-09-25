@@ -80,6 +80,7 @@ interface FormState {
   captcha_config_id: string // "" 表示不绑定
 
   notes: string
+  redemption_store_url: string
   // 标签：tags 为已确认的 chip，tag_input 为输入框里尚未确认的文本（提交时一并加入）
   tags: string[]
   tag_input: string
@@ -145,6 +146,7 @@ function initialState(c?: Channel | null): FormState {
     tags: normalizeTags(c?.tags ?? []),
     tag_input: "",
     notes: c?.notes ?? "",
+    redemption_store_url: c?.redemption_store_url ?? "",
   }
 }
 
@@ -228,6 +230,10 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
       const notes = form.notes.trim()
       if (notesLength > MAX_NOTES_LENGTH) {
         throw new Error(`备注最多 ${MAX_NOTES_LENGTH} 个字符`)
+      }
+      const redemptionStoreURL = form.redemption_store_url.trim()
+      if (redemptionStoreURL && !/^https?:\/\//i.test(redemptionStoreURL)) {
+        throw new Error("兑换码商店 URL 必须以 http:// 或 https:// 开头")
       }
       const loginExtraParams = isTokenMode ? "" : form.login_extra_params.trim()
       if (loginExtraParams) {
@@ -321,6 +327,7 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
           captcha_config_id: captchaConfigID,
           tags,
           notes,
+          redemption_store_url: redemptionStoreURL,
         }
         if (!isTokenMode && form.password) body.password = form.password
         if (isTokenMode && tokenCredential) body.token_credential = tokenCredential
@@ -353,6 +360,7 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
             captcha_config_id: captchaConfigID,
             tags,
             notes,
+            redemption_store_url: redemptionStoreURL,
           }),
         })
       }
@@ -468,6 +476,21 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
                 {`${notesLength} / ${MAX_NOTES_LENGTH}`}
               </p>
             ) : null}
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="redemption-store-url">兑换码商店 URL（可选）</Label>
+            <Input
+              id="redemption-store-url"
+              type="url"
+              placeholder="https://shop.example.com"
+              value={form.redemption_store_url}
+              onChange={(e) => setForm({ ...form, redemption_store_url: e.target.value })}
+              disabled={submitting}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              填写后点「充值」会直接新窗口打开该链接，用于上游没开放在线充值的场景
+            </p>
           </div>
 
           {/* 凭据类型 toggle */}

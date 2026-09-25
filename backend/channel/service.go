@@ -168,6 +168,7 @@ type CreateInput struct {
 	OnlyCreatedKeyGroupsEnabled bool
 	Tags                   []string
 	Notes                  string
+	RedemptionStoreURL     string
 }
 
 func (s *Service) Create(in CreateInput) (*storage.Channel, error) {
@@ -212,6 +213,7 @@ func (s *Service) Create(in CreateInput) (*storage.Channel, error) {
 		OnlyCreatedKeyGroupsEnabled: in.OnlyCreatedKeyGroupsEnabled,
 		Tags:                   storage.NormalizeChannelTags(in.Tags),
 		Notes:                  strings.TrimSpace(in.Notes),
+		RedemptionStoreURL:     strings.TrimSpace(in.RedemptionStoreURL),
 	}
 	if mode == storage.CredentialModeToken {
 		// token 模式不依赖打码 provider
@@ -245,6 +247,7 @@ type UpdateInput struct {
 	OnlyCreatedKeyGroupsEnabled *bool
 	Tags                   *[]string // nil 表示不修改；空切片表示清空
 	Notes                  *string
+	RedemptionStoreURL     *string
 }
 
 func (s *Service) Update(id uint, in UpdateInput) (*storage.Channel, error) {
@@ -364,6 +367,9 @@ func (s *Service) Update(id uint, in UpdateInput) (*storage.Channel, error) {
 	}
 	if in.Notes != nil {
 		c.Notes = strings.TrimSpace(*in.Notes)
+	}
+	if in.RedemptionStoreURL != nil {
+		c.RedemptionStoreURL = strings.TrimSpace(*in.RedemptionStoreURL)
 	}
 	if err := s.Channels.Update(c); err != nil {
 		return nil, err

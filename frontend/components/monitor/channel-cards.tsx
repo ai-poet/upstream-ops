@@ -1311,7 +1311,14 @@ export function ChannelCards() {
                       variant="outline"
                       size="sm"
                       className="gap-1 text-xs"
-                      onClick={() => setRecharging(c)}
+                      onClick={() => {
+                        const storeURL = c.redemption_store_url?.trim()
+                        if (storeURL) {
+                          window.open(storeURL, "_blank", "noopener,noreferrer")
+                        } else {
+                          setRecharging(c)
+                        }
+                      }}
                     >
                       <CreditCard className="size-3" />
                       {"充值"}

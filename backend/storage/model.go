@@ -66,6 +66,11 @@ type Channel struct {
 	Tags  ChannelTags `gorm:"size:1024;not null;default:''" json:"tags"`
 	Notes string      `gorm:"type:text" json:"notes"`
 
+	// RedemptionStoreURL 兑换码商店地址。
+	// 填写后，前端点"充值"按钮会直接新窗口打开该 URL（用于上游没开放在线充值的场景）。
+	// 留空则走正常的在线充值流程。
+	RedemptionStoreURL string `gorm:"size:512" json:"redemption_store_url"`
+
 	// 最近一次采集结果（聚合视图，便于列表页直接展示）
 	LastBalance   *float64   `json:"last_balance,omitempty"`
 	LastBalanceAt *time.Time `json:"last_balance_at,omitempty"`

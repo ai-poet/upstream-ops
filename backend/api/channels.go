@@ -71,6 +71,7 @@ type channelInput struct {
 	OnlyCreatedKeyGroupsEnabled bool             `json:"only_created_key_groups_enabled"`
 	Tags                   []string               `json:"tags"`
 	Notes                  string                 `json:"notes"`
+	RedemptionStoreURL     string                 `json:"redemption_store_url"`
 }
 
 type channelUpdateInput struct {
@@ -94,6 +95,7 @@ type channelUpdateInput struct {
 	OnlyCreatedKeyGroupsEnabled *bool             `json:"only_created_key_groups_enabled"`
 	Tags                   *[]string               `json:"tags"` // 省略或 null 表示不修改，[] 表示清空
 	Notes                  *string                 `json:"notes"`
+	RedemptionStoreURL     *string                 `json:"redemption_store_url"`
 }
 
 type channelOutput struct {
@@ -197,6 +199,7 @@ func createChannel(c *gin.Context, d *Deps) {
 		OnlyCreatedKeyGroupsEnabled: in.OnlyCreatedKeyGroupsEnabled,
 		Tags:                   tags,
 		Notes:                  notes,
+		RedemptionStoreURL:     strings.TrimSpace(in.RedemptionStoreURL),
 	})
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err)
@@ -350,6 +353,7 @@ func updateChannel(c *gin.Context, d *Deps) {
 		OnlyCreatedKeyGroupsEnabled: in.OnlyCreatedKeyGroupsEnabled,
 		Tags:                   tags,
 		Notes:                  notes,
+		RedemptionStoreURL:     in.RedemptionStoreURL,
 	})
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err)

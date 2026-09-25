@@ -65,6 +65,8 @@ export interface Channel {
   tags?: string[]
   /** 备注；缺失按空字符串处理 */
   notes?: string
+  /** 兑换码商店 URL；填写后点充值直接打开该链接 */
+  redemption_store_url?: string
   last_balance?: number | null
   last_balance_at?: string | null
   today_cost?: number | null
