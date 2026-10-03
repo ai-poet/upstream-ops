@@ -67,7 +67,8 @@ func (r *Channels) List() ([]Channel, error) {
 // ListPage 按 filter 搜索、筛选、排序后分页，pageSize 为 -1 时返回全部。
 // total 是筛选后的总数；filter 含未知取值时返回错误（见 ChannelListFilter.Normalize）。
 //
-// 按名称 / 账号排序时，SQL 只负责筛选，排序和分页在内存里做（见 sortChannelsByText）。
+// 分页前要先按分组把渠道排成连续的一段一段（见 sortChannelsByGroup），所以 SQL 只负责
+// 筛选和排序，分页在内存里做；按名称 / 账号排序时连排序也在内存里做（见 sortChannelsByText）。
 // 渠道数量有限，一次读出全部匹配行的开销可以接受。
 func (r *Channels) ListPage(page, pageSize int, filter ChannelListFilter) ([]Channel, int64, error) {
 	filter, err := filter.Normalize()
@@ -80,27 +81,19 @@ func (r *Channels) ListPage(page, pageSize int, filter ChannelListFilter) ([]Cha
 	if pageSize <= 0 && pageSize != -1 {
 		pageSize = 20
 	}
+	q := applyChannelListFilter(r.db.Model(&Channel{}), filter)
+	if !filter.sortsChannelsInMemory() {
+		q = applyChannelListOrder(q, filter)
+	}
+	var all []Channel
+	if err := q.Find(&all).Error; err != nil {
+		return nil, 0, err
+	}
 	if filter.sortsChannelsInMemory() {
-		var all []Channel
-		if err := applyChannelListFilter(r.db.Model(&Channel{}), filter).Find(&all).Error; err != nil {
-			return nil, 0, err
-		}
 		sortChannelsByText(all, filter)
-		return pageChannels(all, page, pageSize), int64(len(all)), nil
 	}
-	var total int64
-	if err := applyChannelListFilter(r.db.Model(&Channel{}), filter).Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-	var list []Channel
-	q := applyChannelListOrder(applyChannelListFilter(r.db.Model(&Channel{}), filter), filter)
-	if pageSize != -1 {
-		q = q.Offset((page - 1) * pageSize).Limit(pageSize)
-	}
-	if err := q.Find(&list).Error; err != nil {
-		return nil, 0, err
-	}
-	return list, total, nil
+	sortChannelsByGroup(all)
+	return pageChannels(all, page, pageSize), int64(len(all)), nil
 }
 func (r *Channels) ListMonitorEnabled() ([]Channel, error) {
 	var list []Channel
@@ -125,6 +118,19 @@ func (r *Channels) UpdateCosts(id uint, todayCost float64, totalCost float64, at
 		"total_cost":    totalCost,
 	}).Error
 }
+
+// UpdateBalanceBurn 写入余额消耗估算；burn 为 nil（样本不足）时清空，避免沿用过期的估算。
+func (r *Channels) UpdateBalanceBurn(id uint, burn *BalanceBurn) error {
+	var dailyCost, spanHours *float64
+	if burn != nil {
+		dailyCost, spanHours = &burn.DailyCost, &burn.SpanHours
+	}
+	return r.db.Model(&Channel{}).Where("id = ?", id).Updates(map[string]any{
+		"balance_daily_cost":      dailyCost,
+		"balance_cost_span_hours": spanHours,
+	}).Error
+}
+
 func (r *Channels) SetLastError(id uint, msg string) error {
 	return r.db.Model(&Channel{}).Where("id = ?", id).Update("last_error", msg).Error
 }

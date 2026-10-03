@@ -156,6 +156,19 @@ func (r *Rates) BalanceHistory(channelID uint, limit int) ([]BalanceSnapshot, er
 	return list, nil
 }
 
+// BalanceSnapshotsSince 按采样时间升序读取某渠道 sampled_at >= since 的余额快照。
+func (r *Rates) BalanceSnapshotsSince(channelID uint, since time.Time) ([]BalanceSnapshot, error) {
+	var list []BalanceSnapshot
+	if err := r.db.
+		Where("channel_id = ? AND sampled_at >= ?", channelID, since).
+		Order("sampled_at ASC").
+		Order("id ASC").
+		Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
 // DailyAggregate 一天的聚合余额（所有渠道之和）。
 type DailyAggregate struct {
 	Day     time.Time `json:"day"`

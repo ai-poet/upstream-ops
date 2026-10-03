@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/tooltip"
 import { apiFetch } from "@/lib/api"
 import { channelTypeLabel, dateTime, decimal } from "@/lib/format"
+import { formatForecastAt, subscriptionWindowDepletion, type WindowDepletion } from "@/lib/forecast"
 import { cn } from "@/lib/utils"
 import type {
   Channel,
@@ -176,9 +177,47 @@ export function ChannelSubscriptionUsageSummary({ channel }: { channel: Channel 
   )
 }
 
+/** windowDepletionText 订阅额度窗口的预计用完说明；无法估算时返回 null。 */
+function windowDepletionText(depletion: WindowDepletion | null, now: number) {
+  if (!depletion) return null
+  if (depletion.kind === "exhausted") return "额度已用完"
+  if (depletion.kind === "enough") return "按当前速度，重置前够用"
+  return `按当前速度，预计 ${formatForecastAt(depletion.at, now)} 用完`
+}
+
+function windowDepletionTone(depletion: WindowDepletion | null) {
+  if (depletion?.kind === "exhausted") return "text-danger"
+  if (depletion?.kind === "eta") return "text-warning"
+  return "text-foreground"
+}
+
+function WindowDepletionLine({ value, now }: { value: ChannelSubscriptionUsageWindow; now: number }) {
+  const depletion = subscriptionWindowDepletion(value, now)
+  const text = windowDepletionText(depletion, now)
+  if (!text) return null
+  return <p className={cn(depletion?.kind !== "enough" && windowDepletionTone(depletion))}>{text}</p>
+}
+
+/**
+ * earliestWindowDepletion 在所有订阅的日 / 周 / 月额度里找最先用完（或已用完）的一个，
+ * 用于卡片上的一句话摘要；都够用时返回 enough，都无法估算时返回 null。
+ */
+function earliestWindowDepletion(items: ChannelSubscriptionUsage[], now: number) {
+  let best: { label: string; depletion: WindowDepletion } | null = null
+  const rank = (d: WindowDepletion) => (d.kind === "exhausted" ? -Infinity : d.kind === "eta" ? d.at : Infinity)
+  for (const item of items) {
+    for (const { label, value } of usageWindowItems(item)) {
+      const depletion = subscriptionWindowDepletion(value, now)
+      if (!depletion) continue
+      if (!best || rank(depletion) < rank(best.depletion)) best = { label, depletion }
+    }
+  }
+  return best
+}
+
+/** ChannelSubscriptionUsageMetricTiles 渠道卡片里的订阅用量格，只在 Sub2API 开启订阅时显示，占满一行。 */
 export function ChannelSubscriptionUsageMetricTiles({ channel }: { channel: Channel }) {
-  const supported = channel.type === "sub2api"
-  const enabled = supported && !!channel.subscription_enabled
+  const enabled = channel.type === "sub2api" && !!channel.subscription_enabled
   const [loading, setLoading] = useState(false)
   const [usage, setUsage] = useState<ChannelSubscriptionUsageInfo | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
@@ -202,6 +241,9 @@ export function ChannelSubscriptionUsageMetricTiles({ channel }: { channel: Chan
     }
   }, [channel.id, enabled])
 
+  if (!enabled) return null
+
+  const now = Date.now()
   const items = usage?.items ?? []
   const stats = [
     { label: "日", value: lowestWindow(items, "daily") },
@@ -212,37 +254,56 @@ export function ChannelSubscriptionUsageMetricTiles({ channel }: { channel: Chan
     if (!current || item.value.remaining_percent < current.remaining_percent) return item.value
     return current
   }, null)
-  const subscriptionText = !supported ? "不支持" : !enabled ? "未启用" : loading && !usage ? "加载中" : `${items.length} 个`
-  const usageText = !supported || !enabled ? "—" : loading && !usage ? "加载中" : lowest ? `${decimal(lowest.remaining_percent, 0)}%` : "不限"
+  const subscriptionText = loading && !usage ? "加载中" : `${items.length} 个`
+  const usageText = loading && !usage ? "加载中" : lowest ? `${decimal(lowest.remaining_percent, 0)}%` : "不限"
   const hasSubscriptions = items.length > 0
+  const earliest = earliestWindowDepletion(items, now)
 
   return (
     <>
-      <div className="col-span-2 flex h-16 min-w-0 flex-col justify-between rounded-md border border-border bg-muted/20 px-2.5 py-2">
-        <div className="flex items-center">
-          <span className="text-[10px] leading-none text-muted-foreground">订阅 / {subscriptionText}</span>
+      <div className="col-span-2 flex h-16 min-w-0 flex-col justify-between rounded-md border border-border bg-muted/20 px-2.5 py-2 sm:col-span-3">
+        <div className="flex min-w-0 items-center justify-between gap-2">
+          <span className="shrink-0 text-[10px] leading-none text-muted-foreground">订阅 / {subscriptionText}</span>
+          {earliest ? (
+            <span className={cn("truncate text-[10px] leading-none", windowDepletionTone(earliest.depletion))}>
+              {earliest.depletion.kind === "eta"
+                ? `${earliest.label}额度预计 ${formatForecastAt(earliest.depletion.at, now)} 用完`
+                : earliest.depletion.kind === "exhausted"
+                  ? `${earliest.label}额度已用完`
+                  : "按当前速度各额度够用"}
+            </span>
+          ) : null}
         </div>
         <div className="grid grid-cols-4 gap-1.5">
           {stats.length ? (
             <>
-              {stats.map((item) => (
-                <Tooltip key={item.label} delayDuration={150}>
-                  <TooltipTrigger asChild>
-                    <span className="truncate rounded bg-background px-1.5 py-1 text-center text-[10px] font-medium text-foreground">
-                      {item.label} {decimal(item.value.remaining_percent, 0)}%
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="top" className="text-xs">
-                    已用 ${decimal(item.value.used_usd, 2)} / 限制 ${decimal(item.value.limit_usd, 2)}
-                  </TooltipContent>
-                </Tooltip>
-              ))}
+              {stats.map((item) => {
+                const depletion = subscriptionWindowDepletion(item.value, now)
+                const depletionText = windowDepletionText(depletion, now)
+                return (
+                  <Tooltip key={item.label} delayDuration={150}>
+                    <TooltipTrigger asChild>
+                      <span
+                        className={cn(
+                          "truncate rounded bg-background px-1.5 py-1 text-center text-[10px] font-medium",
+                          windowDepletionTone(depletion),
+                        )}
+                      >
+                        {item.label} {decimal(item.value.remaining_percent, 0)}%
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="text-xs">
+                      <p>已用 ${decimal(item.value.used_usd, 2)} / 限制 ${decimal(item.value.limit_usd, 2)}</p>
+                      {depletionText ? <p className="mt-0.5 opacity-80">{depletionText}</p> : null}
+                    </TooltipContent>
+                  </Tooltip>
+                )
+              })}
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                className="h-auto min-w-0 px-1 text-[10px]"
-                disabled={!enabled}
+                className="col-start-4 h-auto min-w-0 px-1 text-[10px]"
                 onClick={() => setDialogOpen(true)}
               >
                 用量
@@ -251,14 +312,13 @@ export function ChannelSubscriptionUsageMetricTiles({ channel }: { channel: Chan
           ) : (
             <>
               <span className="col-span-3 truncate text-[10px] text-muted-foreground">
-                {enabled && !loading && !hasSubscriptions ? "未订阅" : enabled ? `订阅用量 ${usageText}` : "订阅用量未启用"}
+                {!loading && !hasSubscriptions ? "未订阅" : `订阅用量 ${usageText}`}
               </span>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 className="h-auto min-w-0 px-1 text-[10px]"
-                disabled={!enabled}
                 onClick={() => setDialogOpen(true)}
               >
                 用量
@@ -312,6 +372,7 @@ export function ChannelSubscriptionUsageDialog({
   }, [open, channelID, reloadTick])
 
   const items = usage?.items ?? []
+  const now = Date.now()
   const description = channel
     ? `${channel.name} · ${channelTypeLabel(channel.type)}`
     : "查看 Sub2API 当前订阅的日、周、月用量。"
@@ -383,6 +444,7 @@ export function ChannelSubscriptionUsageDialog({
                             </p>
                             <p>剩余 ${decimal(value.remaining_usd, 2)}</p>
                             {value.resets_at ? <p>重置 {dateTime(value.resets_at)}</p> : null}
+                            <WindowDepletionLine value={value} now={now} />
                           </div>
                         </div>
                       ))}

@@ -55,7 +55,7 @@ const MaxChannelListQueryRunes = 200
 // 在 LIKE 比较时还会忽略其它字母的大小写、重音和全半角（如 tag=Ärger 也会命中 ärger），
 // 这个差异可以接受，不做特殊处理。
 type ChannelListFilter struct {
-	Query  string // 名称 / 账号 / 站点地址 / 备注 / 标签的子串搜索，最多 MaxChannelListQueryRunes 个字符
+	Query  string // 名称 / 账号 / 站点地址 / 备注 / 标签 / 分组的子串搜索，最多 MaxChannelListQueryRunes 个字符
 	Status string // ChannelStatus*，空表示不限
 	Tag    string // 单个标签，精确匹配，最多 MaxChannelTagRunes 个字符
 	Sort   string // ChannelSort*，空表示默认顺序
@@ -159,7 +159,8 @@ func applyChannelListFilter(q *gorm.DB, f ChannelListFilter) *gorm.DB {
 			" OR LOWER(username) LIKE ? ESCAPE '!'"+
 			" OR LOWER(site_url) LIKE ? ESCAPE '!'"+
 			" OR LOWER(COALESCE(notes, '')) LIKE ? ESCAPE '!'"+
-			" OR LOWER(COALESCE(tags, '')) LIKE ? ESCAPE '!')", p, p, p, p, p)
+			" OR LOWER(COALESCE(tags, '')) LIKE ? ESCAPE '!'"+
+			" OR LOWER(COALESCE(group_name, '')) LIKE ? ESCAPE '!')", p, p, p, p, p, p)
 	}
 	if f.Tag != "" {
 		// tags 以 ",a,b," 形式存储（见 ChannelTags），首尾带分隔符才能精确匹配单个标签，
@@ -237,6 +238,39 @@ func sortChannelsByText(list []Channel, f ChannelListFilter) {
 	for i := range entries {
 		list[i] = entries[i].ch
 	}
+}
+
+// sortChannelsByGroup 把已排好序的列表按分组稳定地重排成一段一段：有分组的在前，
+// 分组之间按分组名排（规则同名称排序，见 channelTextCollator），未分组的排在最后；
+// 同一分组内保持传入时的顺序，也就是用户选择的排序。没有渠道设置分组时顺序不变。
+//
+// 分组名区分大小写；排序规则认为相同（如只差大小写）的两个分组名再按原始字符串比较，
+// 保证每个分组在列表里是连续的一段，前端才能按相邻渠道的分组名分段。
+func sortChannelsByGroup(list []Channel) {
+	col := newChannelTextCollator()
+	keys := make(map[string]channelTextKey)
+	for i := range list {
+		name := list[i].GroupName
+		if _, ok := keys[name]; name != "" && !ok {
+			keys[name] = col.key(name)
+		}
+	}
+	if len(keys) == 0 {
+		return
+	}
+	sort.SliceStable(list, func(i, j int) bool {
+		a, b := list[i].GroupName, list[j].GroupName
+		if a == b {
+			return false
+		}
+		if a == "" || b == "" {
+			return b == ""
+		}
+		if c := compareChannelTextKeys(keys[a], keys[b]); c != 0 {
+			return c < 0
+		}
+		return a < b
+	})
 }
 
 // channelTextCollator 生成名称 / 账号的排序键，模拟浏览器 ICU 的 zh-CN 排序规则。

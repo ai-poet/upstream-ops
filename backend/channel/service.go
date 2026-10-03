@@ -169,6 +169,7 @@ type CreateInput struct {
 	Tags                   []string
 	Notes                  string
 	RedemptionStoreURL     string
+	GroupName              string
 }
 
 func (s *Service) Create(in CreateInput) (*storage.Channel, error) {
@@ -214,6 +215,7 @@ func (s *Service) Create(in CreateInput) (*storage.Channel, error) {
 		Tags:                   storage.NormalizeChannelTags(in.Tags),
 		Notes:                  strings.TrimSpace(in.Notes),
 		RedemptionStoreURL:     strings.TrimSpace(in.RedemptionStoreURL),
+		GroupName:              strings.TrimSpace(in.GroupName),
 	}
 	if mode == storage.CredentialModeToken {
 		// token 模式不依赖打码 provider
@@ -248,6 +250,7 @@ type UpdateInput struct {
 	Tags                   *[]string // nil 表示不修改；空切片表示清空
 	Notes                  *string
 	RedemptionStoreURL     *string
+	GroupName              *string // nil 表示不修改；空字符串表示移出分组
 }
 
 func (s *Service) Update(id uint, in UpdateInput) (*storage.Channel, error) {
@@ -370,6 +373,9 @@ func (s *Service) Update(id uint, in UpdateInput) (*storage.Channel, error) {
 	}
 	if in.RedemptionStoreURL != nil {
 		c.RedemptionStoreURL = strings.TrimSpace(*in.RedemptionStoreURL)
+	}
+	if in.GroupName != nil {
+		c.GroupName = strings.TrimSpace(*in.GroupName)
 	}
 	if err := s.Channels.Update(c); err != nil {
 		return nil, err

@@ -7,12 +7,13 @@ import (
 	"strings"
 )
 
-// 渠道标签 / 备注的长度上限，由 API 层校验。
+// 渠道标签 / 备注 / 分组名的长度上限，由 API 层校验。
 // tags 列为 size:1024，按上限最多占用 1 + 20*(32+1) = 661 个字符。
 const (
 	MaxChannelTags       = 20
 	MaxChannelTagRunes   = 32
 	MaxChannelNotesRunes = 2000
+	MaxChannelGroupRunes = 32
 )
 
 // ChannelTags 渠道自定义标签。

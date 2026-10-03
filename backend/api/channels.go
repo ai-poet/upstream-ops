@@ -72,6 +72,7 @@ type channelInput struct {
 	Tags                   []string               `json:"tags"`
 	Notes                  string                 `json:"notes"`
 	RedemptionStoreURL     string                 `json:"redemption_store_url"`
+	GroupName              string                 `json:"group_name"`
 }
 
 type channelUpdateInput struct {
@@ -96,6 +97,7 @@ type channelUpdateInput struct {
 	Tags                   *[]string               `json:"tags"` // 省略或 null 表示不修改，[] 表示清空
 	Notes                  *string                 `json:"notes"`
 	RedemptionStoreURL     *string                 `json:"redemption_store_url"`
+	GroupName              *string                 `json:"group_name"` // 省略或 null 表示不修改，"" 表示移出分组
 }
 
 type channelOutput struct {
@@ -177,6 +179,11 @@ func createChannel(c *gin.Context, d *Deps) {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
+	groupName, err := normalizeChannelGroupInput(in.GroupName)
+	if err != nil {
+		fail(c, http.StatusBadRequest, err)
+		return
+	}
 	created, err := d.ChannelSvc.Create(channel.CreateInput{
 		Name:                   in.Name,
 		Type:                   in.Type,
@@ -200,6 +207,7 @@ func createChannel(c *gin.Context, d *Deps) {
 		Tags:                   tags,
 		Notes:                  notes,
 		RedemptionStoreURL:     strings.TrimSpace(in.RedemptionStoreURL),
+		GroupName:              groupName,
 	})
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err)
@@ -229,6 +237,15 @@ func normalizeChannelNotesInput(notes string) (string, error) {
 		return "", fmt.Errorf("备注最多 %d 个字符", storage.MaxChannelNotesRunes)
 	}
 	return notes, nil
+}
+
+// normalizeChannelGroupInput 去掉首尾空白后校验分组名长度；空字符串表示未分组。
+func normalizeChannelGroupInput(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if utf8.RuneCountInString(name) > storage.MaxChannelGroupRunes {
+		return "", fmt.Errorf("分组名最多 %d 个字符", storage.MaxChannelGroupRunes)
+	}
+	return name, nil
 }
 
 // costNow 输出层判断"今日消费"是否跨天使用的当前时间，测试可替换。
@@ -322,6 +339,15 @@ func updateChannel(c *gin.Context, d *Deps) {
 		}
 		notes = &normalized
 	}
+	var groupName *string
+	if in.GroupName != nil {
+		normalized, err := normalizeChannelGroupInput(*in.GroupName)
+		if err != nil {
+			fail(c, http.StatusBadRequest, err)
+			return
+		}
+		groupName = &normalized
+	}
 	subscriptionEnabled := in.SubscriptionEnabled
 	if subscriptionEnabled != nil {
 		current, err := d.Channels.FindByID(id)
@@ -354,6 +380,7 @@ func updateChannel(c *gin.Context, d *Deps) {
 		Tags:                   tags,
 		Notes:                  notes,
 		RedemptionStoreURL:     in.RedemptionStoreURL,
+		GroupName:              groupName,
 	})
 	if err != nil {
 		fail(c, http.StatusInternalServerError, err)

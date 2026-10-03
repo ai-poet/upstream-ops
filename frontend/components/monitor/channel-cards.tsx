@@ -9,6 +9,7 @@ import {
   ChevronDown,
   CreditCard,
   ExternalLink,
+  FolderOpen,
   KeyRound,
   Loader2,
   LogIn,
@@ -60,6 +61,14 @@ import { channelTagKey } from "@/lib/channel-tags"
 import { apiFetch } from "@/lib/api"
 import { useTriggerRefresh } from "@/lib/refresh-context"
 import { channelTypeLabel, decimal, formatRatio, money, relativeTime } from "@/lib/format"
+import {
+  channelBalanceForecast,
+  formatForecastAt,
+  formatRemaining,
+  formatSpan,
+  groupBalanceForecast,
+  remainingTone,
+} from "@/lib/forecast"
 import { cn } from "@/lib/utils"
 import { syncAllChannelsStream, syncChannelStream, testLoginStream, type ProgressEvent } from "@/lib/sync-stream"
 import type {
@@ -186,12 +195,155 @@ function saveChannelSortMode(v: ChannelSortMode) {
   }
 }
 
-function StatTile({ label, children }: { label: string; children: React.ReactNode }) {
+function StatTile({
+  label,
+  aside,
+  className,
+  children,
+}: {
+  label: string
+  /** 标题行右侧的补充说明 */
+  aside?: React.ReactNode
+  className?: string
+  children: React.ReactNode
+}) {
   return (
-    <div className="flex h-16 min-w-0 flex-col justify-between rounded-md border border-border bg-muted/20 px-2.5 py-2">
-      <span className="text-[10px] leading-none text-muted-foreground">{label}</span>
+    <div className={cn("flex h-16 min-w-0 flex-col justify-between rounded-md border border-border bg-muted/20 px-2.5 py-2", className)}>
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <span className="shrink-0 text-[10px] leading-none text-muted-foreground">{label}</span>
+        {aside ? <span className="truncate text-[10px] leading-none text-muted-foreground">{aside}</span> : null}
+      </div>
       <div className="min-w-0 overflow-hidden text-[13px] font-semibold leading-tight text-foreground">
         {typeof children === "string" ? <span className="block truncate">{children}</span> : children}
+      </div>
+    </div>
+  )
+}
+
+/** 日均消耗金额；不到 $1 时保留 4 位小数，避免显示成 $0.00。 */
+function dailyCostText(v: number) {
+  return money(v, { precise: v > 0 && v < 1 })
+}
+
+/**
+ * BalanceForecastTile 余额预计用完时间：最近一次余额 ÷ 日均消耗，以余额采集时间为起点。
+ * 日均消耗由后端每次采集余额后，用近 7 天的余额下降估算（充值等上涨不计）。
+ */
+function BalanceForecastTile({ channel }: { channel: Channel }) {
+  const now = Date.now()
+  const f = channelBalanceForecast(channel)
+  const basis = f.spanHours != null ? `按近 ${formatSpan(f.spanHours)}的余额下降估算，充值不计入消耗` : ""
+  let content: React.ReactNode
+  let tip: string
+  if (f.balance == null) {
+    content = <span className="font-normal text-muted-foreground">{"—"}</span>
+    tip = "尚未采集余额"
+  } else if (f.balance <= 0) {
+    content = <span className="text-danger">{"余额已用完"}</span>
+    tip = "最近一次采集的余额已经不大于 0"
+  } else if (f.dailyCost == null) {
+    content = <span className="font-normal text-muted-foreground">{"样本不足"}</span>
+    tip = "余额采样跨度不足 1 小时，暂时无法估算"
+  } else if (f.depletesAt == null) {
+    content = <span className="font-normal text-muted-foreground">{"近期无消耗"}</span>
+    tip = f.spanHours != null ? `近 ${formatSpan(f.spanHours)}余额没有下降` : "近期余额没有下降"
+  } else if (f.depletesAt <= now) {
+    content = <span className="text-danger">{"可能已用完"}</span>
+    tip = `按最近一次采集的余额推算，应已于 ${formatForecastAt(f.depletesAt, now)} 用完；${basis}`
+  } else {
+    const remaining = f.depletesAt - now
+    content = (
+      <span className={cn("block truncate", remainingTone(remaining))}>
+        {formatForecastAt(f.depletesAt, now)}
+        <span className="text-[11px] font-normal text-muted-foreground">{` · ${formatRemaining(remaining)}`}</span>
+      </span>
+    )
+    tip = basis
+  }
+  return (
+    <StatTile
+      label="预计用完"
+      aside={f.dailyCost != null && f.dailyCost > 0 ? `日均消耗 ${dailyCostText(f.dailyCost)}` : undefined}
+      className="col-span-2"
+    >
+      <Tooltip delayDuration={150}>
+        <TooltipTrigger asChild>
+          <div className="min-w-0 truncate">{content}</div>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="max-w-xs text-xs">
+          {tip}
+        </TooltipContent>
+      </Tooltip>
+    </StatTile>
+  )
+}
+
+/**
+ * ChannelGroupHeader 渠道分组的标题行：合计余额、合计日均消耗与整组预计用完时间。
+ * channels 取自全量渠道列表，统计的是整个分组，不受当前搜索 / 筛选 / 分页影响。
+ */
+function ChannelGroupHeader({ name, channels }: { name: string; channels: Channel[] }) {
+  const now = Date.now()
+  const f = groupBalanceForecast(channels, now)
+  const tips: string[] = []
+  let eta: React.ReactNode
+  if (f.dailyCost == null) {
+    eta = "暂无法估算"
+    tips.push("组内渠道还没有足够的余额采样")
+  } else if (f.depletesAt == null) {
+    eta = "近期无消耗"
+  } else if (f.depletesAt <= now) {
+    eta = <span className="text-danger">{"可能已用完"}</span>
+  } else {
+    const remaining = f.depletesAt - now
+    eta = (
+      <span className={remainingTone(remaining)}>
+        {`预计 ${formatForecastAt(f.depletesAt, now)} 用完（${formatRemaining(remaining)}）`}
+      </span>
+    )
+  }
+  if (f.dailyCost != null) {
+    tips.push("按组内合计余额 ÷ 合计日均消耗估算，假设某个渠道用完后流量会转到组内其它渠道。")
+  }
+  if (f.earliest) {
+    tips.push(`最早用完：${f.earliest.channel.name}（${formatForecastAt(f.earliest.at, now)}）`)
+  }
+  if (f.unmeasured > 0 && f.dailyCost != null) {
+    tips.push(`${f.unmeasured} 个渠道余额采样不足，未计入消耗`)
+  }
+
+  return (
+    <div className="col-span-full flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-lg border border-border bg-muted/20 px-3 py-2">
+      <div className="flex min-w-0 items-center gap-2">
+        <FolderOpen className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <span className={cn("truncate text-sm font-semibold", name ? "text-foreground" : "text-muted-foreground")}>
+          {name || "未分组"}
+        </span>
+        <span className="shrink-0 text-xs text-muted-foreground">{`${channels.length} 个渠道`}</span>
+      </div>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        <span>
+          {"合计余额 "}
+          <span className="font-medium text-foreground">{money(f.balance)}</span>
+        </span>
+        <span>
+          {"日均消耗 "}
+          <span className="font-medium text-foreground">{f.dailyCost == null ? "—" : dailyCostText(f.dailyCost)}</span>
+        </span>
+        {tips.length ? (
+          <Tooltip delayDuration={150}>
+            <TooltipTrigger asChild>
+              <span className="cursor-default font-medium">{eta}</span>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="max-w-xs space-y-0.5 text-xs">
+              {tips.map((tip) => (
+                <p key={tip}>{tip}</p>
+              ))}
+            </TooltipContent>
+          </Tooltip>
+        ) : (
+          <span className="font-medium">{eta}</span>
+        )}
       </div>
     </div>
   )
@@ -688,6 +840,18 @@ export function ChannelCards() {
     }
     return [...seen.values()].sort((a, b) => a.localeCompare(b, "zh-CN"))
   }, [channels])
+  // 分组标题的统计取自全量渠道列表，统计整个分组而不只是当前页；没有任何渠道设置分组时不显示分组标题。
+  const groupMembers = useMemo(() => {
+    const map = new Map<string, Channel[]>()
+    for (const c of channels ?? []) {
+      const group = c.group_name ?? ""
+      const members = map.get(group)
+      if (members) members.push(c)
+      else map.set(group, [c])
+    }
+    return map
+  }, [channels])
+  const hasGroups = [...groupMembers.keys()].some((group) => group !== "")
   // 选中的标签被删掉后自动视为"全部"，避免下拉框空白、列表却仍在按旧标签筛选。
   const activeTag = tagFilter
     ? (tagOptions.find((t) => channelTagKey(t) === channelTagKey(tagFilter)) ?? "")
@@ -1151,10 +1315,16 @@ export function ChannelCards() {
           className={cn("transition-opacity duration-200", pageStale && "opacity-60 delay-150")}
         >
           <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3">
-            {visibleChannels.map((c) => {
+            {visibleChannels.map((c, index) => {
               const status = statusOf(c)
               const meta = statusMap[status]
-              return (
+              // 后端分页时已按分组排好序（未分组在最后），同一分组是连续的一段，每段开头放分组标题。
+              const group = c.group_name ?? ""
+              const startsGroup = hasGroups && (index === 0 || (visibleChannels[index - 1].group_name ?? "") !== group)
+              return [
+                startsGroup ? (
+                  <ChannelGroupHeader key={`group-${c.id}`} name={group} channels={groupMembers.get(group) ?? [c]} />
+                ) : null,
                 <Card key={c.id} className="flex flex-col gap-0 border border-border p-3 shadow-none sm:p-4">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
@@ -1272,9 +1442,10 @@ export function ChannelCards() {
                         </span>
                       </div>
                     </StatTile>
+                    <BalanceForecastTile channel={c} />
                     <ChannelSubscriptionUsageMetricTiles channel={c} />
                     {c.last_error ? (
-                      <div className="col-span-3 rounded-md border border-border bg-muted/20 px-2.5 py-2">
+                      <div className="col-span-2 rounded-md border border-border bg-muted/20 px-2.5 py-2 sm:col-span-3">
                         <p className="max-h-16 overflow-y-auto whitespace-pre-wrap break-words pr-1 text-[11px] leading-4 text-danger" title={c.last_error}>
                           {c.last_error}
                         </p>
@@ -1435,8 +1606,8 @@ export function ChannelCards() {
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
-                </Card>
-              )
+                </Card>,
+              ]
             })}
           </div>
 

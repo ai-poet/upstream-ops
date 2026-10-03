@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react"
+import { useEffect, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from "react"
 import { HelpCircle, X } from "lucide-react"
 import {
   Dialog,
@@ -31,7 +31,7 @@ import type { Channel, ChannelType, CredentialMode, RechargeMultiplierMode } fro
 import { apiFetch } from "@/lib/api"
 import { channelTagKey } from "@/lib/channel-tags"
 import { useTriggerRefresh } from "@/lib/refresh-context"
-import { useCaptchaConfigs } from "@/lib/queries"
+import { useCaptchaConfigs, useChannels } from "@/lib/queries"
 import { cn } from "@/lib/utils"
 
 interface ChannelFormDialogProps {
@@ -81,15 +81,17 @@ interface FormState {
 
   notes: string
   redemption_store_url: string
+  group_name: string
   // 标签：tags 为已确认的 chip，tag_input 为输入框里尚未确认的文本（提交时一并加入）
   tags: string[]
   tag_input: string
 }
 
-// 与后端 storage.MaxChannelTags / MaxChannelTagRunes / MaxChannelNotesRunes 保持一致
+// 与后端 storage.MaxChannelTags / MaxChannelTagRunes / MaxChannelNotesRunes / MaxChannelGroupRunes 保持一致
 const MAX_TAGS = 20
 const MAX_TAG_LENGTH = 32
 const MAX_NOTES_LENGTH = 2000
+const MAX_GROUP_LENGTH = 32
 
 /** charLength 按 Unicode 码点计数，与后端 utf8.RuneCountInString 对齐。 */
 function charLength(s: string): number {
@@ -147,6 +149,7 @@ function initialState(c?: Channel | null): FormState {
     tag_input: "",
     notes: c?.notes ?? "",
     redemption_store_url: c?.redemption_store_url ?? "",
+    group_name: c?.group_name ?? "",
   }
 }
 
@@ -180,6 +183,12 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
   const [error, setError] = useState<string | null>(null)
   const refresh = useTriggerRefresh()
   const captchas = useCaptchaConfigs(open)
+  const { data: allChannels } = useChannels()
+  // 已有的分组名，点一下即可填入，避免同一分组因手误写成两个。
+  const groupOptions = useMemo(() => {
+    const groups = new Set((allChannels ?? []).map((c) => c.group_name ?? "").filter(Boolean))
+    return [...groups].sort((a, b) => a.localeCompare(b, "zh-CN"))
+  }, [allChannels])
 
   // 打开 / 切换目标渠道时重置表单。
   useEffect(() => {
@@ -234,6 +243,10 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
       const redemptionStoreURL = form.redemption_store_url.trim()
       if (redemptionStoreURL && !/^https?:\/\//i.test(redemptionStoreURL)) {
         throw new Error("兑换码商店 URL 必须以 http:// 或 https:// 开头")
+      }
+      const groupName = form.group_name.trim()
+      if (charLength(groupName) > MAX_GROUP_LENGTH) {
+        throw new Error(`分组名最多 ${MAX_GROUP_LENGTH} 个字符`)
       }
       const loginExtraParams = isTokenMode ? "" : form.login_extra_params.trim()
       if (loginExtraParams) {
@@ -328,6 +341,7 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
           tags,
           notes,
           redemption_store_url: redemptionStoreURL,
+          group_name: groupName,
         }
         if (!isTokenMode && form.password) body.password = form.password
         if (isTokenMode && tokenCredential) body.token_credential = tokenCredential
@@ -361,6 +375,7 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
             tags,
             notes,
             redemption_store_url: redemptionStoreURL,
+            group_name: groupName,
           }),
         })
       }
@@ -439,6 +454,40 @@ export function ChannelFormDialog({ open, onOpenChange, channel }: ChannelFormDi
               required
               disabled={submitting}
             />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="channel-group">渠道分组（可选）</Label>
+            <Input
+              id="channel-group"
+              placeholder="如：Claude 渠道"
+              value={form.group_name}
+              onChange={(e) => setForm({ ...form, group_name: e.target.value })}
+              disabled={submitting}
+            />
+            {groupOptions.length > 0 ? (
+              <div className="flex flex-wrap gap-1">
+                {groupOptions.map((group) => (
+                  <button
+                    key={group}
+                    type="button"
+                    onClick={() => setForm({ ...form, group_name: group })}
+                    disabled={submitting}
+                    className={cn(
+                      "max-w-full truncate rounded px-1.5 py-0.5 text-[11px] ring-1 ring-inset transition-colors",
+                      group === form.group_name.trim()
+                        ? "bg-primary/10 text-primary ring-primary/20"
+                        : "bg-muted/60 text-muted-foreground ring-border hover:text-foreground",
+                    )}
+                  >
+                    {group}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            <p className="text-[11px] text-muted-foreground">
+              同一分组的渠道在列表里排在一起，并汇总估算整组的预计用完时间；留空为未分组
+            </p>
           </div>
 
           <div className="space-y-1.5">

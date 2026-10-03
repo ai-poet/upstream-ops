@@ -66,6 +66,10 @@ type Channel struct {
 	Tags  ChannelTags `gorm:"size:1024;not null;default:''" json:"tags"`
 	Notes string      `gorm:"type:text" json:"notes"`
 
+	// GroupName 渠道分组，空表示未分组。分页列表先按分组排序（见 sortChannelsByGroup），
+	// 前端按分组分段展示，并汇总组内余额估算整组的预计用完时间。
+	GroupName string `gorm:"size:128;not null;default:''" json:"group_name"`
+
 	// RedemptionStoreURL 兑换码商店地址。
 	// 填写后，前端点"充值"按钮会直接新窗口打开该 URL（用于上游没开放在线充值的场景）。
 	// 留空则走正常的在线充值流程。
@@ -78,6 +82,11 @@ type Channel struct {
 	TodayCostAt   *time.Time `json:"today_cost_at,omitempty"` // 最近一次写入 TodayCost 的时间，用于跨天判断
 	TotalCost     *float64   `json:"total_cost,omitempty"`
 	LastError     string     `gorm:"type:text" json:"last_error,omitempty"`
+
+	// 余额消耗估算，每次采集余额后用近 BalanceBurnWindow 的余额快照重新计算（见 EstimateBalanceBurn），
+	// 样本不足时两者都为空。前端据此和 LastBalance / LastBalanceAt 推算预计用完时间。
+	BalanceDailyCost     *float64 `json:"balance_daily_cost,omitempty"`      // 日均消耗，只累计余额下降，充值等上涨不计
+	BalanceCostSpanHours *float64 `json:"balance_cost_span_hours,omitempty"` // 参与估算的样本跨度（小时）
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

@@ -67,12 +67,18 @@ export interface Channel {
   notes?: string
   /** 兑换码商店 URL；填写后点充值直接打开该链接 */
   redemption_store_url?: string
+  /** 渠道分组；空字符串 / 缺失表示未分组 */
+  group_name?: string
   last_balance?: number | null
   last_balance_at?: string | null
   today_cost?: number | null
   today_cost_at?: string | null
   total_cost?: number | null
   last_error?: string
+  /** 按近 7 天余额下降估算的日均消耗；样本不足时缺失（backend/storage/balance_burn.go） */
+  balance_daily_cost?: number | null
+  /** 参与估算的样本跨度（小时） */
+  balance_cost_span_hours?: number | null
   created_at: string
   updated_at: string
 }

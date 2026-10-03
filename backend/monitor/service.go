@@ -122,6 +122,7 @@ func (s *Service) RefreshBalance(ctx context.Context, c *storage.Channel) error 
 		Balance:   res.Balance,
 		SampledAt: sampledAt,
 	})
+	s.refreshBalanceBurn(c, sampledAt)
 	progress.OK(ctx, progress.StageBalance, fmt.Sprintf("当前余额 %.4f", res.Balance),
 		map[string]any{"balance": res.Balance})
 
@@ -155,6 +156,19 @@ func (s *Service) RefreshBalance(ctx context.Context, c *storage.Channel) error 
 		})
 	}
 	return nil
+}
+
+// refreshBalanceBurn 用截至 at 的近 BalanceBurnWindow 余额快照重新估算日均消耗。
+// 估算只用于展示预计用完时间，失败只记日志，不影响本次余额采集的结果。
+func (s *Service) refreshBalanceBurn(c *storage.Channel, at time.Time) {
+	snapshots, err := s.rates.BalanceSnapshotsSince(c.ID, at.Add(-storage.BalanceBurnWindow))
+	if err != nil {
+		s.log.Warn("load balance snapshots failed", "channel", c.Name, "err", err)
+		return
+	}
+	if err := s.channels.UpdateBalanceBurn(c.ID, storage.EstimateBalanceBurn(snapshots)); err != nil {
+		s.log.Warn("update balance burn failed", "channel", c.Name, "err", err)
+	}
 }
 
 // RefreshRates 单个渠道倍率刷新，可被 API 手动触发。
