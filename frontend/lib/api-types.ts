@@ -28,6 +28,7 @@ export type MonitorJob = "login" | "balance" | "rates"
 
 export type NotificationEvent =
   | "balance_low"
+  | "balance_depleting"
   | "rate_changed"
   | "rate_structure_changed"
   | "rate_added"
@@ -279,6 +280,8 @@ export interface SystemSchedulerConfig {
 export interface SystemNotificationsConfig {
   minChangePct: number
   balanceLowCooldownMinutes: number
+  /** 预计余额在多少分钟内用完时提醒，0 为关闭 */
+  balanceDepletionLeadMinutes: number
   subscriptionDailyRemainingThresholdPct: number
   subscriptionWeeklyRemainingThresholdPct: number
   subscriptionMonthlyRemainingThresholdPct: number

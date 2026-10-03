@@ -12,11 +12,13 @@ import (
 // Policy 通知去抖策略。所有字段都是面向"少烦用户"取向：
 //   - MinChangePct：涨跌幅小于阈值时跳过推送（仍写入 RateChangeLog 表）
 //   - BalanceLowCooldown：同渠道 balance_low 在窗口内不重复发送
+//   - BalanceDepletionLead：预计余额在多久内用完时发送 balance_depleting，<=0 表示关闭
 //   - SendMaxAttempts：单条消息最多发送尝试次数（含首发），<=1 表示不重试
 type Policy struct {
 	NotificationPrefix                       string
 	MinChangePct                             float64
 	BalanceLowCooldown                       time.Duration
+	BalanceDepletionLead                     time.Duration
 	SubscriptionDailyRemainingThresholdPct   float64
 	SubscriptionWeeklyRemainingThresholdPct  float64
 	SubscriptionMonthlyRemainingThresholdPct float64

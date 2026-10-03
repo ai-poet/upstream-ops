@@ -112,11 +112,14 @@ type RetentionConfig struct {
 //   - BalanceLowCooldownMinutes：同一渠道的 balance_low 在 X 分钟内不重复推送。
 //     0 = 不冷却（每次扫描发现仍 < 阈值都发）。冷却状态持久化在数据库的
 //     notification_cooldowns 表，跨重启生效。
+//   - BalanceDepletionLeadMinutes：按消耗速度估算余额将在 X 分钟内用完时推送 balance_depleting。
+//     0 = 关闭。同一渠道在 X 与 BalanceLowCooldownMinutes 中较长的时间内只提醒一次。
 //   - SendMaxAttempts：单条通知发送失败时最多尝试次数（含首次）。
 //     1 = 不重试。重试采用指数退避：1s / 2s / 4s …，上限 30s。
 type NotificationsConfig struct {
 	MinChangePct                             float64 `mapstructure:"minChangePct" yaml:"minChangePct" json:"minChangePct"`
 	BalanceLowCooldownMinutes                int     `mapstructure:"balanceLowCooldownMinutes" yaml:"balanceLowCooldownMinutes" json:"balanceLowCooldownMinutes"`
+	BalanceDepletionLeadMinutes              int     `mapstructure:"balanceDepletionLeadMinutes" yaml:"balanceDepletionLeadMinutes" json:"balanceDepletionLeadMinutes"`
 	SubscriptionDailyRemainingThresholdPct   float64 `mapstructure:"subscriptionDailyRemainingThresholdPct" yaml:"subscriptionDailyRemainingThresholdPct" json:"subscriptionDailyRemainingThresholdPct"`
 	SubscriptionWeeklyRemainingThresholdPct  float64 `mapstructure:"subscriptionWeeklyRemainingThresholdPct" yaml:"subscriptionWeeklyRemainingThresholdPct" json:"subscriptionWeeklyRemainingThresholdPct"`
 	SubscriptionMonthlyRemainingThresholdPct float64 `mapstructure:"subscriptionMonthlyRemainingThresholdPct" yaml:"subscriptionMonthlyRemainingThresholdPct" json:"subscriptionMonthlyRemainingThresholdPct"`
@@ -472,10 +475,11 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.username", "admin")
 	v.SetDefault("auth.sessionTTLHours", 168) // 7 天
 
-	// 通知去抖：不过滤涨跌幅、balance_low 1h 内不重复、失败重试 3 次。
+	// 通知去抖：不过滤涨跌幅、balance_low 1h 内不重复、预计 1h 内用完时提醒、失败重试 3 次。
 	// 全渠道倍率变化始终在一次扫描结束后合并发送。
 	v.SetDefault("notifications.minChangePct", 0)
 	v.SetDefault("notifications.balanceLowCooldownMinutes", 60)
+	v.SetDefault("notifications.balanceDepletionLeadMinutes", 60)
 	v.SetDefault("notifications.subscriptionDailyRemainingThresholdPct", 0)
 	v.SetDefault("notifications.subscriptionWeeklyRemainingThresholdPct", 0)
 	v.SetDefault("notifications.subscriptionMonthlyRemainingThresholdPct", 0)

@@ -270,6 +270,7 @@ type NotificationEvent string
 
 const (
 	EventBalanceLow                     NotificationEvent = "balance_low"
+	EventBalanceDepleting               NotificationEvent = "balance_depleting"
 	EventRateChanged                    NotificationEvent = "rate_changed"
 	EventRateStructureChanged           NotificationEvent = "rate_structure_changed"
 	EventRateAdded                      NotificationEvent = "rate_added"

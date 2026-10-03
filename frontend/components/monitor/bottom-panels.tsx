@@ -7,6 +7,7 @@ import {
   ArrowUpRight,
   Bell,
   Clock3,
+  Hourglass,
   RefreshCw,
   KeyRound,
   Pencil,
@@ -52,6 +53,7 @@ import type {
 
 const eventMeta: Record<NotificationEvent, { icon: LucideIcon; cls: string }> = {
   balance_low: { icon: AlertTriangle, cls: "text-warning" },
+  balance_depleting: { icon: Hourglass, cls: "text-warning" },
   login_failed: { icon: ShieldX, cls: "text-danger" },
   captcha_failed: { icon: KeyRound, cls: "text-danger" },
   rate_changed: { icon: ArrowUpRight, cls: "text-brand" },

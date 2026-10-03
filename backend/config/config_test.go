@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -18,6 +19,21 @@ func TestLoadAppliesUpstreamDefaults(t *testing.T) {
 	}
 	if !cfg.Pricing.Enabled || cfg.Pricing.RemoteURL != DefaultPricingRemoteURL {
 		t.Fatalf("pricing = %#v", cfg.Pricing)
+	}
+}
+
+// 升级前保存的配置文件没有 balanceDepletionLeadMinutes，读取时应补上默认的 60 分钟，而不是按 0 关闭。
+func TestLoadAppliesBalanceDepletionLeadDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("notifications:\n  balanceLowCooldownMinutes: 30\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	if cfg.Notifications.BalanceLowCooldownMinutes != 30 || cfg.Notifications.BalanceDepletionLeadMinutes != 60 {
+		t.Fatalf("notifications = %#v", cfg.Notifications)
 	}
 }
 
