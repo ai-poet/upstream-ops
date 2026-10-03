@@ -1,8 +1,8 @@
 /**
  * 余额 / 订阅额度的"预计用完时间"估算与展示。
  *
- * 渠道的日均消耗由后端每次采集余额后用近 7 天的余额快照估算（backend/storage/balance_burn.go），
- * 这里只负责结合最近一次余额推算时间点、汇总分组，以及格式化。
+ * 渠道的消耗速度由后端每次采集余额后用最近 2 小时的余额快照估算，折算成日消耗
+ * （backend/storage/balance_burn.go），这里只负责结合最近一次余额推算时间点、汇总分组，以及格式化。
  */
 import type { Channel, ChannelSubscriptionUsageWindow } from "@/lib/api-types"
 
@@ -24,7 +24,7 @@ function finiteOrNull(v?: number | null): number | null {
 export interface BalanceForecast {
   /** 最近一次采集的余额；尚未采集时为 null */
   balance: number | null
-  /** 日均消耗；样本不足时为 null */
+  /** 按最近速度折算的日消耗；样本不足时为 null */
   dailyCost: number | null
   /** 参与估算的样本跨度（小时） */
   spanHours: number | null
@@ -47,7 +47,7 @@ export function channelBalanceForecast(c: Channel): BalanceForecast {
 export interface GroupBalanceForecast {
   /** 组内各渠道按日均消耗折算到当前时刻的余额之和 */
   balance: number
-  /** 组内日均消耗之和；没有任何渠道能估算时为 null */
+  /** 组内折算日消耗之和；没有任何渠道能估算时为 null */
   dailyCost: number | null
   /** 已采集余额但样本不足、没计入消耗的渠道数 */
   unmeasured: number
@@ -60,9 +60,9 @@ export interface GroupBalanceForecast {
 /**
  * 汇总一组渠道的余额与消耗，估算整组的预计用完时间。
  *
- * 各渠道余额采集时间不同，先按各自的日均消耗折算到 now 再相加；
+ * 各渠道余额采集时间不同，先按各自的消耗速度折算到 now 再相加；
  * 这样只有一个渠道的分组，结果与该渠道自己的预计用完时间一致。
- * 假设组内渠道互为备份（某个用完后流量转到其它渠道），所以用合计余额 ÷ 合计日均消耗。
+ * 假设组内渠道互为备份（某个用完后流量转到其它渠道），所以用合计余额 ÷ 合计消耗速度。
  */
 export function groupBalanceForecast(channels: Channel[], now = Date.now()): GroupBalanceForecast {
   let balance = 0

@@ -137,17 +137,17 @@ func TestRefreshBalanceUpdatesBalanceBurn(t *testing.T) {
 		t.Fatalf("first refresh burn = %v / %v, want nil / nil", daily, span)
 	}
 
-	// 换成 12 小时前余额 5、6 小时前余额 3.5 的历史；8 天前的快照超出窗口，不参与估算。
+	// 换成 90 分钟前余额 5、45 分钟前余额 3.5 的历史；3 小时前的快照超出 2 小时窗口，不参与估算。
 	if err := f.db.Where("channel_id = ?", f.ch.ID).Delete(&storage.BalanceSnapshot{}).Error; err != nil {
 		t.Fatalf("drop snapshots: %v", err)
 	}
 	f.seedBalances(t, time.Now(), map[time.Duration]float64{
-		8 * 24 * time.Hour: 1000,
-		12 * time.Hour:     5,
-		6 * time.Hour:      3.5,
+		3 * time.Hour:    1000,
+		90 * time.Minute: 5,
+		45 * time.Minute: 3.5,
 	})
 
-	// 5 → 3.5 → 2：12 小时消耗 3，日均约 6。
+	// 5 → 3.5 → 2：1.5 小时消耗 3，折算日消耗约 48。
 	if err := f.svc.RefreshBalance(context.Background(), f.ch); err != nil {
 		t.Fatalf("second refresh: %v", err)
 	}
@@ -155,8 +155,8 @@ func TestRefreshBalanceUpdatesBalanceBurn(t *testing.T) {
 	if daily == nil || span == nil {
 		t.Fatalf("second refresh burn = %v / %v, want values", daily, span)
 	}
-	if math.Abs(*daily-6) > 0.01 || math.Abs(*span-12) > 0.01 {
-		t.Fatalf("second refresh burn = %v / %v, want ~6 / ~12", *daily, *span)
+	if math.Abs(*daily-48) > 0.5 || math.Abs(*span-1.5) > 0.02 {
+		t.Fatalf("second refresh burn = %v / %v, want ~48 / ~1.5", *daily, *span)
 	}
 	// 未开启即将用完提醒（BalanceDepletionLead = 0）。
 	if got := f.sent(); len(got) != 0 {
@@ -164,12 +164,11 @@ func TestRefreshBalanceUpdatesBalanceBurn(t *testing.T) {
 	}
 }
 
-// 近 7 天日均很低，只有最近 2 小时在大量消耗：按日均估算还能用一天多，按最近速度不到 1 小时就会用完。
-func TestRefreshBalanceAlertsOnRecentBurn(t *testing.T) {
+// 之前几天几乎没消耗，只有最近 2 小时在大量消耗：按最近速度不到 1 小时就会用完，应当提醒。
+func TestRefreshBalanceAlertsWhenDepleting(t *testing.T) {
 	f := newBalanceBurnFixture(t, notify.Policy{BalanceDepletionLead: time.Hour, BalanceLowCooldown: 10 * time.Minute})
-	// 8.5 → 8 → 5 → 2（本次采样）：5 天消耗 6.5，日均 1.3，余额 2 约 37 小时；
-	// 最近 2 小时 8 → 2，每小时约 3，余额 2 约 40 分钟。
-	// 窗口从本次采样时间往前算，"2 小时前"的快照留 1 分钟余量，避免因测试执行耗时落到窗口外。
+	// 最近 2 小时 8 → 5 → 2（本次采样），每小时约 3，余额 2 约 40 分钟。
+	// 5 天前的快照超出窗口，不参与估算；"2 小时前"的快照留 1 分钟余量，避免因测试执行耗时落到窗口外。
 	f.seedBalances(t, time.Now(), map[time.Duration]float64{
 		5 * 24 * time.Hour: 8.5,
 		119 * time.Minute:  8,
@@ -204,36 +203,33 @@ func TestRefreshBalanceAlertsOnRecentBurn(t *testing.T) {
 
 func TestCheckBalanceDepletion(t *testing.T) {
 	burn := func(daily float64) *storage.BalanceBurn {
-		return &storage.BalanceBurn{DailyCost: daily, SpanHours: 168}
+		return &storage.BalanceBurn{DailyCost: daily, SpanHours: 2}
 	}
 	cases := []struct {
-		name         string
-		lead         time.Duration
-		balance      float64
-		week, recent *storage.BalanceBurn
-		want         bool
+		name    string
+		lead    time.Duration
+		balance float64
+		burn    *storage.BalanceBurn
+		want    bool
 	}{
-		// 日均 48（每小时 2），余额 1.5 → 45 分钟。
-		{"按日均进入提醒", time.Hour, 1.5, burn(48), nil, true},
-		{"刚好等于提前量", time.Hour, 2, burn(48), nil, true},
-		{"还早", time.Hour, 2.5, burn(48), nil, false},
-		{"关闭提醒", 0, 1.5, burn(48), nil, false},
-		{"余额已用完", time.Hour, 0, burn(48), burn(48), false},
-		{"样本不足", time.Hour, 1, nil, nil, false},
-		{"没有消耗", time.Hour, 1, burn(0), burn(0), false},
-		// 最近速度慢于日均时按日均：余额 1.5，日均 48 → 45 分钟。
-		{"取较快的速度", time.Hour, 1.5, burn(48), burn(1), true},
-		{"只有最近速度", time.Hour, 1.5, nil, burn(48), true},
-		{"提前量较长", 24 * time.Hour, 40, burn(48), nil, true},
+		// 日消耗 48（每小时 2），余额 1.5 → 45 分钟。
+		{"进入提醒时间", time.Hour, 1.5, burn(48), true},
+		{"刚好等于提前量", time.Hour, 2, burn(48), true},
+		{"还早", time.Hour, 2.5, burn(48), false},
+		{"关闭提醒", 0, 1.5, burn(48), false},
+		{"余额已用完", time.Hour, 0, burn(48), false},
+		{"样本不足", time.Hour, 1, nil, false},
+		{"没有消耗", time.Hour, 1, burn(0), false},
+		{"提前量较长", 24 * time.Hour, 40, burn(48), true},
 		// 余额很多、消耗极少：换算成 time.Duration 会溢出，必须先按小时比较。
-		{"超长时间不溢出", time.Hour, 1e12, burn(1e-9), nil, false},
+		{"超长时间不溢出", time.Hour, 1e12, burn(1e-9), false},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newBalanceBurnFixture(t, notify.Policy{BalanceDepletionLead: tc.lead})
 			c := *f.ch
 			c.ID += uint(i) // 各用例独立冷却
-			f.svc.checkBalanceDepletion(context.Background(), &c, tc.balance, time.Now(), tc.week, tc.recent)
+			f.svc.checkBalanceDepletion(context.Background(), &c, tc.balance, time.Now(), tc.burn)
 			if got := len(f.sent()) == 1; got != tc.want {
 				t.Fatalf("sent = %v, want %v", f.sent(), tc.want)
 			}

@@ -775,7 +775,7 @@ export default function SettingsPage() {
               </Field>
               <Field
                 label="余额即将用完提醒分钟"
-                description="按近 7 天日均与最近 2 小时消耗中较快的速度估算，余额预计在该分钟数内用完时提醒，0 为关闭。同一渠道在该时长与余额不足冷却中较长的一段内只提醒一次。"
+                description="按最近 2 小时的消耗速度估算，余额预计在该分钟数内用完时提醒，0 为关闭。同一渠道在该时长与余额不足冷却中较长的一段内只提醒一次。"
               >
                 <Input
                   type="number"

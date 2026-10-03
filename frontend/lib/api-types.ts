@@ -76,7 +76,7 @@ export interface Channel {
   today_cost_at?: string | null
   total_cost?: number | null
   last_error?: string
-  /** 按近 7 天余额下降估算的日均消耗；样本不足时缺失（backend/storage/balance_burn.go） */
+  /** 按最近 2 小时余额下降的速度折算的日消耗；样本不足时缺失（backend/storage/balance_burn.go） */
   balance_daily_cost?: number | null
   /** 参与估算的样本跨度（小时） */
   balance_cost_span_hours?: number | null

@@ -220,19 +220,20 @@ function StatTile({
   )
 }
 
-/** 日均消耗金额；不到 $1 时保留 4 位小数，避免显示成 $0.00。 */
-function dailyCostText(v: number) {
-  return money(v, { precise: v > 0 && v < 1 })
+/** 把折算的日消耗显示成每小时的速度；不到 $1 时保留 4 位小数，避免显示成 $0.00。 */
+function hourlyCostText(dailyCost: number) {
+  const hourly = dailyCost / 24
+  return `${money(hourly, { precise: hourly > 0 && hourly < 1 })}/小时`
 }
 
 /**
- * BalanceForecastTile 余额预计用完时间：最近一次余额 ÷ 日均消耗，以余额采集时间为起点。
- * 日均消耗由后端每次采集余额后，用近 7 天的余额下降估算（充值等上涨不计）。
+ * BalanceForecastTile 余额预计用完时间：最近一次余额 ÷ 最近的消耗速度，以余额采集时间为起点。
+ * 消耗速度由后端每次采集余额后，用最近 2 小时的余额下降估算（充值等上涨不计）。
  */
 function BalanceForecastTile({ channel }: { channel: Channel }) {
   const now = Date.now()
   const f = channelBalanceForecast(channel)
-  const basis = f.spanHours != null ? `按近 ${formatSpan(f.spanHours)}的余额下降估算，充值不计入消耗` : ""
+  const basis = f.spanHours != null ? `按最近 ${formatSpan(f.spanHours)}的余额下降速度估算，充值不计入消耗` : ""
   let content: React.ReactNode
   let tip: string
   if (f.balance == null) {
@@ -245,8 +246,9 @@ function BalanceForecastTile({ channel }: { channel: Channel }) {
     content = <span className="font-normal text-muted-foreground">{"样本不足"}</span>
     tip = "余额采样跨度不足 1 小时，暂时无法估算"
   } else if (f.depletesAt == null) {
-    content = <span className="font-normal text-muted-foreground">{"近期无消耗"}</span>
-    tip = f.spanHours != null ? `近 ${formatSpan(f.spanHours)}余额没有下降` : "近期余额没有下降"
+    const span = f.spanHours != null ? formatSpan(f.spanHours) : ""
+    content = <span className="font-normal text-muted-foreground">{span ? `近 ${span}无消耗` : "近期无消耗"}</span>
+    tip = span ? `最近 ${span}余额没有下降` : "最近余额没有下降"
   } else if (f.depletesAt <= now) {
     content = <span className="text-danger">{"可能已用完"}</span>
     tip = `按最近一次采集的余额推算，应已于 ${formatForecastAt(f.depletesAt, now)} 用完；${basis}`
@@ -263,7 +265,7 @@ function BalanceForecastTile({ channel }: { channel: Channel }) {
   return (
     <StatTile
       label="预计用完"
-      aside={f.dailyCost != null && f.dailyCost > 0 ? `日均消耗 ${dailyCostText(f.dailyCost)}` : undefined}
+      aside={f.dailyCost != null && f.dailyCost > 0 ? hourlyCostText(f.dailyCost) : undefined}
       className="col-span-2"
     >
       <Tooltip delayDuration={150}>
@@ -279,7 +281,7 @@ function BalanceForecastTile({ channel }: { channel: Channel }) {
 }
 
 /**
- * ChannelGroupHeader 渠道分组的标题行：合计余额、合计日均消耗与整组预计用完时间。
+ * ChannelGroupHeader 渠道分组的标题行：合计余额、合计消耗速度与整组预计用完时间。
  * channels 取自全量渠道列表，统计的是整个分组，不受当前搜索 / 筛选 / 分页影响。
  */
 function ChannelGroupHeader({ name, channels }: { name: string; channels: Channel[] }) {
@@ -303,7 +305,7 @@ function ChannelGroupHeader({ name, channels }: { name: string; channels: Channe
     )
   }
   if (f.dailyCost != null) {
-    tips.push("按组内合计余额 ÷ 合计日均消耗估算，假设某个渠道用完后流量会转到组内其它渠道。")
+    tips.push("按组内合计余额 ÷ 合计消耗速度估算，假设某个渠道用完后流量会转到组内其它渠道。")
   }
   if (f.earliest) {
     tips.push(`最早用完：${f.earliest.channel.name}（${formatForecastAt(f.earliest.at, now)}）`)
@@ -327,8 +329,8 @@ function ChannelGroupHeader({ name, channels }: { name: string; channels: Channe
           <span className="font-medium text-foreground">{money(f.balance)}</span>
         </span>
         <span>
-          {"日均消耗 "}
-          <span className="font-medium text-foreground">{f.dailyCost == null ? "—" : dailyCostText(f.dailyCost)}</span>
+          {"消耗速度 "}
+          <span className="font-medium text-foreground">{f.dailyCost == null ? "—" : hourlyCostText(f.dailyCost)}</span>
         </span>
         {tips.length ? (
           <Tooltip delayDuration={150}>

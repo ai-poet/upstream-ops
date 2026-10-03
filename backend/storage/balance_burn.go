@@ -5,23 +5,24 @@ import (
 	"time"
 )
 
-// BalanceBurnWindow 估算余额日均消耗时回看的时长。
-const BalanceBurnWindow = 7 * 24 * time.Hour
+// BalanceBurnWindow 估算余额消耗速度时回看的时长。
+// 只看最近 2 小时，让估算跟得上当前的消耗速度；窗口再长会把突发的大量消耗摊薄，
+// 余额可能在估算出"快用完"之前就已经用完。
+const BalanceBurnWindow = 2 * time.Hour
 
 // minBalanceBurnSpan 样本首尾跨度的下限；更短的数据波动太大，不给出估算。
 const minBalanceBurnSpan = time.Hour
 
-// BalanceBurn 一段时间内余额消耗的估算结果。
+// BalanceBurn 一段时间内余额消耗速度的估算结果。
 type BalanceBurn struct {
-	DailyCost float64 // 日均消耗（与余额同一显示单位）
+	DailyCost float64 // 按样本期间的速度折算的日消耗（与余额同一显示单位）
 	SpanHours float64 // 参与估算的样本首尾跨度（小时）
 }
 
-// EstimateBalanceBurn 用按 sampled_at 升序排列的余额快照估算日均消耗。
+// EstimateBalanceBurn 用按 sampled_at 升序排列的余额快照估算消耗速度，结果折算成日消耗。
 //
 // 只累计相邻两次采样之间的余额下降：充值、兑换等导致的上涨直接跳过，不抵扣消耗，
-// 所以中途充值不会把消耗算成负数。暂停监控期间没有采样，恢复后第一次采样的下降量
-// 会摊到整段间隔里，日均值仍然正确。
+// 所以中途充值不会把消耗算成负数。两次采样间隔不均时，下降量摊到整段间隔里。
 //
 // 少于两条快照、或首尾跨度不足 minBalanceBurnSpan 时返回 nil，表示样本不足。
 // 有样本但余额从未下降时返回 DailyCost = 0，表示这段时间没有消耗。

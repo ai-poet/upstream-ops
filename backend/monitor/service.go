@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strings"
 	"time"
 
@@ -123,11 +122,11 @@ func (s *Service) RefreshBalance(ctx context.Context, c *storage.Channel) error 
 		Balance:   res.Balance,
 		SampledAt: sampledAt,
 	})
-	weekBurn, recentBurn := s.refreshBalanceBurn(c, sampledAt)
+	burn := s.refreshBalanceBurn(c, sampledAt)
 	progress.OK(ctx, progress.StageBalance, fmt.Sprintf("当前余额 %.4f", res.Balance),
 		map[string]any{"balance": res.Balance})
 	// 放在消费采集之前：消费接口失败不应该挡住即将用完的提醒。
-	s.checkBalanceDepletion(ctx, c, res.Balance, sampledAt, weekBurn, recentBurn)
+	s.checkBalanceDepletion(ctx, c, res.Balance, sampledAt, burn)
 
 	progress.Start(ctx, progress.StageCost, "拉取消费…")
 	costRes, err := conn.GetCosts(ctx, resolved, session)
@@ -161,72 +160,45 @@ func (s *Service) RefreshBalance(ctx context.Context, c *storage.Channel) error 
 	return nil
 }
 
-// recentBurnWindow 余额即将用完提醒额外参考的最近消耗窗口。
-// 近 7 天日均会把突发的大量消耗摊薄，只看它的话，余额可能在算出"进入提醒时间"之前就已经用完。
-const recentBurnWindow = 2 * time.Hour
-
-// refreshBalanceBurn 用截至 at 的近 BalanceBurnWindow 余额快照重新估算日均消耗并写回渠道，
-// 同时返回最近 recentBurnWindow 的估算，供即将用完提醒使用；样本不足的一项为 nil。
+// refreshBalanceBurn 用截至 at 的最近 BalanceBurnWindow 余额快照重新估算消耗速度并写回渠道，
+// 返回该估算供即将用完提醒使用；样本不足时为 nil。
 // 估算只用于展示和提醒，失败只记日志，不影响本次余额采集的结果。
-func (s *Service) refreshBalanceBurn(c *storage.Channel, at time.Time) (week, recent *storage.BalanceBurn) {
+func (s *Service) refreshBalanceBurn(c *storage.Channel, at time.Time) *storage.BalanceBurn {
 	snapshots, err := s.rates.BalanceSnapshotsSince(c.ID, at.Add(-storage.BalanceBurnWindow))
 	if err != nil {
 		s.log.Warn("load balance snapshots failed", "channel", c.Name, "err", err)
-		return nil, nil
+		return nil
 	}
-	week = storage.EstimateBalanceBurn(snapshots)
-	if err := s.channels.UpdateBalanceBurn(c.ID, week); err != nil {
+	burn := storage.EstimateBalanceBurn(snapshots)
+	if err := s.channels.UpdateBalanceBurn(c.ID, burn); err != nil {
 		s.log.Warn("update balance burn failed", "channel", c.Name, "err", err)
 	}
-	recentFrom := at.Add(-recentBurnWindow)
-	i := sort.Search(len(snapshots), func(i int) bool { return !snapshots[i].SampledAt.Before(recentFrom) })
-	return week, storage.EstimateBalanceBurn(snapshots[i:])
+	return burn
 }
 
-// checkBalanceDepletion 按近 7 天日均与最近 2 小时速度中较快的一个估算余额用完时间，
-// 预计在 BalanceDepletionLead 内用完时发送 balance_depleting；重复提醒的冷却见 Dispatcher.suppress。
+// checkBalanceDepletion 按最近的消耗速度估算余额用完时间，预计在 BalanceDepletionLead 内用完时
+// 发送 balance_depleting；重复提醒的冷却见 Dispatcher.suppress。
 // 余额已经不大于 0 时不再提醒（设置了阈值的渠道会收到 balance_low）。
-func (s *Service) checkBalanceDepletion(ctx context.Context, c *storage.Channel, balance float64, at time.Time, week, recent *storage.BalanceBurn) {
+func (s *Service) checkBalanceDepletion(ctx context.Context, c *storage.Channel, balance float64, at time.Time, burn *storage.BalanceBurn) {
 	lead := s.dispatcher.Policy().BalanceDepletionLead
-	if lead <= 0 || balance <= 0 {
-		return
-	}
-	var dailyCost float64
-	var basis string
-	if week != nil && week.DailyCost > 0 {
-		dailyCost = week.DailyCost
-		basis = fmt.Sprintf("近 %s日均消耗 %.4f", formatSpanHours(week.SpanHours), week.DailyCost)
-	}
-	if recent != nil && recent.DailyCost > dailyCost {
-		dailyCost = recent.DailyCost
-		basis = fmt.Sprintf("最近 %s每小时消耗约 %.4f", formatSpanHours(recent.SpanHours), recent.DailyCost/24)
-	}
-	if dailyCost <= 0 {
+	if lead <= 0 || balance <= 0 || burn == nil || burn.DailyCost <= 0 {
 		return
 	}
 	// 先用小时数比较，避免余额很多、消耗很少时换算成 time.Duration 溢出。
-	hours := balance / dailyCost * 24
+	hours := balance / burn.DailyCost * 24
 	if hours > lead.Hours() {
 		return
 	}
 	remaining := time.Duration(hours * float64(time.Hour))
 	depletesAt := at.Add(remaining)
-	body := fmt.Sprintf("渠道：%s\n当前余额：%.4f\n预计用完：%s（约 %s后）\n估算依据：%s\n提醒阈值：预计 %s内用完",
-		c.Name, balance, depletesAt.Format("01-02 15:04"), formatDurationHours(remaining), basis, formatDurationHours(lead))
+	body := fmt.Sprintf("渠道：%s\n当前余额：%.4f\n预计用完：%s（约 %s后）\n估算依据：最近 %.0f 小时每小时消耗约 %.4f\n提醒阈值：预计 %s内用完",
+		c.Name, balance, depletesAt.Format("01-02 15:04"), formatDurationHours(remaining), burn.SpanHours, burn.DailyCost/24, formatDurationHours(lead))
 	_ = s.dispatcher.Dispatch(ctx, notify.Message{
 		Event:     storage.EventBalanceDepleting,
 		ChannelID: c.ID,
 		Subject:   fmt.Sprintf("%s 余额预计 %s 用完", c.Name, depletesAt.Format("15:04")),
 		Body:      body,
 	})
-}
-
-// formatSpanHours 估算样本跨度的写法：不足 2 天按小时，否则按天。
-func formatSpanHours(hours float64) string {
-	if hours < 48 {
-		return fmt.Sprintf("%.0f 小时", hours)
-	}
-	return fmt.Sprintf("%.1f 天", hours/24)
 }
 
 // RefreshRates 单个渠道倍率刷新，可被 API 手动触发。

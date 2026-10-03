@@ -83,9 +83,9 @@ type Channel struct {
 	TotalCost     *float64   `json:"total_cost,omitempty"`
 	LastError     string     `gorm:"type:text" json:"last_error,omitempty"`
 
-	// 余额消耗估算，每次采集余额后用近 BalanceBurnWindow 的余额快照重新计算（见 EstimateBalanceBurn），
-	// 样本不足时两者都为空。前端据此和 LastBalance / LastBalanceAt 推算预计用完时间。
-	BalanceDailyCost     *float64 `json:"balance_daily_cost,omitempty"`      // 日均消耗，只累计余额下降，充值等上涨不计
+	// 余额消耗速度估算，每次采集余额后用最近 BalanceBurnWindow（2 小时）的余额快照重新计算
+	// （见 EstimateBalanceBurn），样本不足时两者都为空。前端据此和 LastBalance / LastBalanceAt 推算预计用完时间。
+	BalanceDailyCost     *float64 `json:"balance_daily_cost,omitempty"`      // 按最近速度折算的日消耗，只累计余额下降，充值等上涨不计
 	BalanceCostSpanHours *float64 `json:"balance_cost_span_hours,omitempty"` // 参与估算的样本跨度（小时）
 
 	CreatedAt time.Time `json:"created_at"`

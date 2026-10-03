@@ -112,7 +112,7 @@ type RetentionConfig struct {
 //   - BalanceLowCooldownMinutes：同一渠道的 balance_low 在 X 分钟内不重复推送。
 //     0 = 不冷却（每次扫描发现仍 < 阈值都发）。冷却状态持久化在数据库的
 //     notification_cooldowns 表，跨重启生效。
-//   - BalanceDepletionLeadMinutes：按消耗速度估算余额将在 X 分钟内用完时推送 balance_depleting。
+//   - BalanceDepletionLeadMinutes：按最近 2 小时的消耗速度估算余额将在 X 分钟内用完时推送 balance_depleting。
 //     0 = 关闭。同一渠道在 X 与 BalanceLowCooldownMinutes 中较长的时间内只提醒一次。
 //   - SendMaxAttempts：单条通知发送失败时最多尝试次数（含首次）。
 //     1 = 不重试。重试采用指数退避：1s / 2s / 4s …，上限 30s。
