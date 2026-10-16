@@ -159,8 +159,9 @@ func (rt *Runtime) forwardStreamPlan(ctx context.Context, c *gin.Context, call u
 			release(true)
 			return
 		}
+		grace := upstreamDrainGrace // 在请求协程里读，后台协程只用副本
 		go func() {
-			timer := time.NewTimer(upstreamDrainGrace)
+			timer := time.NewTimer(grace)
 			defer timer.Stop()
 			select {
 			case <-drainUntilEOF:
