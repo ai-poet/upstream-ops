@@ -1,9 +1,11 @@
 // Package gateway 实现 OpenAI / Anthropic / Responses 兼容的请求转发网关。
 //
 // 分层：
-//   - Service：组装根，持有仓储与配置，对外 API 通过薄委托保持兼容；
-//   - AdminService：管理面（分组 / 密钥 / 路由 / 直连渠道 / 模型同步）；
-//   - Runtime：数据面（鉴权 / 转发 / 流式 / 公开端点 / 用量落库）。
+//   - core：两面共用的依赖与状态（仓储、运行时配置、配置缓存、源分组缓存、上游 HTTP 客户端、上游目标解析），见 core_*.go；
+//   - Runtime：数据面（鉴权 / 转发 / 流式 / 公开端点 / 用量落库），见 runtime_*.go；
+//   - AdminService：管理面（分组 / 密钥 / 路由 / 直连渠道 / 模型同步），见 admin_*.go；
+//     要用数据面能力（探测转发、拉上游模型）时显式经 rt 字段，数据面不依赖管理面；
+//   - Service：组装根，只负责构造与生命周期（启动 / 停止后台任务、下发配置）。调用方用 svc.Admin / svc.Runtime。
 //
 // 协议互转见子包 protocol；运行时默认值见 config.DefaultGateway*，可由设置页 gateway 段覆盖。
 package gateway
@@ -39,9 +41,8 @@ type ChannelAPI interface {
 	RevealAPIKey(ctx context.Context, channelID uint, keyID int64) (string, error)
 }
 
-// Service 网关领域服务组装根。
-// 管理面操作见 Admin；数据面转发见 Runtime；公开方法多为委托以保持调用方兼容。
-type Service struct {
+// core 管理面与数据面共用的依赖与状态。Runtime 与 AdminService 都持有同一个 *core。
+type core struct {
 	Groups     *storage.GatewayGroups
 	Keys       *storage.GatewayKeys
 	Routes     *storage.GatewayRoutes
@@ -53,11 +54,6 @@ type Service struct {
 	Cipher     *crypto.Cipher
 	Pricing    *PricingCatalog
 	Log        *slog.Logger
-
-	// Admin 管理面；嵌入 *Service 共享依赖。
-	Admin *AdminService
-	// Runtime 数据面；嵌入 *Service 共享依赖。
-	Runtime *Runtime
 
 	mu          sync.RWMutex
 	proxyConfig config.ProxyConfig
@@ -81,7 +77,7 @@ type Service struct {
 	autoRecoverMu   sync.Mutex
 	autoRecoverStop chan struct{}
 
-	// 热路径配置缓存（密钥 / 分组 / 路由 / 渠道，见 runtime_config_cache.go）
+	// 热路径配置缓存（密钥 / 分组 / 路由 / 渠道，见 core_config_cache.go）
 	configCacheOnce sync.Once
 	cfgCache        *runtimeConfigCache
 
@@ -91,6 +87,16 @@ type Service struct {
 	// 转发用的 HTTP 客户端，按「代理 + 转发超时」复用连接（见 httpClientForTarget）
 	upstreamClientsMu sync.Mutex
 	upstreamClients   map[string]*http.Client
+}
+
+// Service 网关组装根：构造 core / Admin / Runtime，管理后台任务与配置下发。
+// 管理面操作走 Admin，数据面转发走 Runtime；仓储与配置字段可经 core 直接读写。
+type Service struct {
+	core
+	// Admin 管理面。
+	Admin *AdminService
+	// Runtime 数据面。
+	Runtime *Runtime
 }
 
 type modelsCacheEntry struct {
@@ -115,7 +121,7 @@ func NewService(
 	cipher *crypto.Cipher,
 	log *slog.Logger,
 ) *Service {
-	s := &Service{
+	s := &Service{core: core{
 		Groups:             groups,
 		Keys:               keys,
 		Routes:             routes,
@@ -131,9 +137,9 @@ func NewService(
 		modelsCache:        map[uint]modelsCacheEntry{},
 		channelGroupsCache: map[uint]channelGroupsCacheEntry{},
 		tasks:              newTaskAffinity(),
-	}
-	s.Admin = &AdminService{Service: s}
-	s.Runtime = &Runtime{Service: s}
+	}}
+	s.Runtime = &Runtime{core: &s.core}
+	s.Admin = &AdminService{core: &s.core, rt: s.Runtime}
 	return s
 }
 

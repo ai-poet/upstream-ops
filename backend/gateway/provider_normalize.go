@@ -7,7 +7,7 @@ import (
 	"github.com/bejix/upstream-ops/backend/storage"
 )
 
-func (svc *Service) normalizeUpstreamProtocol(v string) string {
+func (svc *core) normalizeUpstreamProtocol(v string) string {
 	up := strings.ToLower(strings.TrimSpace(v))
 	switch up {
 	case storage.GatewayUpstreamProtocolOpenAI,
@@ -30,11 +30,11 @@ func (svc *Service) normalizeUpstreamProtocol(v string) string {
 	}
 }
 
-func (svc *Service) normalizeProviderProtocol(v string) string {
+func (svc *core) normalizeProviderProtocol(v string) string {
 	return svc.normalizeUpstreamProtocol(v)
 }
 
-func (svc *Service) normalizeProviderAuthStyle(v string) string {
+func (svc *core) normalizeProviderAuthStyle(v string) string {
 	s := strings.ToLower(strings.TrimSpace(v))
 	switch s {
 	case storage.GatewayProviderAuthBearer, storage.GatewayProviderAuthXAPIKey:
@@ -44,7 +44,7 @@ func (svc *Service) normalizeProviderAuthStyle(v string) string {
 	}
 }
 
-func (svc *Service) apiKeyHint(secret string) string {
+func (a *AdminService) apiKeyHint(secret string) string {
 	secret = strings.TrimSpace(secret)
 	if secret == "" {
 		return ""

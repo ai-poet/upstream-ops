@@ -259,11 +259,11 @@ func TestUpdateGroupValidatesPromptRuleKeys(t *testing.T) {
 	groups := storage.NewGatewayGroups(db)
 	keys := storage.NewGatewayKeys(db)
 	svc := NewService(groups, keys, storage.NewGatewayRoutes(db), nil, nil, nil, nil, nil, nil)
-	first, err := svc.CreateGroup(CreateGroupInput{Name: "prompt-first"})
+	first, err := svc.Admin.CreateGroup(CreateGroupInput{Name: "prompt-first"})
 	if err != nil {
 		t.Fatalf("create first: %v", err)
 	}
-	second, err := svc.CreateGroup(CreateGroupInput{Name: "prompt-second"})
+	second, err := svc.Admin.CreateGroup(CreateGroupInput{Name: "prompt-second"})
 	if err != nil {
 		t.Fatalf("create second: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestUpdateGroupValidatesPromptRuleKeys(t *testing.T) {
 	}
 
 	rules := fmt.Sprintf(`[{"text":"first","key_scope":"selected","key_ids":[%d,%d,%d]},{"text":"second","key_scope":"all"}]`, firstKey.ID, secondKey.ID, firstKey.ID)
-	updated, err := svc.UpdateGroup(first.ID, UpdateGroupInput{SystemPromptRulesJSON: &rules})
+	updated, err := svc.Admin.UpdateGroup(first.ID, UpdateGroupInput{SystemPromptRulesJSON: &rules})
 	if err != nil {
 		t.Fatalf("update rules: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestUpdateGroupValidatesPromptRuleKeys(t *testing.T) {
 	}
 
 	crossGroup := fmt.Sprintf(`[{"text":"bad","key_scope":"selected","key_ids":[%d,%d]}]`, firstKey.ID, otherKey.ID)
-	if _, err := svc.UpdateGroup(first.ID, UpdateGroupInput{SystemPromptRulesJSON: &crossGroup}); err == nil {
+	if _, err := svc.Admin.UpdateGroup(first.ID, UpdateGroupInput{SystemPromptRulesJSON: &crossGroup}); err == nil {
 		t.Fatal("expected cross-group key rejection")
 	}
 }
@@ -297,7 +297,7 @@ func TestDeleteKeyRemovesSystemPromptRuleReference(t *testing.T) {
 	groups := storage.NewGatewayGroups(db)
 	keys := storage.NewGatewayKeys(db)
 	svc := NewService(groups, keys, storage.NewGatewayRoutes(db), nil, nil, nil, nil, nil, nil)
-	group, err := svc.CreateGroup(CreateGroupInput{Name: "prompt-delete"})
+	group, err := svc.Admin.CreateGroup(CreateGroupInput{Name: "prompt-delete"})
 	if err != nil {
 		t.Fatalf("create group: %v", err)
 	}
@@ -306,10 +306,10 @@ func TestDeleteKeyRemovesSystemPromptRuleReference(t *testing.T) {
 		t.Fatalf("create key: %v", err)
 	}
 	rules := fmt.Sprintf(`[{"text":"selected","key_scope":"selected","key_ids":[%d]},{"text":"all","key_scope":"all"}]`, key.ID)
-	if _, err := svc.UpdateGroup(group.ID, UpdateGroupInput{SystemPromptRulesJSON: &rules}); err != nil {
+	if _, err := svc.Admin.UpdateGroup(group.ID, UpdateGroupInput{SystemPromptRulesJSON: &rules}); err != nil {
 		t.Fatalf("update rules: %v", err)
 	}
-	if err := svc.DeleteKey(key.ID); err != nil {
+	if err := svc.Admin.DeleteKey(key.ID); err != nil {
 		t.Fatalf("delete key: %v", err)
 	}
 	updated, err := groups.FindByID(group.ID)

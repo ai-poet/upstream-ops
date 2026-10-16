@@ -43,7 +43,7 @@ func isProtocolConvertError(err error) bool {
 }
 
 // planUpstreamRequest 按入站 / 上游协议准备转发 body 与 path，并给出后续响应转换方案。
-func (svc *Service) planUpstreamRequest(
+func (svc *core) planUpstreamRequest(
 	ctx context.Context,
 	body []byte,
 	inbound, upstream protocolKind,

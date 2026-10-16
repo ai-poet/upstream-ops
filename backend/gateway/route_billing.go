@@ -6,7 +6,7 @@ import (
 	"github.com/bejix/upstream-ops/backend/storage"
 )
 
-func (svc *Service) applyProviderRouteBilling(route *storage.GatewayRoute, p *storage.GatewayProvider) {
+func (a *AdminService) applyProviderRouteBilling(route *storage.GatewayRoute, p *storage.GatewayProvider) {
 	if route == nil || p == nil {
 		return
 	}

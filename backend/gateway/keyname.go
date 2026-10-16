@@ -6,19 +6,19 @@ import (
 	"strings"
 )
 
-func (svc *Service) stableUpstreamKeyName(channelID uint, sourceGroupID *int64, sourceGroupName string) string {
+func (a *AdminService) stableUpstreamKeyName(channelID uint, sourceGroupID *int64, sourceGroupName string) string {
 	if sourceGroupID != nil && *sourceGroupID > 0 {
 		return fmt.Sprintf("uops-ch%d-sg%d", channelID, *sourceGroupID)
 	}
 	name := strings.TrimSpace(sourceGroupName)
 	if name != "" {
-		return fmt.Sprintf("uops-ch%d-sgn-%s", channelID, svc.slugForKeyName(name))
+		return fmt.Sprintf("uops-ch%d-sgn-%s", channelID, a.slugForKeyName(name))
 	}
 	return fmt.Sprintf("uops-ch%d-default", channelID)
 }
 
 // slugForKeyName 把源分组名压成适合作为 Key 名后缀的短串。
-func (svc *Service) slugForKeyName(s string) string {
+func (a *AdminService) slugForKeyName(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return "x"
@@ -44,20 +44,20 @@ func (svc *Service) slugForKeyName(s string) string {
 	out := strings.Trim(b.String(), "-")
 	if out == "" {
 		// 全是非 ASCII：用 FNV 短哈希，保证同名稳定、不同名尽量不撞
-		h := svc.fnv32a(s)
+		h := a.fnv32a(s)
 		return fmt.Sprintf("h%x", h)
 	}
 	if len(out) > 48 {
 		out = out[:48]
 	}
 	// 混有非 ASCII 时附加短哈希，降低「不同中文名压成相同 slug」的概率
-	if svc.containsNonASCII(s) {
-		return out + "-" + fmt.Sprintf("%x", svc.fnv32a(s)&0xffff)
+	if a.containsNonASCII(s) {
+		return out + "-" + fmt.Sprintf("%x", a.fnv32a(s)&0xffff)
 	}
 	return out
 }
 
-func (svc *Service) containsNonASCII(s string) bool {
+func (a *AdminService) containsNonASCII(s string) bool {
 	for _, r := range s {
 		if r > 127 {
 			return true
@@ -66,7 +66,7 @@ func (svc *Service) containsNonASCII(s string) bool {
 	return false
 }
 
-func (svc *Service) fnv32a(s string) uint32 {
+func (a *AdminService) fnv32a(s string) uint32 {
 	const (
 		offset32 = 2166136261
 		prime32  = 16777619

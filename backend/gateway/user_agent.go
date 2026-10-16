@@ -66,7 +66,7 @@ func withDefaultUserAgent(resolved, defaultUA string) string {
 }
 
 // applyRouteUserAgent 把解析后的 UA 写入 upstreamTarget（转发：空=透传客户端）。
-func (rt *Runtime) applyRouteUserAgent(target *upstreamTarget, group *storage.GatewayGroup, route *storage.GatewayRoute) {
+func (svc *core) applyRouteUserAgent(target *upstreamTarget, group *storage.GatewayGroup, route *storage.GatewayRoute) {
 	if target == nil {
 		return
 	}

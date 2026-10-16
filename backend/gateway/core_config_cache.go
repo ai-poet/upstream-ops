@@ -1,4 +1,4 @@
-// 数据面：热路径配置缓存。
+// 共用：热路径配置缓存（数据面每个请求读，管理面解析上游目标也读）。
 //
 // 鉴权（密钥、分组）、选路（路由）、取上游目标（直连渠道、监控渠道）每个请求都要读，以前每次都查库；
 // SQLite 只有一个连接，这些读和用量写排在同一个队列里，是并发吞吐的主要瓶颈。
@@ -92,9 +92,9 @@ type runtimeConfigCache struct {
 	channels  *configCache[uint, storage.Channel]
 }
 
-func (s *Service) configCache() *runtimeConfigCache {
-	s.configCacheOnce.Do(func() {
-		s.cfgCache = &runtimeConfigCache{
+func (svc *core) configCache() *runtimeConfigCache {
+	svc.configCacheOnce.Do(func() {
+		svc.cfgCache = &runtimeConfigCache{
 			keys:      newConfigCache[string, storage.GatewayKey](configCacheTTL, true),
 			groups:    newConfigCache[uint, storage.GatewayGroup](configCacheTTL, true),
 			routes:    newConfigCache[uint, []storage.GatewayRoute](configCacheTTL, true),
@@ -102,14 +102,14 @@ func (s *Service) configCache() *runtimeConfigCache {
 			channels:  newConfigCache[uint, storage.Channel](channelCacheTTL, false),
 		}
 	})
-	return s.cfgCache
+	return svc.cfgCache
 }
 
 // 以下返回值都是缓存的副本，调用方可以放心修改。
 
-func (s *Service) cachedKeyByHash(hash string) (*storage.GatewayKey, error) {
-	k, err := s.configCache().keys.get(hash, func() (storage.GatewayKey, error) {
-		item, err := s.Keys.FindByHash(hash)
+func (svc *core) cachedKeyByHash(hash string) (*storage.GatewayKey, error) {
+	k, err := svc.configCache().keys.get(hash, func() (storage.GatewayKey, error) {
+		item, err := svc.Keys.FindByHash(hash)
 		if err != nil {
 			return storage.GatewayKey{}, err
 		}
@@ -121,9 +121,9 @@ func (s *Service) cachedKeyByHash(hash string) (*storage.GatewayKey, error) {
 	return &k, nil
 }
 
-func (s *Service) cachedGroup(id uint) (*storage.GatewayGroup, error) {
-	g, err := s.configCache().groups.get(id, func() (storage.GatewayGroup, error) {
-		item, err := s.Groups.FindByID(id)
+func (svc *core) cachedGroup(id uint) (*storage.GatewayGroup, error) {
+	g, err := svc.configCache().groups.get(id, func() (storage.GatewayGroup, error) {
+		item, err := svc.Groups.FindByID(id)
 		if err != nil {
 			return storage.GatewayGroup{}, err
 		}
@@ -135,9 +135,9 @@ func (s *Service) cachedGroup(id uint) (*storage.GatewayGroup, error) {
 	return &g, nil
 }
 
-func (s *Service) cachedRoutes(groupID uint) ([]storage.GatewayRoute, error) {
-	list, err := s.configCache().routes.get(groupID, func() ([]storage.GatewayRoute, error) {
-		return s.Routes.ListByGroupID(groupID)
+func (svc *core) cachedRoutes(groupID uint) ([]storage.GatewayRoute, error) {
+	list, err := svc.configCache().routes.get(groupID, func() ([]storage.GatewayRoute, error) {
+		return svc.Routes.ListByGroupID(groupID)
 	})
 	if err != nil {
 		return nil, err
@@ -145,9 +145,9 @@ func (s *Service) cachedRoutes(groupID uint) ([]storage.GatewayRoute, error) {
 	return append([]storage.GatewayRoute(nil), list...), nil
 }
 
-func (s *Service) cachedProvider(id uint) (*storage.GatewayProvider, error) {
-	p, err := s.configCache().providers.get(id, func() (storage.GatewayProvider, error) {
-		item, err := s.Providers.FindByID(id)
+func (svc *core) cachedProvider(id uint) (*storage.GatewayProvider, error) {
+	p, err := svc.configCache().providers.get(id, func() (storage.GatewayProvider, error) {
+		item, err := svc.Providers.FindByID(id)
 		if err != nil {
 			return storage.GatewayProvider{}, err
 		}
@@ -159,9 +159,9 @@ func (s *Service) cachedProvider(id uint) (*storage.GatewayProvider, error) {
 	return &p, nil
 }
 
-func (s *Service) cachedChannel(id uint) (*storage.Channel, error) {
-	ch, err := s.configCache().channels.get(id, func() (storage.Channel, error) {
-		item, err := s.Channels.FindByID(id)
+func (svc *core) cachedChannel(id uint) (*storage.Channel, error) {
+	ch, err := svc.configCache().channels.get(id, func() (storage.Channel, error) {
+		item, err := svc.Channels.FindByID(id)
 		if err != nil {
 			return storage.Channel{}, err
 		}

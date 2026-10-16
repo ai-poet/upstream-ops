@@ -79,7 +79,7 @@ func TestModelRouteIDs_LegacyChannelIDs(t *testing.T) {
 	svc := NewService(nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	group := &storage.GatewayGroup{ModelAwareRouting: true, ModelsJSON: `[{"id":"gpt-4o","source":"sync","channel_ids":[1,2]}]`}
 	routes := []storage.GatewayRoute{{ID: 10, SourceChannelID: 1}, {ID: 20, SourceChannelID: 2}, {ID: 30, SourceChannelID: 3}}
-	ids := svc.modelRouteIDs(group, routes, "gpt-4o")
+	ids := svc.Runtime.modelRouteIDs(group, routes, "gpt-4o")
 	if _, ok := ids[10]; !ok {
 		t.Fatalf("route 10 not preferred: %v", ids)
 	}

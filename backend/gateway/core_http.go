@@ -1,0 +1,169 @@
+// 共用：运行时配置、代理、超时与按目标构建 HTTP Client，拉上游模型列表。
+package gateway
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/bejix/upstream-ops/backend/config"
+	"github.com/bejix/upstream-ops/backend/connector"
+	"github.com/bejix/upstream-ops/backend/storage"
+)
+
+func (svc *core) gatewayRuntime() config.GatewayConfig {
+	svc.mu.RLock()
+	cfg, ready := svc.gatewayCfg, svc.gatewayCfgReady
+	svc.mu.RUnlock()
+	if ready {
+		return cfg
+	}
+	return cfg.WithDefaults()
+}
+
+func (svc *core) proxyURLForChannel(ch *storage.Channel) string {
+	return svc.proxyURLForTarget(ch, nil)
+}
+
+// proxyURLForTarget 监控渠道或直连 Provider 任一方开启 proxy_enabled，且全局代理启用时返回代理 URL。
+
+func (svc *core) proxyURLForTarget(ch *storage.Channel, provider *storage.GatewayProvider) string {
+	svc.mu.RLock()
+	pc := svc.proxyConfig
+	svc.mu.RUnlock()
+	if !pc.Enabled {
+		return ""
+	}
+	useProxy := false
+	if ch != nil && ch.ProxyEnabled {
+		useProxy = true
+	}
+	if provider != nil && provider.ProxyEnabled {
+		useProxy = true
+	}
+	if !useProxy {
+		return ""
+	}
+	u, err := pc.ActiveURL()
+	if err != nil {
+		return ""
+	}
+	return u
+}
+
+func (svc *core) httpClientForChannel(ch *storage.Channel) *http.Client {
+	return svc.httpClientForTarget(ch, nil)
+}
+
+// httpClientForTarget 转发用的 HTTP 客户端：按「代理 + 转发超时」复用，同一上游的连接（含 HTTP/2）在请求间共享。
+// 以前每个请求新建 Transport，每次都要重新 TCP + TLS 握手，用完的空闲连接还要挂 90 秒才释放。
+func (svc *core) httpClientForTarget(ch *storage.Channel, provider *storage.GatewayProvider) *http.Client {
+	// 网关转发超时由 gateway.forwardTimeoutSeconds 控制（与监控上游 timeout 分离）。
+	timeout := svc.gatewayRuntime().ForwardTimeout()
+	proxy := svc.proxyURLForTarget(ch, provider)
+	key := proxy + "|" + timeout.String()
+
+	svc.upstreamClientsMu.Lock()
+	defer svc.upstreamClientsMu.Unlock()
+	if c := svc.upstreamClients[key]; c != nil {
+		return c
+	}
+	if svc.upstreamClients == nil {
+		svc.upstreamClients = map[string]*http.Client{}
+	}
+	c := newUpstreamClient(proxy, timeout)
+	svc.upstreamClients[key] = c
+	return c
+}
+
+func newUpstreamClient(proxy string, timeout time.Duration) *http.Client {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		// 同一上游的并发连接都留着复用（标准库默认每个 host 只留 2 个空闲连接）
+		MaxIdleConns:          1000,
+		MaxIdleConnsPerHost:   200,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     true,
+	}
+	if proxy != "" {
+		if u, err := url.Parse(proxy); err == nil {
+			transport.Proxy = http.ProxyURL(u)
+		}
+	}
+	return &http.Client{Timeout: timeout, Transport: transport}
+}
+
+// resetUpstreamClients 代理或转发超时变了：丢掉缓存的客户端并关掉它们的空闲连接。
+func (svc *core) resetUpstreamClients() {
+	svc.upstreamClientsMu.Lock()
+	old := svc.upstreamClients
+	svc.upstreamClients = nil
+	svc.upstreamClientsMu.Unlock()
+	for _, c := range old {
+		c.CloseIdleConnections()
+	}
+}
+
+// ---------- key helpers ----------
+
+// fetchUpstreamModels 拉取上游 /v1/models。
+// userAgent 为组+路由解析结果；空则回落默认 UA（无客户端可透传）。
+func (svc *core) fetchUpstreamModels(ctx context.Context, ch *storage.Channel, apiKey, userAgent string) ([]string, error) {
+	client := svc.httpClientForChannel(ch)
+	client.Timeout = 30 * time.Second
+	url := strings.TrimRight(ch.SiteURL, "/") + "/v1/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build GET %s: %w", url, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", withDefaultUserAgent(userAgent, svc.defaultUpstreamUserAgent()))
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GET %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("GET %s: read body: %w", url, err)
+	}
+	if resp.StatusCode >= 400 {
+		// 保留 URL + 状态码 + 上游 body 摘要，便于模型同步结果页排查（如 base_url 多写/少写 /v1）
+		return nil, fmt.Errorf("GET %s: %w", url, connector.HTTPStatusError(resp.StatusCode, body))
+	}
+	var parsed struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		snippet := svc.extractUpstreamErrorSnippet(body)
+		if snippet == "" {
+			snippet = svc.truncateRunes(string(body), 200)
+		}
+		if snippet == "" {
+			return nil, fmt.Errorf("GET %s: HTTP %d invalid models JSON: %w", url, resp.StatusCode, err)
+		}
+		return nil, fmt.Errorf("GET %s: HTTP %d invalid models JSON (%v): %s", url, resp.StatusCode, err, snippet)
+	}
+	out := make([]string, 0, len(parsed.Data))
+	for _, d := range parsed.Data {
+		if strings.TrimSpace(d.ID) != "" {
+			out = append(out, d.ID)
+		}
+	}
+	return out, nil
+}

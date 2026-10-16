@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/bejix/upstream-ops/backend/gateway/protocol"
-	"github.com/bejix/upstream-ops/backend/storage"
 	"github.com/gin-gonic/gin"
 )
 
@@ -347,48 +346,4 @@ func (rt *Runtime) forwardOnce(ctx context.Context, call upstreamCall) (status i
 		}
 	}
 	return resp.StatusCode, resp.Header.Clone(), data, ft, nil
-}
-
-// resolveUpstreamTarget 路由对应的上游地址与密钥（直连 provider 或监控渠道）。
-func (rt *Runtime) resolveUpstreamTarget(route *storage.GatewayRoute) (*upstreamTarget, error) {
-	if route == nil {
-		return nil, errors.New("route is nil")
-	}
-	if route.NormalizeSourceKind() == storage.GatewayRouteSourceProvider {
-		if rt.Providers == nil {
-			return nil, errors.New("providers not configured")
-		}
-		if route.GatewayProviderID == 0 {
-			return nil, errors.New("gateway_provider_id is required")
-		}
-		p, err := rt.cachedProvider(route.GatewayProviderID)
-		if err != nil {
-			return nil, fmt.Errorf("provider not found: %w", err)
-		}
-		if !p.Enabled {
-			return nil, fmt.Errorf("provider %q is disabled", p.Name)
-		}
-		secret, err := rt.Cipher.Decrypt(p.APIKeyCipher)
-		if err != nil || strings.TrimSpace(secret) == "" {
-			return nil, errors.New("provider api key missing or decrypt failed")
-		}
-		return &upstreamTarget{
-			BaseURL:  strings.TrimRight(p.BaseURL, "/"),
-			APIKey:   secret,
-			Provider: p,
-		}, nil
-	}
-	ch, err := rt.cachedChannel(route.SourceChannelID)
-	if err != nil {
-		return nil, fmt.Errorf("channel not found: %w", err)
-	}
-	secret, err := rt.Cipher.Decrypt(route.SourceAPIKeyCipher)
-	if err != nil || strings.TrimSpace(secret) == "" {
-		return nil, errors.New("missing upstream api key; run ensure-keys")
-	}
-	return &upstreamTarget{
-		BaseURL: strings.TrimRight(ch.SiteURL, "/"),
-		APIKey:  secret,
-		Channel: ch,
-	}, nil
 }

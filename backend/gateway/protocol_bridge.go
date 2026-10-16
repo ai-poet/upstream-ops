@@ -17,14 +17,14 @@ const (
 	protocolAnthropic = protocol.KindAnthropic
 )
 
-func (svc *Service) prepareUpstreamRequest(
+func (a *AdminService) prepareUpstreamRequest(
 	body []byte,
 	inbound, upstream protocolKind,
 	model string,
 	stream bool,
 	inboundPath string,
 ) (fwd []byte, upstreamPath string, converted bool, err error) {
-	fwd, upstreamPath, plan, err := svc.planUpstreamRequest(context.Background(), body, inbound, upstream, "", model, stream, inboundPath)
+	fwd, upstreamPath, plan, err := a.planUpstreamRequest(context.Background(), body, inbound, upstream, "", model, stream, inboundPath)
 	if err != nil {
 		return nil, "", false, err
 	}
@@ -33,7 +33,7 @@ func (svc *Service) prepareUpstreamRequest(
 
 // prepareLegacyUpstreamRequest 旧转换器路径（engine=legacy，或 relaykit 不支持的 tool_search 往返）。
 // Responses 降级到 Chat / Anthropic 时保留可逆的工具映射。
-func (svc *Service) prepareLegacyUpstreamRequest(
+func (svc *core) prepareLegacyUpstreamRequest(
 	fwd []byte,
 	in, up protocolKind,
 	model string,
@@ -55,7 +55,7 @@ func (svc *Service) prepareLegacyUpstreamRequest(
 }
 
 // convertUpstreamResponse 将上游响应转回客户端协议。
-func (svc *Service) convertUpstreamResponse(
+func (rt *Runtime) convertUpstreamResponse(
 	respBody []byte,
 	inbound, upstream protocolKind,
 	model string,
@@ -70,12 +70,12 @@ func (svc *Service) convertUpstreamResponse(
 
 	// 流式：Anthropic↔OpenAI SSE 互转；Responses 相关尽力转换
 	if stream {
-		return protocol.ConvertStreamResponse(in, up, respBody, model, svc.wrapAsOpenAISSE, svc.tryExtractJSONObject)
+		return protocol.ConvertStreamResponse(in, up, respBody, model, rt.wrapAsOpenAISSE, rt.tryExtractJSONObject)
 	}
 	return protocol.ConvertResponse(in, up, respBody, model)
 }
 
-func (svc *Service) convertUpstreamResponseWithToolBridge(
+func (rt *Runtime) convertUpstreamResponseWithToolBridge(
 	respBody []byte,
 	inbound, upstream protocolKind,
 	model string,
@@ -98,11 +98,11 @@ func (svc *Service) convertUpstreamResponseWithToolBridge(
 			}
 		}
 	}
-	return svc.convertUpstreamResponse(respBody, inbound, upstream, model, stream, converted)
+	return rt.convertUpstreamResponse(respBody, inbound, upstream, model, stream, converted)
 }
 
 // tryExtractJSONObject 从可能的 SSE 缓冲中取最后一段 JSON 对象（Responses 流结束时的完整事件）。
-func (svc *Service) tryExtractJSONObject(body []byte) []byte {
+func (rt *Runtime) tryExtractJSONObject(body []byte) []byte {
 	trim := bytes.TrimSpace(body)
 	if len(trim) == 0 {
 		return body
@@ -127,7 +127,7 @@ func (svc *Service) tryExtractJSONObject(body []byte) []byte {
 	return body
 }
 
-func (svc *Service) wrapAsOpenAISSE(chatJSON []byte) []byte {
+func (rt *Runtime) wrapAsOpenAISSE(chatJSON []byte) []byte {
 	// 将完整 chat.completion 拆成流式 chunk + DONE。
 	// 工具调用：流式 delta.tool_calls 需带 index，否则多数客户端忽略。
 	var m map[string]any
@@ -222,11 +222,11 @@ func (svc *Service) wrapAsOpenAISSE(chatJSON []byte) []byte {
 	return []byte(b.String())
 }
 
-func (svc *Service) parseUsageByKind(body []byte, stream bool, kind protocolKind) UsageTokens {
+func (rt *Runtime) parseUsageByKind(body []byte, stream bool, kind protocolKind) UsageTokens {
 	return ParseUsage(body, stream, kind)
 }
 
-func (svc *Service) convertErrorBody(body []byte, client, upstream protocolKind, converted bool) []byte {
+func (rt *Runtime) convertErrorBody(body []byte, client, upstream protocolKind, converted bool) []byte {
 	in := protocol.NormalizeKind(client)
 	up := protocol.NormalizeKind(upstream)
 	if in == up || len(bytes.TrimSpace(body)) == 0 {

@@ -29,7 +29,7 @@ func TestIsSourceGroupIDPlaceholder(t *testing.T) {
 		"something": false,
 	}
 	for in, want := range cases {
-		if got := (*Service)(nil).isSourceGroupIDPlaceholder(in); got != want {
+		if got := (*core)(nil).isSourceGroupIDPlaceholder(in); got != want {
 			t.Fatalf("%q: got %v want %v", in, got, want)
 		}
 	}
@@ -38,25 +38,25 @@ func TestIsSourceGroupIDPlaceholder(t *testing.T) {
 func TestIsFailoverStatus(t *testing.T) {
 	// 默认：仅 0 / 429 / 5xx
 	for _, code := range []int{0, 429, 500, 502, 503} {
-		if !(*Service)(nil).isFailoverStatus(code, false) {
+		if !(&Runtime{core: &core{}}).isFailoverStatus(code, false) {
 			t.Fatalf("default: status %d should failover", code)
 		}
 	}
 	for _, code := range []int{200, 400, 401, 403, 404, 408, 422} {
-		if (*Service)(nil).isFailoverStatus(code, false) {
+		if (&Runtime{core: &core{}}).isFailoverStatus(code, false) {
 			t.Fatalf("default: status %d should NOT failover", code)
 		}
 	}
 	// 开启 4xx 顺延：全部 4xx 可 failover
 	for _, code := range []int{400, 401, 403, 404, 408, 422, 429} {
-		if !(*Service)(nil).isFailoverStatus(code, true) {
+		if !(&Runtime{core: &core{}}).isFailoverStatus(code, true) {
 			t.Fatalf("failover_on_4xx: status %d should failover", code)
 		}
 	}
-	if (*Service)(nil).isFailoverStatus(200, true) {
+	if (&Runtime{core: &core{}}).isFailoverStatus(200, true) {
 		t.Fatalf("failover_on_4xx: 200 should not failover")
 	}
-	if !(*Service)(nil).isFailoverStatus(503, true) {
+	if !(&Runtime{core: &core{}}).isFailoverStatus(503, true) {
 		t.Fatalf("failover_on_4xx: 503 should still failover")
 	}
 }
@@ -67,41 +67,41 @@ func TestEnrichRouteSourceGroupName(t *testing.T) {
 	groups := []connector.APIKeyGroup{
 		{ID: &gid, Name: "测试123"},
 	}
-	(*Service)(nil).enrichRouteSourceGroupName(&route, groups)
+	(*core)(nil).enrichRouteSourceGroupName(&route, groups)
 	if route.SourceGroupName != "测试123" {
 		t.Fatalf("name=%q", route.SourceGroupName)
 	}
 	// 已有真实名不覆盖
 	route.SourceGroupName = "keep"
-	(*Service)(nil).enrichRouteSourceGroupName(&route, groups)
+	(*core)(nil).enrichRouteSourceGroupName(&route, groups)
 	if route.SourceGroupName != "keep" {
 		t.Fatalf("should keep real name, got %q", route.SourceGroupName)
 	}
 	// 占位 id:N 会被替换
 	route.SourceGroupName = "id:31"
-	(*Service)(nil).enrichRouteSourceGroupName(&route, groups)
+	(*core)(nil).enrichRouteSourceGroupName(&route, groups)
 	if route.SourceGroupName != "测试123" {
 		t.Fatalf("placeholder not replaced: %q", route.SourceGroupName)
 	}
 }
 
 func TestIsClientDisconnectAfterCommit(t *testing.T) {
-	if (*Service)(nil).isClientDisconnectAfterCommit(false, nil) {
+	if (&Runtime{core: &core{}}).isClientDisconnectAfterCommit(false, nil) {
 		t.Fatal("no disconnect should be false")
 	}
-	if !(*Service)(nil).isClientDisconnectAfterCommit(true, nil) {
+	if !(&Runtime{core: &core{}}).isClientDisconnectAfterCommit(true, nil) {
 		t.Fatal("disconnect with nil streamErr should count")
 	}
-	if !(*Service)(nil).isClientDisconnectAfterCommit(true, errClientDisconnected) {
+	if !(&Runtime{core: &core{}}).isClientDisconnectAfterCommit(true, errClientDisconnected) {
 		t.Fatal("disconnect with errClientDisconnected should count")
 	}
-	if !(*Service)(nil).isClientDisconnectAfterCommit(true, fmt.Errorf("wrap: %w", errClientDisconnected)) {
+	if !(&Runtime{core: &core{}}).isClientDisconnectAfterCommit(true, fmt.Errorf("wrap: %w", errClientDisconnected)) {
 		t.Fatal("wrapped errClientDisconnected should count")
 	}
-	if (*Service)(nil).isClientDisconnectAfterCommit(true, errors.New("upstream stream idle")) {
+	if (&Runtime{core: &core{}}).isClientDisconnectAfterCommit(true, errors.New("upstream stream idle")) {
 		t.Fatal("real stream error must not count as only-client-disconnect")
 	}
-	if (*Service)(nil).isClientDisconnectAfterCommit(false, errClientDisconnected) {
+	if (&Runtime{core: &core{}}).isClientDisconnectAfterCommit(false, errClientDisconnected) {
 		t.Fatal("stream err without disconnect flag should not count")
 	}
 }
@@ -117,25 +117,25 @@ func TestIsClientContextError(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
 
 	wrapped := errors.New(`Post "https://e.e2.ink/v1/responses": context canceled`)
-	if !(*Service)(nil).isClientContextError(wrapped, c) {
+	if !(&Runtime{core: &core{}}).isClientContextError(wrapped, c) {
 		t.Fatal("want client context error when request ctx canceled")
 	}
-	if !(*Service)(nil).isClientContextError(context.Canceled, c) {
+	if !(&Runtime{core: &core{}}).isClientContextError(context.Canceled, c) {
 		t.Fatal("want context.Canceled recognized")
 	}
 
 	// 入站 context 仍存活：裸 Canceled 不应算客户端取消（避免误伤）
 	c2, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c2.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
-	if (*Service)(nil).isClientContextError(context.Canceled, c2) {
+	if (&Runtime{core: &core{}}).isClientContextError(context.Canceled, c2) {
 		t.Fatal("live request ctx should not treat bare Canceled as client cancel")
 	}
-	if (*Service)(nil).isClientContextError(wrapped, c2) {
+	if (&Runtime{core: &core{}}).isClientContextError(wrapped, c2) {
 		t.Fatal("live request ctx should not treat string-wrapped cancel as client cancel")
 	}
 
 	// 首字超时不是客户端取消
-	if (*Service)(nil).isClientContextError(errFirstTokenTimeout, c) {
+	if (&Runtime{core: &core{}}).isClientContextError(errFirstTokenTimeout, c) {
 		t.Fatal("first token timeout is not client cancel")
 	}
 }
@@ -146,7 +146,7 @@ func TestAnnotateClientContextError(t *testing.T) {
 		Summary: `Post "https://x/v1/responses": context canceled`,
 		Detail:  "transport error\n",
 	}
-	(*Service)(nil).annotateClientContextError(&info, nil, "https://x/v1/responses", "POST", context.Canceled)
+	(&Runtime{core: &core{}}).annotateClientContextError(&info, nil, "https://x/v1/responses", "POST", context.Canceled)
 	if info.Type != "client" {
 		t.Fatalf("type=%s", info.Type)
 	}
@@ -170,15 +170,15 @@ func TestEnsureGatewayRequestID_IgnoresClientHeaders(t *testing.T) {
 	req.Header.Set("X-Upstream-Ops-Request-Id", "client-forged-id")
 	c.Request = req
 
-	id1 := (*Service)(nil).ensureGatewayRequestID(c)
+	id1 := (&Runtime{core: &core{}}).ensureGatewayRequestID(c)
 	if id1 == clientRID || id1 == "client-forged-id" {
 		t.Fatalf("must not adopt client request id, got %q", id1)
 	}
-	if !(*Service)(nil).isGatewayGeneratedRequestID(id1) {
+	if !(&Runtime{core: &core{}}).isGatewayGeneratedRequestID(id1) {
 		t.Fatalf("want gateway 24-hex id, got %q", id1)
 	}
 	// 同请求再次 ensure 应复用
-	id2 := (*Service)(nil).ensureGatewayRequestID(c)
+	id2 := (&Runtime{core: &core{}}).ensureGatewayRequestID(c)
 	if id2 != id1 {
 		t.Fatalf("same request should reuse id: %q vs %q", id1, id2)
 	}
@@ -198,7 +198,7 @@ func TestCopyClientRequestIDHeaders_Passthrough(t *testing.T) {
 	src.Set("X-Upstream-Ops-Request-Id", "forged") // 不得转发网关专用头
 	src.Set("Authorization", "Bearer secret")
 	dst := http.Header{}
-	(*Service)(nil).copyClientRequestIDHeaders(dst, src)
+	(&Runtime{core: &core{}}).copyClientRequestIDHeaders(dst, src)
 	if got := dst.Get("X-Request-Id"); got != "019f51b1-f52c-74c1-9370-db09bab43ffb" {
 		t.Fatalf("X-Request-Id=%q", got)
 	}
@@ -221,7 +221,7 @@ func TestCopyResponseHeaders_PreservesUpstreamRequestID(t *testing.T) {
 	src.Set("X-Request-Id", "upstream-req-abc")
 	src.Set("X-Upstream-Ops-Request-Id", "should-not-copy")
 	src.Set("Cf-Ray", "ray-1")
-	(*Service)(nil).copyResponseHeaders(dst, src)
+	(&Runtime{core: &core{}}).copyResponseHeaders(dst, src)
 	if got := dst.Get("X-Request-Id"); got != "upstream-req-abc" {
 		t.Fatalf("X-Request-Id=%q", got)
 	}
@@ -234,13 +234,13 @@ func TestCopyResponseHeaders_PreservesUpstreamRequestID(t *testing.T) {
 }
 
 func TestIsGatewayGeneratedRequestID(t *testing.T) {
-	if !(*Service)(nil).isGatewayGeneratedRequestID("5381a23b3f0cea2d7b8ff8df") {
+	if !(&Runtime{core: &core{}}).isGatewayGeneratedRequestID("5381a23b3f0cea2d7b8ff8df") {
 		t.Fatal("24 hex should pass")
 	}
-	if (*Service)(nil).isGatewayGeneratedRequestID("019f51b1-f52c-74c1-9370-db09bab43ffb") {
+	if (&Runtime{core: &core{}}).isGatewayGeneratedRequestID("019f51b1-f52c-74c1-9370-db09bab43ffb") {
 		t.Fatal("UUID should fail")
 	}
-	if (*Service)(nil).isGatewayGeneratedRequestID("short") {
+	if (&Runtime{core: &core{}}).isGatewayGeneratedRequestID("short") {
 		t.Fatal("short should fail")
 	}
 }
@@ -255,7 +255,7 @@ func TestBuildUpstreamErrorInfo_HTTP(t *testing.T) {
 	h.Set("Server", "Caddy")
 	h.Set("Authorization", "Bearer secret")
 
-	info := (*Service)(nil).buildUpstreamErrorInfo(nil, 503, h, body, "https://api.example/v1/chat/completions", "POST")
+	info := (&Runtime{core: &core{}}).buildUpstreamErrorInfo(nil, 503, h, body, "https://api.example/v1/chat/completions", "POST")
 	if info.Type != "http" {
 		t.Fatalf("type=%s", info.Type)
 	}
@@ -301,7 +301,7 @@ func TestFormatHeadersPlain_Complete(t *testing.T) {
 	h.Add("X-Custom", "a")
 	h.Add("X-Custom", "b")
 	h.Set("Set-Cookie", "session=secret")
-	plain := (*Service)(nil).formatHeadersPlain(h, 0)
+	plain := (&Runtime{core: &core{}}).formatHeadersPlain(h, 0)
 	if !strings.Contains(plain, "X-Custom: a") || !strings.Contains(plain, "X-Custom: b") {
 		t.Fatalf("want multi-value headers, got:\n%s", plain)
 	}
@@ -314,7 +314,7 @@ func TestFormatHeadersPlain_Complete(t *testing.T) {
 }
 
 func TestBuildUpstreamErrorInfo_Transport(t *testing.T) {
-	info := (*Service)(nil).buildUpstreamErrorInfo(errors.New("dial tcp: i/o timeout"), 0, nil, nil, "https://api.example/v1/messages", "POST")
+	info := (&Runtime{core: &core{}}).buildUpstreamErrorInfo(errors.New("dial tcp: i/o timeout"), 0, nil, nil, "https://api.example/v1/messages", "POST")
 	if info.Type != "transport" {
 		t.Fatalf("type=%s", info.Type)
 	}
@@ -327,7 +327,7 @@ func TestBuildUpstreamErrorInfo_Transport(t *testing.T) {
 }
 
 func TestExtractUpstreamErrorSnippet_OpenAI(t *testing.T) {
-	s := (*Service)(nil).extractUpstreamErrorSnippet([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error","code":"429"}}`))
+	s := (*core)(nil).extractUpstreamErrorSnippet([]byte(`{"error":{"message":"rate limited","type":"rate_limit_error","code":"429"}}`))
 	if !strings.Contains(s, "rate limited") {
 		t.Fatalf("got %q", s)
 	}
@@ -335,7 +335,7 @@ func TestExtractUpstreamErrorSnippet_OpenAI(t *testing.T) {
 
 func TestTruncateBytesForLog(t *testing.T) {
 	in := []byte(strings.Repeat("a", 100))
-	out := (*Service)(nil).truncateBytesForLog(in, 10)
+	out := (&Runtime{core: &core{}}).truncateBytesForLog(in, 10)
 	if !strings.HasSuffix(out, "…(truncated)") {
 		t.Fatalf("out=%q", out)
 	}
@@ -343,7 +343,7 @@ func TestTruncateBytesForLog(t *testing.T) {
 
 func TestInjectUpstreamOpsRequestID(t *testing.T) {
 	in := []byte(`{"error":{"message":"boom","type":"api_error"}}`)
-	out := (*Service)(nil).injectUpstreamOpsRequestID(in, "req_test_123")
+	out := (&Runtime{core: &core{}}).injectUpstreamOpsRequestID(in, "req_test_123")
 	if !strings.Contains(string(out), `"upstream_ops_request_id":"req_test_123"`) {
 		t.Fatalf("%s", out)
 	}
@@ -351,7 +351,7 @@ func TestInjectUpstreamOpsRequestID(t *testing.T) {
 		t.Fatalf("lost original error: %s", out)
 	}
 	// non-json
-	out2 := (*Service)(nil).injectUpstreamOpsRequestID([]byte("plain fail"), "rid2")
+	out2 := (&Runtime{core: &core{}}).injectUpstreamOpsRequestID([]byte("plain fail"), "rid2")
 	if !strings.Contains(string(out2), `"upstream_ops_request_id":"rid2"`) {
 		t.Fatalf("%s", out2)
 	}
@@ -361,8 +361,8 @@ func TestReadFirstChunk_Timeout(t *testing.T) {
 	pr, pw := io.Pipe()
 	defer pr.Close()
 	// 不写数据，应超时
-	_, err := (*Service)(nil).readFirstChunk(pr, 50*time.Millisecond)
-	if !(*Service)(nil).isFirstTokenTimeout(err) {
+	_, err := (&Runtime{core: &core{}}).readFirstChunk(pr, 50*time.Millisecond)
+	if !(&Runtime{core: &core{}}).isFirstTokenTimeout(err) {
 		t.Fatalf("want first token timeout, got %v", err)
 	}
 	_ = pw.Close()
@@ -370,7 +370,7 @@ func TestReadFirstChunk_Timeout(t *testing.T) {
 
 func TestReadFirstChunk_OK(t *testing.T) {
 	r := strings.NewReader("hello")
-	got, err := (*Service)(nil).readFirstChunk(r, 2*time.Second)
+	got, err := (&Runtime{core: &core{}}).readFirstChunk(r, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +381,7 @@ func TestReadFirstChunk_OK(t *testing.T) {
 
 func TestRemainingFirstTokenWait(t *testing.T) {
 	start := time.Now().Add(-1500 * time.Millisecond)
-	left, timedOut := (*Service)(nil).remainingFirstTokenWait(start, 2*time.Second)
+	left, timedOut := (&Runtime{core: &core{}}).remainingFirstTokenWait(start, 2*time.Second)
 	if timedOut {
 		t.Fatal("1.5s elapsed of 2s should not be timed out")
 	}
@@ -390,12 +390,12 @@ func TestRemainingFirstTokenWait(t *testing.T) {
 	}
 
 	start2 := time.Now().Add(-3 * time.Second)
-	_, timedOut = (*Service)(nil).remainingFirstTokenWait(start2, 2*time.Second)
+	_, timedOut = (&Runtime{core: &core{}}).remainingFirstTokenWait(start2, 2*time.Second)
 	if !timedOut {
 		t.Fatal("3s elapsed of 2s should be timed out")
 	}
 
-	_, timedOut = (*Service)(nil).remainingFirstTokenWait(time.Now(), 0)
+	_, timedOut = (&Runtime{core: &core{}}).remainingFirstTokenWait(time.Now(), 0)
 	if timedOut {
 		t.Fatal("configured 0 means disabled, not timed out")
 	}
@@ -417,11 +417,11 @@ func TestDoHTTPWithFirstTokenDeadline_SlowHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	resp, err := (*Service)(nil).doHTTPWithFirstTokenDeadline(ctx, cancel, srv.Client(), req, start, 80*time.Millisecond)
+	resp, err := (&Runtime{core: &core{}}).doHTTPWithFirstTokenDeadline(ctx, cancel, srv.Client(), req, start, 80*time.Millisecond)
 	if resp != nil {
 		_ = resp.Body.Close()
 	}
-	if !(*Service)(nil).isFirstTokenTimeout(err) {
+	if !(&Runtime{core: &core{}}).isFirstTokenTimeout(err) {
 		t.Fatalf("want first token timeout on slow headers, got resp=%v err=%v", resp, err)
 	}
 	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
@@ -443,7 +443,7 @@ func TestDoHTTPWithFirstTokenDeadline_OK(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	resp, err := (*Service)(nil).doHTTPWithFirstTokenDeadline(ctx, cancel, srv.Client(), req, start, 2*time.Second)
+	resp, err := (&Runtime{core: &core{}}).doHTTPWithFirstTokenDeadline(ctx, cancel, srv.Client(), req, start, 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,13 +457,13 @@ func TestDoHTTPWithFirstTokenDeadline_OK(t *testing.T) {
 }
 
 func TestClampFirstTokenTimeoutSec(t *testing.T) {
-	if (*Service)(nil).clampFirstTokenTimeoutSec(0) != 0 {
+	if (*core)(nil).clampFirstTokenTimeoutSec(0) != 0 {
 		t.Fatal("0 should stay 0")
 	}
-	if (*Service)(nil).clampFirstTokenTimeoutSec(1) != 1 {
+	if (*core)(nil).clampFirstTokenTimeoutSec(1) != 1 {
 		t.Fatal("1 ok")
 	}
-	if (*Service)(nil).clampFirstTokenTimeoutSec(999) != 300 {
+	if (*core)(nil).clampFirstTokenTimeoutSec(999) != 300 {
 		t.Fatal("cap 300")
 	}
 }
@@ -472,37 +472,37 @@ func TestEffectiveFirstTokenTimeout(t *testing.T) {
 	cfg := 30 * time.Second
 
 	// 未配置：始终关闭
-	if got := (*Service)(nil).effectiveFirstTokenTimeout(0, true, true, 0, 8, true); got != 0 {
+	if got := (&Runtime{core: &core{}}).effectiveFirstTokenTimeout(0, true, true, 0, 8, true); got != 0 {
 		t.Fatalf("configured 0 => 0, got %s", got)
 	}
 
 	// 中间渠道且还能顺延：启用
-	if got := (*Service)(nil).effectiveFirstTokenTimeout(cfg, true, true, 0, 8, true); got != cfg {
+	if got := (&Runtime{core: &core{}}).effectiveFirstTokenTimeout(cfg, true, true, 0, 8, true); got != cfg {
 		t.Fatalf("mid route with failover => configured, got %s", got)
 	}
 
 	// 最后一条可试路由（无更多路由）：关闭
-	if got := (*Service)(nil).effectiveFirstTokenTimeout(cfg, true, true, 0, 8, false); got != 0 {
+	if got := (&Runtime{core: &core{}}).effectiveFirstTokenTimeout(cfg, true, true, 0, 8, false); got != 0 {
 		t.Fatalf("last route (no more) => 0, got %s", got)
 	}
 
 	// 顺延次数已用尽：关闭
-	if got := (*Service)(nil).effectiveFirstTokenTimeout(cfg, true, true, 1, 1, true); got != 0 {
+	if got := (&Runtime{core: &core{}}).effectiveFirstTokenTimeout(cfg, true, true, 1, 1, true); got != 0 {
 		t.Fatalf("failover max exhausted => 0, got %s", got)
 	}
 
 	// 顺延关闭：关闭
-	if got := (*Service)(nil).effectiveFirstTokenTimeout(cfg, true, false, 0, 8, true); got != 0 {
+	if got := (&Runtime{core: &core{}}).effectiveFirstTokenTimeout(cfg, true, false, 0, 8, true); got != 0 {
 		t.Fatalf("failover disabled => 0, got %s", got)
 	}
 
 	// 重试总开关关闭：关闭
-	if got := (*Service)(nil).effectiveFirstTokenTimeout(cfg, false, true, 0, 8, true); got != 0 {
+	if got := (&Runtime{core: &core{}}).effectiveFirstTokenTimeout(cfg, false, true, 0, 8, true); got != 0 {
 		t.Fatalf("retry disabled => 0, got %s", got)
 	}
 
 	// 首条失败后 failoversDone 仍为 0、且还有下家：仍启用
-	if got := (*Service)(nil).effectiveFirstTokenTimeout(cfg, true, true, 0, 1, true); got != cfg {
+	if got := (&Runtime{core: &core{}}).effectiveFirstTokenTimeout(cfg, true, true, 0, 1, true); got != cfg {
 		t.Fatalf("first of two with max=1 => configured, got %s", got)
 	}
 }

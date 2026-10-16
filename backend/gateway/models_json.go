@@ -11,7 +11,7 @@ import (
 )
 
 // ParseModelsJSON 解析组 models_json 为清单项。
-func (svc *Service) ParseModelsJSON(raw string) []ModelListItem {
+func (svc *core) ParseModelsJSON(raw string) []ModelListItem {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || raw == "[]" || raw == "null" {
 		return nil
@@ -44,7 +44,7 @@ func (svc *Service) ParseModelsJSON(raw string) []ModelListItem {
 	return out
 }
 
-func (svc *Service) normalizeModelSources(sources []ModelSource, channelIDs []uint) []ModelSource {
+func (svc *core) normalizeModelSources(sources []ModelSource, channelIDs []uint) []ModelSource {
 	if len(sources) > 0 {
 		out := make([]ModelSource, 0, len(sources))
 		seen := map[string]struct{}{}
@@ -72,7 +72,7 @@ func (svc *Service) normalizeModelSources(sources []ModelSource, channelIDs []ui
 	return out
 }
 
-func (svc *Service) channelIDsFromSources(sources []ModelSource) []uint {
+func (svc *core) channelIDsFromSources(sources []ModelSource) []uint {
 	seen := map[uint]struct{}{}
 	out := make([]uint, 0, len(sources))
 	for _, s := range sources {
@@ -89,7 +89,7 @@ func (svc *Service) channelIDsFromSources(sources []ModelSource) []uint {
 }
 
 // ModelsJSONString 将清单项编码为 JSON 字符串。
-func (svc *Service) ModelsJSONString(list []ModelListItem) string {
+func (a *AdminService) ModelsJSONString(list []ModelListItem) string {
 	if len(list) == 0 {
 		return "[]"
 	}
@@ -100,21 +100,21 @@ func (svc *Service) ModelsJSONString(list []ModelListItem) string {
 	return string(raw)
 }
 
-func (svc *Service) formatChannelGroupLabel(channelName, groupName string, channelID uint) string {
+func (a *AdminService) formatChannelGroupLabel(channelName, groupName string, channelID uint) string {
 	ch := strings.TrimSpace(channelName)
 	if ch == "" {
 		ch = fmt.Sprintf("#%d", channelID)
 	}
 	g := strings.TrimSpace(groupName)
 	// 仅有 id:N 占位时不拼进标签（与前端 channelGroupLabel 一致）
-	if g == "" || svc.isSourceGroupIDPlaceholder(g) {
+	if g == "" || a.isSourceGroupIDPlaceholder(g) {
 		return ch
 	}
 	return ch + "-" + g
 }
 
 // isSourceGroupIDPlaceholder 识别「id:31」「源 ID: 31」这类无真实分组名的占位。
-func (svc *Service) isSourceGroupIDPlaceholder(s string) bool {
+func (svc *core) isSourceGroupIDPlaceholder(s string) bool {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return false
@@ -133,7 +133,7 @@ func (svc *Service) isSourceGroupIDPlaceholder(s string) bool {
 	return false
 }
 
-func (svc *Service) isAllASCIIDigits(s string) bool {
+func (svc *core) isAllASCIIDigits(s string) bool {
 	if s == "" {
 		return false
 	}
@@ -147,7 +147,7 @@ func (svc *Service) isAllASCIIDigits(s string) bool {
 
 // enrichRouteSourceGroupName 用上游分组列表补全路由上的源分组显示名。
 // 历史前端在有 remote_group_id 时会清空 name，导致 sub2api 只剩 id。
-func (svc *Service) enrichRouteSourceGroupName(route *storage.GatewayRoute, groups []connector.APIKeyGroup) {
+func (svc *core) enrichRouteSourceGroupName(route *storage.GatewayRoute, groups []connector.APIKeyGroup) {
 	if route == nil {
 		return
 	}
@@ -170,7 +170,7 @@ func (svc *Service) enrichRouteSourceGroupName(route *storage.GatewayRoute, grou
 	}
 }
 
-func (svc *Service) truncateProbeError(body []byte, max int) string {
+func (a *AdminService) truncateProbeError(body []byte, max int) string {
 	if len(body) == 0 {
 		return ""
 	}

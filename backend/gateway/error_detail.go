@@ -38,18 +38,18 @@ type usageErrorInfo struct {
 	UpstreamHeaders string // 关键响应头 JSON（脱敏截断）
 }
 
-func (svc *Service) buildUpstreamErrorInfo(
+func (rt *Runtime) buildUpstreamErrorInfo(
 	fwdErr error,
 	status int,
 	respHeaders http.Header,
 	respBody []byte,
 	upstreamURL, method string,
 ) usageErrorInfo {
-	return svc.buildUpstreamErrorInfoCfg(config.GatewayConfig{}.WithDefaults(), fwdErr, status, respHeaders, respBody, upstreamURL, method)
+	return rt.buildUpstreamErrorInfoCfg(config.GatewayConfig{}.WithDefaults(), fwdErr, status, respHeaders, respBody, upstreamURL, method)
 }
 
 // buildUpstreamErrorInfoCfg 同上，截断上限取自网关运行时配置。
-func (svc *Service) buildUpstreamErrorInfoCfg(
+func (rt *Runtime) buildUpstreamErrorInfoCfg(
 	cfg config.GatewayConfig,
 	fwdErr error,
 	status int,
@@ -59,10 +59,10 @@ func (svc *Service) buildUpstreamErrorInfoCfg(
 ) usageErrorInfo {
 	cfg = cfg.WithDefaults()
 	info := usageErrorInfo{}
-	headerJSON := svc.formatDebugHeaders(respHeaders, cfg.UsageErrorHeadersJSONBytes, cfg.UsageErrorHeaderValueRunes)
-	headerPlain := svc.formatHeadersPlain(respHeaders, cfg.UsageErrorHeaderValueRunes)
-	bodyText := svc.truncateBytesForLog(respBody, cfg.UsageErrorBodyBytes)
-	bodySnippet := svc.extractUpstreamErrorSnippet(respBody)
+	headerJSON := rt.formatDebugHeaders(respHeaders, cfg.UsageErrorHeadersJSONBytes, cfg.UsageErrorHeaderValueRunes)
+	headerPlain := rt.formatHeadersPlain(respHeaders, cfg.UsageErrorHeaderValueRunes)
+	bodyText := rt.truncateBytesForLog(respBody, cfg.UsageErrorBodyBytes)
+	bodySnippet := rt.extractUpstreamErrorSnippet(respBody)
 
 	if fwdErr != nil {
 		info.Type = "transport"
@@ -72,7 +72,7 @@ func (svc *Service) buildUpstreamErrorInfoCfg(
 		if status > 0 {
 			fmt.Fprintf(&b, "partial_status: %d\n", status)
 		}
-		svc.appendUpstreamHeadersToDetail(&b, headerPlain)
+		rt.appendUpstreamHeadersToDetail(&b, headerPlain)
 		if bodyText != "" {
 			fmt.Fprintf(&b, "partial_body:\n%s\n", bodyText)
 		}
@@ -93,10 +93,10 @@ func (svc *Service) buildUpstreamErrorInfoCfg(
 	if ct := respHeaders.Get("Content-Type"); ct != "" {
 		fmt.Fprintf(&b, "content_type: %s\n", ct)
 	}
-	if rid := svc.firstHeader(respHeaders, "x-request-id", "x-openai-request-id", "cf-ray", "x-trace-id", "x-client-request-id"); rid != "" {
+	if rid := rt.firstHeader(respHeaders, "x-request-id", "x-openai-request-id", "cf-ray", "x-trace-id", "x-client-request-id"); rid != "" {
 		fmt.Fprintf(&b, "upstream_request_id: %s\n", rid)
 	}
-	svc.appendUpstreamHeadersToDetail(&b, headerPlain)
+	rt.appendUpstreamHeadersToDetail(&b, headerPlain)
 	if bodyText != "" {
 		fmt.Fprintf(&b, "body:\n%s\n", bodyText)
 	} else {
@@ -108,7 +108,7 @@ func (svc *Service) buildUpstreamErrorInfoCfg(
 	return info
 }
 
-func (svc *Service) appendUpstreamHeadersToDetail(b *strings.Builder, headerPlain string) {
+func (rt *Runtime) appendUpstreamHeadersToDetail(b *strings.Builder, headerPlain string) {
 	if b == nil {
 		return
 	}
@@ -123,7 +123,7 @@ func (svc *Service) appendUpstreamHeadersToDetail(b *strings.Builder, headerPlai
 	}
 }
 
-func (svc *Service) firstHeader(h http.Header, keys ...string) string {
+func (rt *Runtime) firstHeader(h http.Header, keys ...string) string {
 	if h == nil {
 		return ""
 	}
@@ -136,14 +136,14 @@ func (svc *Service) firstHeader(h http.Header, keys ...string) string {
 }
 
 // formatDebugHeaders 序列化完整上游响应头为 JSON（敏感头脱敏；尽量不截断）。
-func (svc *Service) formatDebugHeaders(h http.Header, maxJSONBytes, maxValueRunes int) string {
+func (rt *Runtime) formatDebugHeaders(h http.Header, maxJSONBytes, maxValueRunes int) string {
 	if maxJSONBytes <= 0 {
 		maxJSONBytes = config.DefaultGatewayUsageErrorHeadersJSONBytes
 	}
 	if maxValueRunes <= 0 {
 		maxValueRunes = config.DefaultGatewayUsageErrorHeaderValueRunes
 	}
-	pairs := svc.collectDebugHeaderPairs(h, maxValueRunes)
+	pairs := rt.collectDebugHeaderPairs(h, maxValueRunes)
 	if len(pairs) == 0 {
 		return ""
 	}
@@ -159,11 +159,11 @@ func (svc *Service) formatDebugHeaders(h http.Header, maxJSONBytes, maxValueRune
 }
 
 // formatHeadersPlain 将完整上游响应头格式化为 Name: value 文本（敏感头脱敏）。
-func (svc *Service) formatHeadersPlain(h http.Header, maxValueRunes int) string {
+func (rt *Runtime) formatHeadersPlain(h http.Header, maxValueRunes int) string {
 	if maxValueRunes <= 0 {
 		maxValueRunes = config.DefaultGatewayUsageErrorHeaderValueRunes
 	}
-	pairs := svc.collectDebugHeaderPairs(h, maxValueRunes)
+	pairs := rt.collectDebugHeaderPairs(h, maxValueRunes)
 	if len(pairs) == 0 {
 		return ""
 	}
@@ -185,7 +185,7 @@ type debugHeaderPair struct {
 	Values []string `json:"values"`
 }
 
-func (svc *Service) collectDebugHeaderPairs(h http.Header, maxValueRunes int) []debugHeaderPair {
+func (rt *Runtime) collectDebugHeaderPairs(h http.Header, maxValueRunes int) []debugHeaderPair {
 	if h == nil || len(h) == 0 {
 		return nil
 	}
@@ -197,11 +197,11 @@ func (svc *Service) collectDebugHeaderPairs(h http.Header, maxValueRunes int) []
 		ck := http.CanonicalHeaderKey(k)
 		redacted := make([]string, len(vals))
 		for i, v := range vals {
-			if svc.isSensitiveHeader(ck) {
+			if rt.isSensitiveHeader(ck) {
 				redacted[i] = "[redacted]"
 			} else {
 				// 完整保留响应头值；仅极端长值截断防止撑爆库
-				redacted[i] = svc.truncateRunes(v, maxValueRunes)
+				redacted[i] = rt.truncateRunes(v, maxValueRunes)
 			}
 		}
 		out = append(out, debugHeaderPair{Name: ck, Values: redacted})
@@ -211,7 +211,7 @@ func (svc *Service) collectDebugHeaderPairs(h http.Header, maxValueRunes int) []
 	return out
 }
 
-func (svc *Service) isSensitiveHeader(canonical string) bool {
+func (rt *Runtime) isSensitiveHeader(canonical string) bool {
 	switch strings.ToLower(canonical) {
 	case "authorization", "cookie", "set-cookie", "x-api-key", "api-key", "proxy-authorization":
 		return true
@@ -221,7 +221,7 @@ func (svc *Service) isSensitiveHeader(canonical string) bool {
 }
 
 // extractUpstreamErrorSnippet 从 JSON 错误体抽出 message/error 字段作摘要。
-func (svc *Service) extractUpstreamErrorSnippet(body []byte) string {
+func (svc *core) extractUpstreamErrorSnippet(body []byte) string {
 	body = bytes.TrimSpace(body)
 	if len(body) == 0 {
 		return ""
@@ -252,7 +252,7 @@ func (svc *Service) extractUpstreamErrorSnippet(body []byte) string {
 	return svc.truncateRunes(string(body), 200)
 }
 
-func (svc *Service) walkErrorMessage(v any, depth int) string {
+func (svc *core) walkErrorMessage(v any, depth int) string {
 	if depth > 6 || v == nil {
 		return ""
 	}
@@ -293,7 +293,7 @@ func (svc *Service) walkErrorMessage(v any, depth int) string {
 	return ""
 }
 
-func (svc *Service) truncateBytesForLog(b []byte, max int) string {
+func (rt *Runtime) truncateBytesForLog(b []byte, max int) string {
 	if max <= 0 || len(b) == 0 {
 		return ""
 	}
@@ -309,7 +309,7 @@ func (svc *Service) truncateBytesForLog(b []byte, max int) string {
 	return string(cut) + "…(truncated)"
 }
 
-func (svc *Service) truncateRunes(str string, max int) string {
+func (svc *core) truncateRunes(str string, max int) string {
 	str = strings.TrimSpace(str)
 	if max <= 0 || str == "" {
 		return str

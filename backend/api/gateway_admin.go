@@ -81,7 +81,7 @@ func listGatewayProviders(c *gin.Context, d *Deps) {
 		Page:     queryInt(c, "page", 1),
 		PageSize: queryInt(c, "page_size", 20),
 	}
-	page, err := d.Gateway.ListProviders(q)
+	page, err := d.Gateway.Admin.ListProviders(q)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -90,7 +90,7 @@ func listGatewayProviders(c *gin.Context, d *Deps) {
 }
 
 func listGatewayProviderOptions(c *gin.Context, d *Deps) {
-	list, err := d.Gateway.ListProviderOptions(strings.TrimSpace(c.Query("q")))
+	list, err := d.Gateway.Admin.ListProviderOptions(strings.TrimSpace(c.Query("q")))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -121,7 +121,7 @@ func createGatewayProvider(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	item, err := d.Gateway.CreateProvider(in)
+	item, err := d.Gateway.Admin.CreateProvider(in)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -140,7 +140,7 @@ func updateGatewayProvider(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	item, err := d.Gateway.UpdateProvider(id, in)
+	item, err := d.Gateway.Admin.UpdateProvider(id, in)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -154,7 +154,7 @@ func deleteGatewayProvider(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	if err := d.Gateway.DeleteProvider(id); err != nil {
+	if err := d.Gateway.Admin.DeleteProvider(id); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -167,7 +167,7 @@ func revealGatewayProvider(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	secret, err := d.Gateway.RevealProviderKey(id)
+	secret, err := d.Gateway.Admin.RevealProviderKey(id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -176,7 +176,7 @@ func revealGatewayProvider(c *gin.Context, d *Deps) {
 }
 
 func listGatewayGroups(c *gin.Context, d *Deps) {
-	list, err := d.Gateway.ListGroups()
+	list, err := d.Gateway.Admin.ListGroups()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -192,11 +192,11 @@ func reorderGatewayGroups(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := d.Gateway.ReorderGroups(body.IDs); err != nil {
+	if err := d.Gateway.Admin.ReorderGroups(body.IDs); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	list, err := d.Gateway.ListGroups()
+	list, err := d.Gateway.Admin.ListGroups()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -210,7 +210,7 @@ func createGatewayGroup(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	item, err := d.Gateway.CreateGroup(in)
+	item, err := d.Gateway.Admin.CreateGroup(in)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -224,7 +224,7 @@ func getGatewayGroup(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	item, err := d.Gateway.GetGroup(id)
+	item, err := d.Gateway.Admin.GetGroup(id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
 		return
@@ -243,7 +243,7 @@ func updateGatewayGroup(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	item, err := d.Gateway.UpdateGroup(id, in)
+	item, err := d.Gateway.Admin.UpdateGroup(id, in)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -257,7 +257,7 @@ func deleteGatewayGroup(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	if err := d.Gateway.DeleteGroup(id); err != nil {
+	if err := d.Gateway.Admin.DeleteGroup(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -270,7 +270,7 @@ func listGatewayGroupKeys(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	list, err := d.Gateway.ListKeysByGroup(id)
+	list, err := d.Gateway.Admin.ListKeysByGroup(id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -290,7 +290,7 @@ func createGatewayGroupKey(c *gin.Context, d *Deps) {
 		return
 	}
 	in.GroupID = id
-	res, err := d.Gateway.CreateKey(in)
+	res, err := d.Gateway.Admin.CreateKey(in)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -304,7 +304,7 @@ func listGatewayGroupRoutes(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	list, err := d.Gateway.ListRoutes(id)
+	list, err := d.Gateway.Admin.ListRoutes(id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -325,7 +325,7 @@ func saveGatewayGroupRoutes(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	list, err := d.Gateway.SaveRoutes(id, body.Routes)
+	list, err := d.Gateway.Admin.SaveRoutes(id, body.Routes)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -335,7 +335,7 @@ func saveGatewayGroupRoutes(c *gin.Context, d *Deps) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 90*time.Second)
 	defer cancel()
 	resp := gin.H{"items": list}
-	if ensured, err := d.Gateway.EnsureMissingRouteKeys(ctx, id); err != nil {
+	if ensured, err := d.Gateway.Admin.EnsureMissingRouteKeys(ctx, id); err != nil {
 		resp["ensure_keys_error"] = err.Error()
 	} else {
 		resp["items"] = ensured.Items
@@ -358,7 +358,7 @@ func fetchGatewayRouteModels(c *gin.Context, d *Deps) {
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
 	defer cancel()
-	models, err := d.Gateway.FetchRouteModels(ctx, id, in)
+	models, err := d.Gateway.Admin.FetchRouteModels(ctx, id, in)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -373,7 +373,7 @@ func ensureGatewayGroupRouteKeys(c *gin.Context, d *Deps) {
 		return
 	}
 	// 单条失败跳过，结果在 routes 明细中；不因个别路由失败而整体 4xx
-	res, err := d.Gateway.EnsureRouteKeys(c.Request.Context(), id)
+	res, err := d.Gateway.Admin.EnsureRouteKeys(c.Request.Context(), id)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -387,7 +387,7 @@ func previewGatewayGroupModels(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	list, err := d.Gateway.PreviewGroupModels(c.Request.Context(), id)
+	list, err := d.Gateway.Admin.PreviewGroupModels(c.Request.Context(), id)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -405,7 +405,7 @@ func syncGatewayGroupModels(c *gin.Context, d *Deps) {
 	var in gateway.SyncGroupModelsInput
 	_ = c.ShouldBindJSON(&in)
 	// 单渠道失败会跳过并在 routes 明细中体现，不因个别渠道失败而整体 4xx
-	res, err := d.Gateway.SyncGroupModels(c.Request.Context(), id, in)
+	res, err := d.Gateway.Admin.SyncGroupModels(c.Request.Context(), id, in)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -424,7 +424,7 @@ func testGatewayGroupModel(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	results, err := d.Gateway.TestGroupModel(c.Request.Context(), id, in)
+	results, err := d.Gateway.Admin.TestGroupModel(c.Request.Context(), id, in)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -454,7 +454,7 @@ func updateGatewayKey(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	item, err := d.Gateway.UpdateKey(id, in)
+	item, err := d.Gateway.Admin.UpdateKey(id, in)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -468,7 +468,7 @@ func deleteGatewayKey(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	if err := d.Gateway.DeleteKey(id); err != nil {
+	if err := d.Gateway.Admin.DeleteKey(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -481,7 +481,7 @@ func revealGatewayKey(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	secret, err := d.Gateway.RevealKey(id)
+	secret, err := d.Gateway.Admin.RevealKey(id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
@@ -495,7 +495,7 @@ func clearGatewayRoutePause(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	if err := d.Gateway.ClearRoutePause(id); err != nil {
+	if err := d.Gateway.Admin.ClearRoutePause(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

@@ -52,11 +52,11 @@ func cachedModelMapping(raw string) ModelMap {
 }
 
 // cachedModelsJSON 运行时用的组模型清单（只读）。
-func (svc *Service) cachedModelsJSON(raw string) []ModelListItem {
+func (rt *Runtime) cachedModelsJSON(raw string) []ModelListItem {
 	if strings.TrimSpace(raw) == "" {
 		return nil
 	}
-	return modelsJSONCache.get(raw, svc.ParseModelsJSON)
+	return modelsJSONCache.get(raw, rt.ParseModelsJSON)
 }
 
 // cachedSystemPromptRules 运行时用的系统提示词规则（只读）。
@@ -68,9 +68,9 @@ func cachedSystemPromptRules(raw string) []SystemPromptRule {
 }
 
 // cachedStringList 运行时用的字符串名单（IP 黑白名单，只读）。
-func (svc *Service) cachedStringList(raw string) []string {
+func (rt *Runtime) cachedStringList(raw string) []string {
 	if t := strings.TrimSpace(raw); t == "" || t == "[]" || t == "null" {
 		return nil
 	}
-	return stringListCache.get(raw, svc.parseStringListJSON)
+	return stringListCache.get(raw, rt.parseStringListJSON)
 }

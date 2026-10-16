@@ -2,7 +2,6 @@
 package gateway
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bejix/upstream-ops/backend/connector"
 	"github.com/bejix/upstream-ops/backend/gateway/protocol"
 	"github.com/bejix/upstream-ops/backend/storage"
 	"github.com/gin-gonic/gin"
@@ -196,57 +194,6 @@ func (rt *Runtime) groupModelsPayload(c *gin.Context, group *storage.GatewayGrou
 	rt.modelsCache[group.ID] = modelsCacheEntry{at: time.Now(), body: payload}
 	rt.modelsCacheMu.Unlock()
 	return payload, nil
-}
-
-// fetchUpstreamModels 拉取上游 /v1/models。
-// userAgent 为组+路由解析结果；空则回落默认 UA（无客户端可透传）。
-
-func (rt *Runtime) fetchUpstreamModels(ctx context.Context, ch *storage.Channel, apiKey, userAgent string) ([]string, error) {
-	client := rt.httpClientForChannel(ch)
-	client.Timeout = 30 * time.Second
-	url := strings.TrimRight(ch.SiteURL, "/") + "/v1/models"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, fmt.Errorf("build GET %s: %w", url, err)
-	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", withDefaultUserAgent(userAgent, rt.defaultUpstreamUserAgent()))
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("GET %s: %w", url, err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, fmt.Errorf("GET %s: read body: %w", url, err)
-	}
-	if resp.StatusCode >= 400 {
-		// 保留 URL + 状态码 + 上游 body 摘要，便于模型同步结果页排查（如 base_url 多写/少写 /v1）
-		return nil, fmt.Errorf("GET %s: %w", url, connector.HTTPStatusError(resp.StatusCode, body))
-	}
-	var parsed struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		snippet := rt.extractUpstreamErrorSnippet(body)
-		if snippet == "" {
-			snippet = rt.truncateRunes(string(body), 200)
-		}
-		if snippet == "" {
-			return nil, fmt.Errorf("GET %s: HTTP %d invalid models JSON: %w", url, resp.StatusCode, err)
-		}
-		return nil, fmt.Errorf("GET %s: HTTP %d invalid models JSON (%v): %s", url, resp.StatusCode, err, snippet)
-	}
-	out := make([]string, 0, len(parsed.Data))
-	for _, d := range parsed.Data {
-		if strings.TrimSpace(d.ID) != "" {
-			out = append(out, d.ID)
-		}
-	}
-	return out, nil
 }
 
 // HandleCountTokens POST /v1/messages/count_tokens

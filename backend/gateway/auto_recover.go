@@ -135,7 +135,7 @@ func (s *Service) firstUpstreamModel(ctx context.Context, group *storage.Gateway
 	}
 	fetchCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	models, err := s.Admin.fetchUpstreamModels(fetchCtx, ch, target.APIKey, s.Admin.resolveAdminUserAgent(group, &route))
+	models, err := s.fetchUpstreamModels(fetchCtx, ch, target.APIKey, s.resolveAdminUserAgent(group, &route))
 	if err != nil {
 		if s.Log != nil {
 			s.Log.Info("gateway auto-disabled route: list upstream models failed", "route_id", route.ID, "err", err)

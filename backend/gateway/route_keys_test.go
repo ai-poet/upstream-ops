@@ -88,11 +88,11 @@ func TestEnsureMissingRouteKeys(t *testing.T) {
 	}
 
 	vip := int64(7)
-	saved, err := svc.SaveRoutes(g.ID, []RouteInput{{SourceKind: "monitor", SourceChannelID: 1, SourceGroupID: &vip, SourceGroupName: "vip", Weight: 1, Enabled: true}})
+	saved, err := svc.Admin.SaveRoutes(g.ID, []RouteInput{{SourceKind: "monitor", SourceChannelID: 1, SourceGroupID: &vip, SourceGroupName: "vip", Weight: 1, Enabled: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := svc.EnsureMissingRouteKeys(context.Background(), g.ID)
+	res, err := svc.Admin.EnsureMissingRouteKeys(context.Background(), g.ID)
 	if err != nil || res.OKCount != 1 || api.creates != 1 {
 		t.Fatalf("first ensure: res=%+v err=%v creates=%d", res, err, api.creates)
 	}
@@ -102,20 +102,20 @@ func TestEnsureMissingRouteKeys(t *testing.T) {
 	}
 
 	// 再保存一次（来源没变）：不再碰上游
-	if _, err := svc.SaveRoutes(g.ID, []RouteInput{{ID: route.ID, SourceKind: "monitor", SourceChannelID: 1, SourceGroupID: &vip, SourceGroupName: "vip", Weight: 5, Enabled: true}}); err != nil {
+	if _, err := svc.Admin.SaveRoutes(g.ID, []RouteInput{{ID: route.ID, SourceKind: "monitor", SourceChannelID: 1, SourceGroupID: &vip, SourceGroupName: "vip", Weight: 5, Enabled: true}}); err != nil {
 		t.Fatal(err)
 	}
-	res, err = svc.EnsureMissingRouteKeys(context.Background(), g.ID)
+	res, err = svc.Admin.EnsureMissingRouteKeys(context.Background(), g.ID)
 	if err != nil || len(res.Routes) != 0 || api.creates != 1 || api.updates != 0 {
 		t.Fatalf("second ensure touched upstream: res=%+v creates=%d updates=%d", res, api.creates, api.updates)
 	}
 
 	// 换源分组：需要对齐到新分组的统一名
 	plus := int64(8)
-	if _, err := svc.SaveRoutes(g.ID, []RouteInput{{ID: route.ID, SourceKind: "monitor", SourceChannelID: 1, SourceGroupID: &plus, SourceGroupName: "plus", Weight: 5, Enabled: true}}); err != nil {
+	if _, err := svc.Admin.SaveRoutes(g.ID, []RouteInput{{ID: route.ID, SourceKind: "monitor", SourceChannelID: 1, SourceGroupID: &plus, SourceGroupName: "plus", Weight: 5, Enabled: true}}); err != nil {
 		t.Fatal(err)
 	}
-	res, err = svc.EnsureMissingRouteKeys(context.Background(), g.ID)
+	res, err = svc.Admin.EnsureMissingRouteKeys(context.Background(), g.ID)
 	if err != nil || res.OKCount != 1 {
 		t.Fatalf("ensure after source group change: res=%+v err=%v", res, err)
 	}
@@ -134,7 +134,7 @@ func TestFetchRouteModels(t *testing.T) {
 	})
 	h := newE2E(t, nil, e2eRouteSpec{Upstream: up, Protocol: "openai_chat"})
 
-	models, err := h.svc.FetchRouteModels(context.Background(), h.group.ID, RouteInput{SourceKind: "provider", GatewayProviderID: h.routes[0].GatewayProviderID})
+	models, err := h.svc.Admin.FetchRouteModels(context.Background(), h.group.ID, RouteInput{SourceKind: "provider", GatewayProviderID: h.routes[0].GatewayProviderID})
 	if err != nil || strings.Join(models, ",") != "gpt-image-1,gpt-x" {
 		t.Fatalf("provider: %v %v", models, err)
 	}
@@ -151,13 +151,13 @@ func TestFetchRouteModels(t *testing.T) {
 	}
 	vip := int64(7)
 	draft := RouteInput{SourceKind: "monitor", SourceChannelID: 1, SourceGroupID: &vip, SourceGroupName: "vip"}
-	if _, err := h.svc.FetchRouteModels(context.Background(), h.group.ID, draft); err != nil {
+	if _, err := h.svc.Admin.FetchRouteModels(context.Background(), h.group.ID, draft); err != nil {
 		t.Fatal(err)
 	}
 	if api.creates != 1 || seenAuth[1] != "Bearer sk-upstream-1" {
 		t.Fatalf("monitor draft: creates=%d auth=%q", api.creates, seenAuth[1])
 	}
-	if _, err := h.svc.FetchRouteModels(context.Background(), h.group.ID, RouteInput{SourceKind: "monitor"}); err == nil {
+	if _, err := h.svc.Admin.FetchRouteModels(context.Background(), h.group.ID, RouteInput{SourceKind: "monitor"}); err == nil {
 		t.Fatal("route without a channel should be rejected")
 	}
 }

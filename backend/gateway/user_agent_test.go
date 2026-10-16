@@ -238,7 +238,7 @@ func TestSaveRoutes_UserAgentFields(t *testing.T) {
 		t.Fatalf("create channel: %v", err)
 	}
 
-	saved, err := svc.SaveRoutes(g.ID, []RouteInput{{
+	saved, err := svc.Admin.SaveRoutes(g.ID, []RouteInput{{
 		SourceKind:      storage.GatewayRouteSourceMonitor,
 		SourceChannelID: ch.ID,
 		Weight:          1,
@@ -259,7 +259,7 @@ func TestSaveRoutes_UserAgentFields(t *testing.T) {
 		t.Fatalf("custom=%q", saved[0].UserAgentCustom)
 	}
 	// non-custom should clear custom
-	saved2, err := svc.SaveRoutes(g.ID, []RouteInput{{
+	saved2, err := svc.Admin.SaveRoutes(g.ID, []RouteInput{{
 		ID:              saved[0].ID,
 		SourceKind:      storage.GatewayRouteSourceMonitor,
 		SourceChannelID: ch.ID,
@@ -284,7 +284,7 @@ func TestCreateUpdateGroup_UserAgent(t *testing.T) {
 	groupsRepo := storage.NewGatewayGroups(db)
 	svc := NewService(groupsRepo, storage.NewGatewayKeys(db), storage.NewGatewayRoutes(db), nil, nil, nil, nil, nil, nil)
 
-	g, err := svc.CreateGroup(CreateGroupInput{
+	g, err := svc.Admin.CreateGroup(CreateGroupInput{
 		Name:      "g-ua",
 		UserAgent: "  Group-UA/1  ",
 	})
@@ -295,7 +295,7 @@ func TestCreateUpdateGroup_UserAgent(t *testing.T) {
 		t.Fatalf("create user_agent=%q", g.UserAgent)
 	}
 	cleared := ""
-	g2, err := svc.UpdateGroup(g.ID, UpdateGroupInput{UserAgent: &cleared})
+	g2, err := svc.Admin.UpdateGroup(g.ID, UpdateGroupInput{UserAgent: &cleared})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}

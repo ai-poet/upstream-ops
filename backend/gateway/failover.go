@@ -11,7 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func (svc *Service) isFailoverStatus(code int, failoverOn4xx bool) bool {
+func (rt *Runtime) isFailoverStatus(code int, failoverOn4xx bool) bool {
 	if code == 0 {
 		return true
 	}
@@ -31,7 +31,7 @@ func (svc *Service) isFailoverStatus(code int, failoverOn4xx bool) bool {
 // 此时上游通常已正常响应（甚至完整计费），应记成功而非失败。
 // 注意：若下游已写出终端帧（DownstreamComplete），forwardStream 会先清掉 ClientDisconnected，
 // 不会走到此处——收完再关连接记普通成功。
-func (svc *Service) isClientDisconnectAfterCommit(clientDisconnected bool, streamErr error) bool {
+func (rt *Runtime) isClientDisconnectAfterCommit(clientDisconnected bool, streamErr error) bool {
 	if !clientDisconnected {
 		return false
 	}
@@ -44,12 +44,12 @@ func (svc *Service) isClientDisconnectAfterCommit(clientDisconnected bool, strea
 // isClientContextError 判断失败是否由「客户端断开 / 入站请求 context 取消」引起。
 // 典型表现：Post "...": context canceled。若继续用同一 c.Request.Context() 重试/顺延，
 // 后续 attempt 会全部被父 context 污染成同样的 canceled，并误冷却路由。
-func (svc *Service) isClientContextError(err error, c *gin.Context) bool {
+func (rt *Runtime) isClientContextError(err error, c *gin.Context) bool {
 	if err == nil {
 		return false
 	}
 	// 首字超时是网关主动断开，不是客户端取消
-	if svc.isFirstTokenTimeout(err) {
+	if rt.isFirstTokenTimeout(err) {
 		return false
 	}
 	reqCanceled := false
@@ -79,7 +79,7 @@ func (svc *Service) isClientContextError(err error, c *gin.Context) bool {
 }
 
 // annotateClientContextError 把 transport 的 context canceled 改写为可区分的 client 错误。
-func (svc *Service) annotateClientContextError(info *usageErrorInfo, c *gin.Context, upstreamURL, method string, fwdErr error) {
+func (rt *Runtime) annotateClientContextError(info *usageErrorInfo, c *gin.Context, upstreamURL, method string, fwdErr error) {
 	if info == nil {
 		return
 	}

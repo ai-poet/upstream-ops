@@ -125,7 +125,7 @@ func TestResortRoutesOnRateScan_OnlyEnabledGroups(t *testing.T) {
 	}
 	svc := NewService(groupsRepo, storage.NewGatewayKeys(db), routesRepo, nil, nil, nil, fake, nil, nil)
 
-	svc.ResortRoutesOnRateScan(context.Background())
+	svc.Admin.ResortRoutesOnRateScan(context.Background())
 
 	onList, err := routesRepo.ListByGroupID(gOn.ID)
 	if err != nil {
@@ -192,7 +192,7 @@ func TestUpdateGroup_RateResortTurnedOnReorders(t *testing.T) {
 	svc := NewService(groupsRepo, storage.NewGatewayKeys(db), routesRepo, nil, nil, nil, fake, nil, nil)
 
 	on := true
-	if _, err := svc.UpdateGroup(g.ID, UpdateGroupInput{RateResortEnabled: &on}); err != nil {
+	if _, err := svc.Admin.UpdateGroup(g.ID, UpdateGroupInput{RateResortEnabled: &on}); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	list, err := routesRepo.ListByGroupID(g.ID)

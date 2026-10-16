@@ -107,7 +107,7 @@ func TestHandleModels_AggregatesProviderRoute(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+clientKey)
 	c.Request = req
 
-	svc.HandleModels(c)
+	svc.Runtime.HandleModels(c)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())

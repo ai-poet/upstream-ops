@@ -13,14 +13,14 @@ import (
 )
 
 // newRequestID 生成 24 位小写 hex 的网关 request id（12 字节随机）。
-func (svc *Service) newRequestID() string {
+func (rt *Runtime) newRequestID() string {
 	buf := make([]byte, 12)
 	_, _ = rand.Read(buf)
 	return hex.EncodeToString(buf)
 }
 
 // copyClientRequestIDHeaders 将客户端请求 ID 相关头原样复制到上游请求（不改写、不合成）。
-func (svc *Service) copyClientRequestIDHeaders(dst, src http.Header) {
+func (rt *Runtime) copyClientRequestIDHeaders(dst, src http.Header) {
 	if dst == nil || src == nil {
 		return
 	}
@@ -33,7 +33,7 @@ func (svc *Service) copyClientRequestIDHeaders(dst, src http.Header) {
 
 // setGatewayRequestIDHeaders 仅写入网关专用 request id 头。
 // 不改写 X-Request-Id / X-Client-Request-Id 等任何请求相关 ID（响应侧上游原样透传，请求侧原样转发）。
-func (svc *Service) setGatewayRequestIDHeaders(c *gin.Context, id string) {
+func (rt *Runtime) setGatewayRequestIDHeaders(c *gin.Context, id string) {
 	if c == nil || strings.TrimSpace(id) == "" {
 		return
 	}
@@ -49,32 +49,32 @@ func (svc *Service) setGatewayRequestIDHeaders(c *gin.Context, id string) {
 //  2. 客户端重试/重放同一 id 时，多条无关请求被误合成「同请求链路」。
 //
 // 客户端请求 ID 仍会原样转发上游；响应里也只附加本头，不覆盖上游/客户端的 X-Request-Id。
-func (svc *Service) ensureGatewayRequestID(c *gin.Context) string {
+func (rt *Runtime) ensureGatewayRequestID(c *gin.Context) string {
 	if c == nil {
-		return svc.newRequestID()
+		return rt.newRequestID()
 	}
 	if v, ok := c.Get(ctxKeyUpstreamOpsRequestID); ok {
 		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
-			svc.setGatewayRequestIDHeaders(c, s)
+			rt.setGatewayRequestIDHeaders(c, s)
 			return s
 		}
 	}
 	// 仅复用本响应已由网关写入的专用头（同请求内多次 ensure）；不读 X-Request-Id
 	if s := strings.TrimSpace(c.Writer.Header().Get(headerUpstreamOpsRequestID)); s != "" {
-		if svc.isGatewayGeneratedRequestID(s) {
+		if rt.isGatewayGeneratedRequestID(s) {
 			c.Set(ctxKeyUpstreamOpsRequestID, s)
-			svc.setGatewayRequestIDHeaders(c, s)
+			rt.setGatewayRequestIDHeaders(c, s)
 			return s
 		}
 	}
-	id := svc.newRequestID()
+	id := rt.newRequestID()
 	c.Set(ctxKeyUpstreamOpsRequestID, id)
-	svc.setGatewayRequestIDHeaders(c, id)
+	rt.setGatewayRequestIDHeaders(c, id)
 	return id
 }
 
 // isGatewayGeneratedRequestID 网关 newRequestID 形态：12 字节 → 24 位小写 hex，无连字符。
-func (svc *Service) isGatewayGeneratedRequestID(id string) bool {
+func (rt *Runtime) isGatewayGeneratedRequestID(id string) bool {
 	if len(id) != 24 {
 		return false
 	}
@@ -88,7 +88,7 @@ func (svc *Service) isGatewayGeneratedRequestID(id string) bool {
 }
 
 // injectUpstreamOpsRequestID 把网关 request id 写入 JSON 错误体（非 JSON 则包一层）。
-func (svc *Service) injectUpstreamOpsRequestID(body []byte, reqID string) []byte {
+func (rt *Runtime) injectUpstreamOpsRequestID(body []byte, reqID string) []byte {
 	reqID = strings.TrimSpace(reqID)
 	if reqID == "" {
 		return body

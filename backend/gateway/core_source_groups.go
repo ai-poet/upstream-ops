@@ -1,4 +1,4 @@
-// 数据面：源分组列表缓存。
+// 共用：源分组列表缓存（数据面算倍率选路，管理面排序 / 保存路由）。
 package gateway
 
 import (
@@ -10,9 +10,9 @@ import (
 	"github.com/bejix/upstream-ops/backend/storage"
 )
 
-func (rt *Runtime) loadGroupsByChannel(ctx context.Context, routes []storage.GatewayRoute) map[uint][]connector.APIKeyGroup {
+func (svc *core) loadGroupsByChannel(ctx context.Context, routes []storage.GatewayRoute) map[uint][]connector.APIKeyGroup {
 	out := make(map[uint][]connector.APIKeyGroup)
-	if rt.ChannelAPI == nil {
+	if svc.ChannelAPI == nil {
 		return out
 	}
 	ids := make([]uint, 0)
@@ -36,19 +36,19 @@ func (rt *Runtime) loadGroupsByChannel(ctx context.Context, routes []storage.Gat
 
 	// 先吃缓存：新鲜的直接用；过期的也先用旧值、在后台刷新（请求路径不再同步等上游管理接口）；
 	// 从没拉过的才同步拉。同一渠道同时只有一个拉取在跑，并发请求等它的结果。
-	ttl := rt.gatewayRuntime().ModelsCacheTTL()
+	ttl := svc.gatewayRuntime().ModelsCacheTTL()
 	if ttl <= 0 {
 		ttl = 60 * time.Second
 	}
 	miss := make([]uint, 0, len(ids))
 	stale := make([]uint, 0)
 	now := time.Now()
-	rt.channelGroupsCacheMu.Lock()
-	if rt.channelGroupsCache == nil {
-		rt.channelGroupsCache = map[uint]channelGroupsCacheEntry{}
+	svc.channelGroupsCacheMu.Lock()
+	if svc.channelGroupsCache == nil {
+		svc.channelGroupsCache = map[uint]channelGroupsCacheEntry{}
 	}
 	for _, id := range ids {
-		if ent, ok := rt.channelGroupsCache[id]; ok {
+		if ent, ok := svc.channelGroupsCache[id]; ok {
 			out[id] = ent.groups
 			if now.Sub(ent.at) >= ttl {
 				stale = append(stale, id)
@@ -57,21 +57,21 @@ func (rt *Runtime) loadGroupsByChannel(ctx context.Context, routes []storage.Gat
 		}
 		miss = append(miss, id)
 	}
-	rt.channelGroupsCacheMu.Unlock()
+	svc.channelGroupsCacheMu.Unlock()
 
 	for _, id := range stale {
-		rt.refreshChannelGroupsAsync(id)
+		svc.refreshChannelGroupsAsync(id)
 	}
 	if len(miss) == 0 {
 		return out
 	}
 	if len(miss) == 1 {
-		out[miss[0]] = rt.fetchChannelGroups(ctx, miss[0])
+		out[miss[0]] = svc.fetchChannelGroups(ctx, miss[0])
 		return out
 	}
 
 	// 保存路由 / 运行时倍率排序：按渠道并发拉源分组，缩短批量等待。
-	sem := make(chan struct{}, rt.gatewayRuntime().RouteBatchConcurrency)
+	sem := make(chan struct{}, svc.gatewayRuntime().RouteBatchConcurrency)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	for _, id := range miss {
@@ -88,7 +88,7 @@ func (rt *Runtime) loadGroupsByChannel(ctx context.Context, routes []storage.Gat
 				mu.Unlock()
 				return
 			}
-			groups := rt.fetchChannelGroups(ctx, id)
+			groups := svc.fetchChannelGroups(ctx, id)
 			mu.Lock()
 			out[id] = groups
 			mu.Unlock()
@@ -106,13 +106,13 @@ type channelGroupsCall struct {
 
 // fetchChannelGroups 拉一个渠道的源分组并写缓存；同一渠道已有拉取在跑时等它的结果，不重复打上游。
 // 拉取失败时缓存 nil（选路回落到路由上保存的倍率），下个 TTL 再试。
-func (rt *Runtime) fetchChannelGroups(ctx context.Context, id uint) []connector.APIKeyGroup {
-	rt.channelGroupsCacheMu.Lock()
-	if rt.channelGroupsInflight == nil {
-		rt.channelGroupsInflight = map[uint]*channelGroupsCall{}
+func (svc *core) fetchChannelGroups(ctx context.Context, id uint) []connector.APIKeyGroup {
+	svc.channelGroupsCacheMu.Lock()
+	if svc.channelGroupsInflight == nil {
+		svc.channelGroupsInflight = map[uint]*channelGroupsCall{}
 	}
-	if call, ok := rt.channelGroupsInflight[id]; ok {
-		rt.channelGroupsCacheMu.Unlock()
+	if call, ok := svc.channelGroupsInflight[id]; ok {
+		svc.channelGroupsCacheMu.Unlock()
 		select {
 		case <-call.done:
 			return call.groups
@@ -121,55 +121,55 @@ func (rt *Runtime) fetchChannelGroups(ctx context.Context, id uint) []connector.
 		}
 	}
 	call := &channelGroupsCall{done: make(chan struct{})}
-	rt.channelGroupsInflight[id] = call
-	rt.channelGroupsCacheMu.Unlock()
+	svc.channelGroupsInflight[id] = call
+	svc.channelGroupsCacheMu.Unlock()
 
-	groups, err := rt.ChannelAPI.ListAPIKeyGroups(ctx, id)
+	groups, err := svc.ChannelAPI.ListAPIKeyGroups(ctx, id)
 	if err != nil {
 		groups = nil
 	}
 	call.groups = groups
-	rt.channelGroupsCacheMu.Lock()
-	delete(rt.channelGroupsInflight, id)
-	if rt.channelGroupsCache == nil {
-		rt.channelGroupsCache = map[uint]channelGroupsCacheEntry{}
+	svc.channelGroupsCacheMu.Lock()
+	delete(svc.channelGroupsInflight, id)
+	if svc.channelGroupsCache == nil {
+		svc.channelGroupsCache = map[uint]channelGroupsCacheEntry{}
 	}
-	rt.channelGroupsCache[id] = channelGroupsCacheEntry{at: time.Now(), groups: groups}
-	rt.channelGroupsCacheMu.Unlock()
+	svc.channelGroupsCache[id] = channelGroupsCacheEntry{at: time.Now(), groups: groups}
+	svc.channelGroupsCacheMu.Unlock()
 	close(call.done)
 	return groups
 }
 
 // refreshChannelGroupsAsync 后台刷新一个渠道的源分组（已有拉取在跑时什么都不做）。
-func (rt *Runtime) refreshChannelGroupsAsync(id uint) {
-	rt.channelGroupsCacheMu.Lock()
-	_, running := rt.channelGroupsInflight[id]
-	rt.channelGroupsCacheMu.Unlock()
+func (svc *core) refreshChannelGroupsAsync(id uint) {
+	svc.channelGroupsCacheMu.Lock()
+	_, running := svc.channelGroupsInflight[id]
+	svc.channelGroupsCacheMu.Unlock()
 	if running {
 		return
 	}
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		rt.fetchChannelGroups(ctx, id)
+		svc.fetchChannelGroups(ctx, id)
 	}()
 }
 
-func (rt *Runtime) storeChannelGroupsCache(channelID uint, groups []connector.APIKeyGroup) {
-	rt.channelGroupsCacheMu.Lock()
-	defer rt.channelGroupsCacheMu.Unlock()
-	if rt.channelGroupsCache == nil {
-		rt.channelGroupsCache = map[uint]channelGroupsCacheEntry{}
+func (svc *core) storeChannelGroupsCache(channelID uint, groups []connector.APIKeyGroup) {
+	svc.channelGroupsCacheMu.Lock()
+	defer svc.channelGroupsCacheMu.Unlock()
+	if svc.channelGroupsCache == nil {
+		svc.channelGroupsCache = map[uint]channelGroupsCacheEntry{}
 	}
-	rt.channelGroupsCache[channelID] = channelGroupsCacheEntry{at: time.Now(), groups: groups}
+	svc.channelGroupsCache[channelID] = channelGroupsCacheEntry{at: time.Now(), groups: groups}
 }
 
 // InvalidateChannelGroupsCache 清空源分组缓存（倍率扫描后调用，保证下次重排拿到新 ratio）。
 
-func (rt *Runtime) InvalidateChannelGroupsCache() {
-	rt.channelGroupsCacheMu.Lock()
-	defer rt.channelGroupsCacheMu.Unlock()
-	rt.channelGroupsCache = map[uint]channelGroupsCacheEntry{}
+func (svc *core) InvalidateChannelGroupsCache() {
+	svc.channelGroupsCacheMu.Lock()
+	defer svc.channelGroupsCacheMu.Unlock()
+	svc.channelGroupsCache = map[uint]channelGroupsCacheEntry{}
 }
 
 // upstreamTarget 解析后的上游目标（监控渠道或直连 Provider）。

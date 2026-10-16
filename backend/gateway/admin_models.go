@@ -398,7 +398,7 @@ func (a *AdminService) probeRouteModel(
 		return res
 	}
 	// 模型测试：组+路由 UA；无客户端，空则用默认 UA（与拉模型一致）
-	a.runtime().applyRouteUserAgentForAdmin(target, group, &route)
+	a.applyRouteUserAgentForAdmin(target, group, &route)
 	if target.Provider != nil {
 		res.ChannelName = target.Provider.Name
 		res.Label = target.Provider.Name
@@ -433,7 +433,7 @@ func (a *AdminService) probeRouteModel(
 	defer cancel()
 	start := time.Now()
 	// 探测不带客户端请求头（UA 由 target.UserAgentOverride 注入）
-	status, _, respBody, _, fwdErr := a.forwardOnce(ctx, upstreamCall{
+	status, _, respBody, _, fwdErr := a.rt.forwardOnce(ctx, upstreamCall{
 		target: target, path: path, method: http.MethodPost, header: http.Header{}, body: body, kind: upstreamKind,
 	})
 	res.LatencyMS = time.Since(start).Milliseconds()

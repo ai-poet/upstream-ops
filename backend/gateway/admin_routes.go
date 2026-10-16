@@ -83,7 +83,7 @@ func (a *AdminService) reorderRoutesPersisted(groupID uint) error {
 // 按实时源分组倍率重写路由顺序与账号计费倍率。
 
 func (a *AdminService) ResortRoutesOnRateScan(ctx context.Context) {
-	if a == nil || a.Service == nil || a.Groups == nil || a.Routes == nil {
+	if a == nil || a.core == nil || a.Groups == nil || a.Routes == nil {
 		return
 	}
 	_ = ctx

@@ -136,7 +136,7 @@ func main() {
 	monitorSvc := monitor.NewService(channels, announcements, rates, monLogs, channelSvc, dispatcher, log)
 
 	schedulerFactory := func(scfg config.SchedulerConfig, pcfg config.ProxyConfig) *scheduler.Scheduler {
-		return scheduler.New(scfg, monitorSvc, monLogs, rates, notifies, announcements, captchas, cipher, gatewaySvc, pcfg, log)
+		return scheduler.New(scfg, monitorSvc, monLogs, rates, notifies, announcements, captchas, cipher, gatewaySvc.Admin, pcfg, log)
 	}
 	sch := schedulerFactory(cfg.Scheduler, cfg.Proxy)
 	if err := sch.Start(); err != nil {

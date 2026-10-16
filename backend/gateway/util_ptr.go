@@ -7,7 +7,7 @@ import (
 	"github.com/bejix/upstream-ops/backend/connector"
 )
 
-func (svc *Service) findAPIKeyByName(items []connector.APIKey, name string) *connector.APIKey {
+func (a *AdminService) findAPIKeyByName(items []connector.APIKey, name string) *connector.APIKey {
 	for i := range items {
 		if strings.TrimSpace(items[i].Name) == name {
 			return &items[i]
@@ -16,7 +16,7 @@ func (svc *Service) findAPIKeyByName(items []connector.APIKey, name string) *con
 	return nil
 }
 
-func (svc *Service) findAPIKeyByID(items []connector.APIKey, id int64) *connector.APIKey {
+func (a *AdminService) findAPIKeyByID(items []connector.APIKey, id int64) *connector.APIKey {
 	for i := range items {
 		if items[i].ID == id {
 			return &items[i]
