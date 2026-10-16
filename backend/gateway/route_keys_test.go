@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -120,5 +122,42 @@ func TestEnsureMissingRouteKeys(t *testing.T) {
 	route, _ = svc.Routes.FindByID(route.ID)
 	if route.SourceAPIKeyName != svc.Admin.stableUpstreamKeyName(1, &plus, "plus") {
 		t.Fatalf("key not re-aligned to new source group: %q", route.SourceAPIKeyName)
+	}
+}
+
+// 拉取路由模型：直连渠道用直连配置的 Key；监控渠道（未保存的草稿）在上游准备好统一 Key 后用它调 /v1/models。
+func TestFetchRouteModels(t *testing.T) {
+	var seenAuth []string
+	up := newMockUpstream(t, func(w http.ResponseWriter, r *http.Request, body []byte) {
+		seenAuth = append(seenAuth, r.Header.Get("Authorization"))
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"gpt-image-1"},{"id":"gpt-x"},{"id":"gpt-x"}]}`)
+	})
+	h := newE2E(t, nil, e2eRouteSpec{Upstream: up, Protocol: "openai_chat"})
+
+	models, err := h.svc.FetchRouteModels(context.Background(), h.group.ID, RouteInput{SourceKind: "provider", GatewayProviderID: h.routes[0].GatewayProviderID})
+	if err != nil || strings.Join(models, ",") != "gpt-image-1,gpt-x" {
+		t.Fatalf("provider: %v %v", models, err)
+	}
+	if seenAuth[0] != "Bearer sk-up-a" {
+		t.Fatalf("provider key not used: %q", seenAuth[0])
+	}
+
+	// 监控渠道：渠道站点指向 mock，上游 Key 由 fakeKeyAPI 建出来
+	api := &fakeKeyAPI{}
+	h.svc.ChannelAPI = api
+	h.svc.Channels = storage.NewChannels(openGatewayTestDB(t))
+	if err := h.svc.Channels.Create(&storage.Channel{Name: "up", Type: storage.ChannelTypeNewAPI, SiteURL: up.URL, Username: "u", PasswordCipher: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	vip := int64(7)
+	draft := RouteInput{SourceKind: "monitor", SourceChannelID: 1, SourceGroupID: &vip, SourceGroupName: "vip"}
+	if _, err := h.svc.FetchRouteModels(context.Background(), h.group.ID, draft); err != nil {
+		t.Fatal(err)
+	}
+	if api.creates != 1 || seenAuth[1] != "Bearer sk-upstream-1" {
+		t.Fatalf("monitor draft: creates=%d auth=%q", api.creates, seenAuth[1])
+	}
+	if _, err := h.svc.FetchRouteModels(context.Background(), h.group.ID, RouteInput{SourceKind: "monitor"}); err == nil {
+		t.Fatal("route without a channel should be rejected")
 	}
 }

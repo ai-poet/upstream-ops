@@ -3,6 +3,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -361,12 +362,108 @@ func (a *AdminService) ensureSourceAPIKey(ctx context.Context, groupID uint, rou
 	if route.NormalizeSourceKind() == storage.GatewayRouteSourceProvider {
 		return nil
 	}
-	sourceChannel, err := a.Channels.FindByID(route.SourceChannelID)
+	keyID, keyName, secret, err := a.ensureUpstreamKey(ctx, route)
 	if err != nil {
 		return err
 	}
+	cipherText, err := a.Cipher.Encrypt(secret)
+	if err != nil {
+		return err
+	}
+	return a.Routes.UpdateSourceKey(route.ID, keyID, keyName, cipherText)
+}
+
+// FetchRouteModels 拉取一条路由（可以是还没保存的草稿）的上游能访问的模型：用这条路由转发时会用的密钥
+// 调上游 /v1/models。监控渠道优先用已存的「渠道 + 源分组」统一 Key，还没有时在上游找到或新建它
+// （保存路由时也会这么做）；直连渠道用直连配置里的 Key。
+func (a *AdminService) FetchRouteModels(ctx context.Context, groupID uint, in RouteInput) ([]string, error) {
+	group, err := a.Groups.FindByID(groupID)
+	if err != nil {
+		return nil, err
+	}
+	route := storage.GatewayRoute{
+		ID:                in.ID,
+		SourceKind:        strings.ToLower(strings.TrimSpace(in.SourceKind)),
+		SourceChannelID:   in.SourceChannelID,
+		GatewayProviderID: in.GatewayProviderID,
+		SourceGroupID:     in.SourceGroupID,
+		SourceGroupName:   strings.TrimSpace(in.SourceGroupName),
+		UserAgentMode:     NormalizeUserAgentMode(in.UserAgentMode),
+		UserAgentCustom:   strings.TrimSpace(in.UserAgentCustom),
+	}
+	var (
+		ch     *storage.Channel
+		secret string
+	)
+	if route.NormalizeSourceKind() == storage.GatewayRouteSourceProvider {
+		if route.GatewayProviderID == 0 || a.Providers == nil {
+			return nil, errors.New("请先选择直连渠道")
+		}
+		p, err := a.Providers.FindByID(route.GatewayProviderID)
+		if err != nil {
+			return nil, fmt.Errorf("直连渠道不存在: %w", err)
+		}
+		if secret, err = a.Cipher.Decrypt(p.APIKeyCipher); err != nil || strings.TrimSpace(secret) == "" {
+			return nil, errors.New("直连渠道的密钥为空或解密失败")
+		}
+		ch = &storage.Channel{Name: p.Name, SiteURL: strings.TrimRight(p.BaseURL, "/")}
+	} else {
+		if route.SourceChannelID == 0 {
+			return nil, errors.New("请先选择监控渠道")
+		}
+		if ch, err = a.Channels.FindByID(route.SourceChannelID); err != nil {
+			return nil, fmt.Errorf("监控渠道不存在: %w", err)
+		}
+		if secret, err = a.monitorRouteSecret(ctx, &route); err != nil {
+			return nil, fmt.Errorf("准备上游密钥失败: %w", err)
+		}
+	}
+	models, err := a.fetchUpstreamModels(ctx, ch, secret, a.resolveAdminUserAgent(group, &route))
+	if err != nil {
+		return nil, err
+	}
+	return storage.NormalizeModelList(models), nil
+}
+
+// monitorRouteSecret 监控渠道路由会用的上游 Key 明文：本路由已存的、或别的路由存过的同名统一 Key，
+// 都没有时在上游找到或新建。
+func (a *AdminService) monitorRouteSecret(ctx context.Context, route *storage.GatewayRoute) (string, error) {
+	name := a.stableUpstreamKeyName(route.SourceChannelID, route.SourceGroupID, route.SourceGroupName)
+	decrypt := func(r *storage.GatewayRoute) string {
+		if r == nil || strings.TrimSpace(r.SourceAPIKeyCipher) == "" || r.SourceAPIKeyName != name {
+			return ""
+		}
+		secret, err := a.Cipher.Decrypt(r.SourceAPIKeyCipher)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(secret)
+	}
+	if route.ID > 0 {
+		if r, err := a.Routes.FindByID(route.ID); err == nil {
+			if secret := decrypt(r); secret != "" {
+				return secret, nil
+			}
+		}
+	}
+	if r, err := a.Routes.FindKeyedBySourceKeyName(name); err == nil {
+		if secret := decrypt(r); secret != "" {
+			return secret, nil
+		}
+	}
+	_, _, secret, err := a.ensureUpstreamKey(ctx, route)
+	return secret, err
+}
+
+// ensureUpstreamKey 在监控渠道上找到（或新建）这条路由「渠道 + 源分组」的统一 Key，对齐名字与源分组，
+// 返回 Key 明文；不写路由（保存路由 / 拉取模型共用）。
+func (a *AdminService) ensureUpstreamKey(ctx context.Context, route *storage.GatewayRoute) (keyID int64, keyName, secret string, err error) {
+	sourceChannel, err := a.Channels.FindByID(route.SourceChannelID)
+	if err != nil {
+		return 0, "", "", err
+	}
 	// 统一名：渠道 + 源分组；跨网关组共用
-	keyName := a.stableUpstreamKeyName(route.SourceChannelID, route.SourceGroupID, route.SourceGroupName)
+	keyName = a.stableUpstreamKeyName(route.SourceChannelID, route.SourceGroupID, route.SourceGroupName)
 	legacyName := strings.TrimSpace(route.SourceAPIKeyName) // 旧版 g{组}-r{路由} 等，用于迁移复用
 
 	unlimitedQuota := boolPtr(sourceChannel.Type == storage.ChannelTypeNewAPI)
@@ -377,7 +474,7 @@ func (a *AdminService) ensureSourceAPIKey(ctx context.Context, groupID uint, rou
 		Page: 1, PageSize: 100, Search: keyName,
 	})
 	if err != nil {
-		return err
+		return 0, "", "", err
 	}
 	var key *connector.APIKey
 	key = a.findAPIKeyByName(page.Items, keyName)
@@ -386,7 +483,7 @@ func (a *AdminService) ensureSourceAPIKey(ctx context.Context, groupID uint, rou
 	if key == nil {
 		page, err = a.ChannelAPI.ListAPIKeys(ctx, route.SourceChannelID, connector.APIKeyQuery{Page: 1, PageSize: 100})
 		if err != nil {
-			return err
+			return 0, "", "", err
 		}
 		key = a.findAPIKeyByName(page.Items, keyName)
 		if key == nil && route.SourceAPIKeyID > 0 {
@@ -409,7 +506,7 @@ func (a *AdminService) ensureSourceAPIKey(ctx context.Context, groupID uint, rou
 			ExpiredTime:    neverExpire,
 		})
 		if err != nil {
-			return err
+			return 0, "", "", err
 		}
 		key = updated
 	} else {
@@ -421,18 +518,14 @@ func (a *AdminService) ensureSourceAPIKey(ctx context.Context, groupID uint, rou
 			ExpiredTime:    neverExpire,
 		})
 		if err != nil {
-			return err
+			return 0, "", "", err
 		}
 	}
-	secret, err := a.ChannelAPI.RevealAPIKey(ctx, route.SourceChannelID, key.ID)
+	secret, err = a.ChannelAPI.RevealAPIKey(ctx, route.SourceChannelID, key.ID)
 	if err != nil {
-		return err
+		return 0, "", "", err
 	}
-	cipherText, err := a.Cipher.Encrypt(secret)
-	if err != nil {
-		return err
-	}
-	return a.Routes.UpdateSourceKey(route.ID, key.ID, keyName, cipherText)
+	return key.ID, keyName, secret, nil
 }
 
 // ClearRoutePause 清除路由暂停。

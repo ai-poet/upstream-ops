@@ -1121,6 +1121,29 @@ export function GatewayPage() {
     }
   }
 
+  /** 拉取一条路由（含未保存的草稿）上游能访问的模型，供「转发模型」勾选 */
+  async function fetchRouteModels(r: Partial<GatewayRoute>): Promise<string[]> {
+    if (!selectedGroup) return []
+    const kind = routeSourceKind(r)
+    const res = await apiFetch<{ models: string[] }>(
+      `/gateway/groups/${selectedGroup.id}/routes/fetch-models`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          id: r.id ?? 0,
+          source_kind: kind,
+          source_channel_id: kind === "monitor" ? Number(r.source_channel_id) || 0 : 0,
+          gateway_provider_id: kind === "provider" ? Number(r.gateway_provider_id) || 0 : 0,
+          source_group_id: kind === "monitor" ? (r.source_group_id ?? null) : null,
+          source_group_name: kind === "monitor" ? (r.source_group_name ?? "") : "",
+          user_agent_mode: r.user_agent_mode ?? "passthrough",
+          user_agent_custom: r.user_agent_custom ?? "",
+        }),
+      },
+    )
+    return res.models ?? []
+  }
+
   async function ensureKeys() {
     if (!selectedGroup) return
     setBusy(true)
@@ -1645,6 +1668,7 @@ export function GatewayPage() {
                         sortedRouteRows={sortedRouteRows}
                         channelList={channelList}
                         modelOptions={modelItems.map((m) => m.id)}
+                        onFetchRouteModels={fetchRouteModels}
                         providerOptions={providerOptions}
                         sourceGroupsByChannel={sourceGroupsByChannel}
                         onLoadSourceGroups={(id) => void loadSourceGroups(id)}

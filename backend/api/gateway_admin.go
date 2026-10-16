@@ -38,6 +38,7 @@ func registerGatewayAdmin(g *gin.RouterGroup, d *Deps) {
 		gp.GET("/groups/:id/routes", func(c *gin.Context) { listGatewayGroupRoutes(c, d) })
 		gp.PUT("/groups/:id/routes", func(c *gin.Context) { saveGatewayGroupRoutes(c, d) })
 		gp.POST("/groups/:id/routes/ensure-keys", func(c *gin.Context) { ensureGatewayGroupRouteKeys(c, d) })
+		gp.POST("/groups/:id/routes/fetch-models", func(c *gin.Context) { fetchGatewayRouteModels(c, d) })
 
 		// models
 		gp.GET("/groups/:id/models/preview", func(c *gin.Context) { previewGatewayGroupModels(c, d) })
@@ -341,6 +342,28 @@ func saveGatewayGroupRoutes(c *gin.Context, d *Deps) {
 		resp["ensure_keys"] = ensured
 	}
 	c.JSON(http.StatusOK, resp)
+}
+
+// fetchGatewayRouteModels 拉取一条路由（含未保存的草稿）上游能访问的模型，供「转发模型」勾选。
+func fetchGatewayRouteModels(c *gin.Context, d *Deps) {
+	id, err := parseUintParam(c, "id")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	var in gateway.RouteInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 60*time.Second)
+	defer cancel()
+	models, err := d.Gateway.FetchRouteModels(ctx, id, in)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"models": models})
 }
 
 func ensureGatewayGroupRouteKeys(c *gin.Context, d *Deps) {

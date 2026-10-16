@@ -537,6 +537,16 @@ func NormalizeModelList(list []string) []string {
 // Update 全量保存。
 func (r *GatewayRoutes) Update(item *GatewayRoute) error { return r.db.Save(item).Error }
 
+// FindKeyedBySourceKeyName 任意一条已存了该上游 Key（按名字）的路由；上游 Key 按「渠道 + 源分组」跨网关组共用。
+func (r *GatewayRoutes) FindKeyedBySourceKeyName(name string) (*GatewayRoute, error) {
+	var item GatewayRoute
+	err := r.db.Where("source_api_key_name = ? AND source_api_key_cipher <> ''", name).Order("id ASC").First(&item).Error
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
 // UpdateSourceKey 更新路由绑定的上游密钥密文。
 func (r *GatewayRoutes) UpdateSourceKey(id uint, keyID int64, keyName, keyCipher string) error {
 	return r.db.Model(&GatewayRoute{}).Where("id = ?", id).Updates(map[string]any{

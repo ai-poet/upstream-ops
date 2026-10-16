@@ -225,8 +225,10 @@ type RoutesPanelProps = {
   setRouteDrafts: Dispatch<SetStateAction<Partial<GatewayRoute>[]>>
   sortedRouteRows: SortedRouteRow[]
   channelList: ChannelOption[]
-  /** 组模型清单，供「转发模型」点选 */
+  /** 组模型清单，供「转发模型」下拉候选 */
   modelOptions: string[]
+  /** 拉取一条路由（含未保存的草稿）上游能访问的模型 */
+  onFetchRouteModels: (route: Partial<GatewayRoute>) => Promise<string[]>
   providerOptions: GatewayProviderOption[]
   sourceGroupsByChannel: Record<number, RateSnapshot[]>
   onLoadSourceGroups: (channelID: number) => void
@@ -248,6 +250,7 @@ export function RoutesPanel({
   sortedRouteRows,
   channelList,
   modelOptions,
+  onFetchRouteModels,
   providerOptions,
   sourceGroupsByChannel,
   onLoadSourceGroups,
@@ -832,6 +835,7 @@ export function RoutesPanel({
           routeLabel={routeLabel(routeDrafts[modelsEditIdx])}
           initial={routeDrafts[modelsEditIdx].supported_models ?? []}
           modelOptions={modelOptions}
+          onFetchModels={() => onFetchRouteModels(routeDrafts[modelsEditIdx])}
           onOpenChange={(open) => {
             if (!open) setModelsEditIdx(null)
           }}
