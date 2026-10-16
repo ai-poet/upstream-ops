@@ -1,6 +1,7 @@
 package pricing
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	_ "embed"
@@ -12,7 +13,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +34,7 @@ const overrideCacheTTL = 10 * time.Second
 // LiteLLM 原始条目（字段可选；与 sub2api model_prices_and_context_window.json 一致）。
 type defaultPriceEntry struct {
 	Mode                                string   `json:"mode"`
+	LiteLLMProvider                     string   `json:"litellm_provider"`
 	InputCostPerToken                   *float64 `json:"input_cost_per_token"`
 	InputCostPerTokenPriority           *float64 `json:"input_cost_per_token_priority"`
 	OutputCostPerToken                  *float64 `json:"output_cost_per_token"`
@@ -195,6 +199,11 @@ func (c *Catalog) loadDefaults(body []byte) error {
 		if e.LongContextOutputCostMultiplier != nil {
 			p.LongContextOutputMultiplier = *e.LongContextOutputCostMultiplier
 		}
+		// 价目表多用 *_above_XXXk_tokens 写长上下文价；条目里写了任一 long_context_* 字段（含显式 0）时以它为准
+		if e.LongContextInputTokenThreshold == nil && e.LongContextInputCostMultiplier == nil && e.LongContextOutputCostMultiplier == nil {
+			deriveLongContextFromAboveTierFields(rawEntry, &p)
+		}
+		p.LongContextThresholdInclusive = strings.EqualFold(strings.TrimSpace(e.LiteLLMProvider), "xai")
 		key := strings.ToLower(strings.TrimSpace(name))
 		if key == "" {
 			continue
@@ -876,4 +885,77 @@ func (c *Catalog) lookupOverride(model string) (storage.ModelPriceOverride, bool
 	}
 	item, ok := snap.lower[strings.ToLower(model)]
 	return item, ok
+}
+
+// aboveTierPricePattern 价目表里「超过阈值后的输入 / 输出单价」字段，如 input_cost_per_token_above_272k_tokens。
+// 带服务档后缀的变体（_flex、_priority）不匹配。
+var aboveTierPricePattern = regexp.MustCompile(`^(input|output)_cost_per_token_above_(\d+)k_tokens$`)
+
+// deriveLongContextFromAboveTierFields 把 *_above_XXXk_tokens 的绝对单价折算成长上下文阈值 + 倍率
+// （移植自 sub2api pricing_service.go 的同名函数）：
+//   - 阈值取自字段名（XXX × 1000），有多个阈值时取最小的；
+//   - 倍率 = 超阈值单价 ÷ 基础单价，只有一侧时另一侧记 1；
+//   - 超阈值单价都不高于基础价时视为没有长上下文加价；
+//   - 缓存读写的 above 字段不单独折算，计费时随输入倍率（见 CalculateCostWithBillingInput）。
+//
+// 以前只认显式的 long_context_* 字段，而价目表里几十个模型（GPT-6 / GPT-5.x 超过 272K、Claude Sonnet 4.x 与
+// Gemini 2.5 / 3 Pro 超过 200K 等）都是这种写法，超过阈值的请求一直按普通价少算。
+func deriveLongContextFromAboveTierFields(rawEntry json.RawMessage, p *ModelPricing) {
+	if p == nil || !bytes.Contains(rawEntry, []byte("_above_")) {
+		return
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(rawEntry, &fields); err != nil {
+		return
+	}
+	type tierPrices struct{ input, output float64 }
+	tiers := map[int]*tierPrices{}
+	for key, value := range fields {
+		m := aboveTierPricePattern.FindStringSubmatch(key)
+		if m == nil {
+			continue
+		}
+		price, ok := value.(float64)
+		if !ok || price <= 0 {
+			continue
+		}
+		thousands, err := strconv.Atoi(m[2])
+		if err != nil || thousands <= 0 {
+			continue
+		}
+		threshold := thousands * 1000
+		tp := tiers[threshold]
+		if tp == nil {
+			tp = &tierPrices{}
+			tiers[threshold] = tp
+		}
+		if m[1] == "input" {
+			tp.input = price
+		} else {
+			tp.output = price
+		}
+	}
+	if len(tiers) == 0 {
+		return
+	}
+	threshold := 0
+	for t := range tiers {
+		if threshold == 0 || t < threshold {
+			threshold = t
+		}
+	}
+	tp := tiers[threshold]
+	inputMultiplier, outputMultiplier := 1.0, 1.0
+	if tp.input > 0 && p.InputPricePerToken > 0 {
+		inputMultiplier = tp.input / p.InputPricePerToken
+	}
+	if tp.output > 0 && p.OutputPricePerToken > 0 {
+		outputMultiplier = tp.output / p.OutputPricePerToken
+	}
+	if inputMultiplier <= 1 && outputMultiplier <= 1 {
+		return
+	}
+	p.LongContextInputThreshold = threshold
+	p.LongContextInputMultiplier = inputMultiplier
+	p.LongContextOutputMultiplier = outputMultiplier
 }

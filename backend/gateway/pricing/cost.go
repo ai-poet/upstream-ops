@@ -136,8 +136,12 @@ func CalculateCostWithBillingInput(p ModelPricing, tokens UsageTokens, rateMulti
 		}
 	}
 
-	longContext := p.LongContextInputThreshold > 0 &&
-		tokens.InputTokens+tokens.CacheCreationTokens+tokens.CacheReadTokens > p.LongContextInputThreshold &&
+	totalInput := tokens.InputTokens + tokens.CacheCreationTokens + tokens.CacheReadTokens
+	overThreshold := totalInput > p.LongContextInputThreshold
+	if p.LongContextThresholdInclusive {
+		overThreshold = totalInput >= p.LongContextInputThreshold
+	}
+	longContext := p.LongContextInputThreshold > 0 && overThreshold &&
 		(p.LongContextInputMultiplier > 1 || p.LongContextOutputMultiplier > 1)
 	cacheMultiplier := 1.0
 	if longContext {

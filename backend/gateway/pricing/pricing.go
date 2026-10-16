@@ -20,15 +20,17 @@ type ModelPricing struct {
 	LongContextInputThreshold          int
 	LongContextInputMultiplier         float64
 	LongContextOutputMultiplier        float64
-	PerRequestPrice                    float64
-	RequestTiers                       []Tier
-	ImagePrice1K                       float64
-	ImagePrice2K                       float64
-	ImagePrice4K                       float64
-	VideoPrice480P                     float64
-	VideoPrice720P                     float64
-	VideoPrice1080P                    float64
-	OutputPricePerImage                float64
+	// LongContextThresholdInclusive 输入 token 达到阈值就进长上下文档（xAI 的口径）；其余厂商是严格大于
+	LongContextThresholdInclusive bool
+	PerRequestPrice               float64
+	RequestTiers                  []Tier
+	ImagePrice1K                  float64
+	ImagePrice2K                  float64
+	ImagePrice4K                  float64
+	VideoPrice480P                float64
+	VideoPrice720P                float64
+	VideoPrice1080P               float64
+	OutputPricePerImage           float64
 	// FirstTierUpTo 只用于参考价目表：条目只有分档定价，这里的单价取的是最低一档，档位上限（输入 token 数）
 	FirstTierUpTo int
 }
