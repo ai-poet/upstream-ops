@@ -140,6 +140,8 @@ type RouteInput struct {
 	// UserAgentMode: passthrough | group | custom
 	UserAgentMode   string `json:"user_agent_mode"`
 	UserAgentCustom string `json:"user_agent_custom"`
+	// ImagesURLToB64JSON 生图结果 url 转 base64（见 storage.GatewayRoute）
+	ImagesURLToB64JSON bool `json:"images_url_to_b64_json"`
 }
 
 // EnsureKeyRouteResult 单条路由 Ensure 上游密钥的结果。

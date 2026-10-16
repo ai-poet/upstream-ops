@@ -25,6 +25,11 @@ func requestModel(contentType string, body []byte) string {
 	if !isMultipartContentType(contentType) {
 		return ExtractModelFromBody(body)
 	}
+	return multipartFieldValue(contentType, body, "model")
+}
+
+// multipartFieldValue multipart 表单里某个普通字段（非文件）的值；没有或解析失败返回空。
+func multipartFieldValue(contentType string, body []byte, name string) string {
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil || params["boundary"] == "" {
 		return ""
@@ -35,7 +40,7 @@ func requestModel(contentType string, body []byte) string {
 		if err != nil {
 			return ""
 		}
-		if part.FormName() == "model" && part.FileName() == "" {
+		if part.FormName() == name && part.FileName() == "" {
 			v, _ := io.ReadAll(io.LimitReader(part, 512))
 			return strings.TrimSpace(string(v))
 		}

@@ -1070,6 +1070,7 @@ export function GatewayPage() {
             user_agent_mode: uaMode,
             user_agent_custom:
               uaMode === "custom" ? (r.user_agent_custom ?? "").trim() : "",
+            images_url_to_b64_json: r.images_url_to_b64_json === true,
           }
         }
         const chId = Number(r.source_channel_id) || 0
@@ -1102,6 +1103,7 @@ export function GatewayPage() {
           user_agent_mode: uaMode,
           user_agent_custom:
             uaMode === "custom" ? (r.user_agent_custom ?? "").trim() : "",
+          images_url_to_b64_json: r.images_url_to_b64_json === true,
         }
       })
       // 保存后后端会自动给缺上游密钥的监控渠道路由生成密钥，结果在 ensure_keys 里
@@ -1631,25 +1633,29 @@ export function GatewayPage() {
 
       <Tabs
         value={mainTab}
-        onValueChange={(v) => setMainTab(v as MainTab)}
+        onValueChange={(v) => {
+          setMainTab(v as MainTab)
+          // 切到使用记录就按当前筛选重新拉一次，不用再手动点刷新
+          if (v === "usage") refreshUsage()
+        }}
         className="space-y-4"
       >
-        <TabsList className="h-auto w-full justify-start rounded-2xl border border-border bg-muted/40 p-1">
-          <TabsTrigger value="gateway" className="gap-1.5 px-4 py-2">
+        <TabsList className="grid h-auto w-full grid-cols-4 rounded-2xl border border-border bg-muted/40 p-1 sm:flex sm:justify-start">
+          <TabsTrigger value="gateway" className="gap-1 px-1 py-2 text-xs sm:gap-1.5 sm:px-4 sm:text-sm">
             <Layers className="size-3.5" /> 网关
           </TabsTrigger>
           <TabsTrigger
             value="providers"
-            className="gap-1.5 px-4 py-2"
+            className="gap-1 px-1 py-2 text-xs sm:gap-1.5 sm:px-4 sm:text-sm"
             onClick={() => void loadProviderOptions()}
           >
-            <Route className="size-3.5" /> 直连渠道
+            <Route className="hidden size-3.5 sm:block" /> 直连渠道
           </TabsTrigger>
-          <TabsTrigger value="usage" className="gap-1.5 px-4 py-2">
-            <ScrollText className="size-3.5" /> 使用记录
+          <TabsTrigger value="usage" className="gap-1 px-1 py-2 text-xs sm:gap-1.5 sm:px-4 sm:text-sm">
+            <ScrollText className="hidden size-3.5 sm:block" /> 使用记录
           </TabsTrigger>
-          <TabsTrigger value="prices" className="gap-1.5 px-4 py-2">
-            <DollarSign className="size-3.5" /> 价格覆盖
+          <TabsTrigger value="prices" className="gap-1 px-1 py-2 text-xs sm:gap-1.5 sm:px-4 sm:text-sm">
+            <DollarSign className="hidden size-3.5 sm:block" /> 价格覆盖
           </TabsTrigger>
         </TabsList>
 
@@ -1733,7 +1739,7 @@ export function GatewayPage() {
                         : "translate-y-0 animate-in fade-in-0 duration-200",
                     )}
                   >
-                    <TabsList className="h-auto w-full justify-start rounded-lg border border-border bg-muted/30 p-1">
+                    <TabsList className="h-auto w-full flex-wrap justify-start rounded-lg border border-border bg-muted/30 p-1">
                       <TabsTrigger value="keys" className="flex-none gap-1.5 px-3 py-1.5">
                         <KeyRound className="size-3.5" /> 密钥
                       </TabsTrigger>

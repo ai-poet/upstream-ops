@@ -716,6 +716,8 @@ export interface GatewayRoute {
   user_agent_mode?: GatewayUserAgentMode
   /** mode=custom 时的 User-Agent；转发/模型测试/拉模型共用 */
   user_agent_custom?: string
+  /** 生图结果 url 转 base64：Images 非流式响应只有 url 时，网关下载后回填 b64_json */
+  images_url_to_b64_json?: boolean
   source_api_key_id: number
   source_api_key_name: string
   temp_unschedulable_until?: string | null

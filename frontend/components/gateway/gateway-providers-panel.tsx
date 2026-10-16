@@ -39,6 +39,7 @@ import type {
   GatewayUpstreamProtocol,
 } from "@/lib/api-types"
 import { cn } from "@/lib/utils"
+import { useIsMobile } from "@/hooks/use-mobile"
 
 type ProviderForm = {
   name: string
@@ -64,7 +65,24 @@ const emptyForm = (): ProviderForm => ({
   notes: "",
 })
 
+function providerProtocolLabel(protocol: string | undefined): string {
+  switch (protocol) {
+    case "openai_responses":
+      return "Responses"
+    case "openai_chat":
+    case "openai":
+      return "Chat"
+    case "anthropic":
+      return "Anthropic"
+    case "gemini":
+      return "Gemini"
+    default:
+      return "自动"
+  }
+}
+
 export function GatewayProvidersPanel() {
+  const isMobile = useIsMobile()
   const { confirm, dialog: confirmDialog } = useConfirm()
   const [page, setPage] = useState<GatewayProviderPage | null>(null)
   const [loading, setLoading] = useState(false)
@@ -221,10 +239,10 @@ export function GatewayProvidersPanel() {
                 配置第三方上游的访问地址与密钥，供网关组路由调用；可与监控渠道混用，不需要在上游生成密钥。
               </p>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex items-center gap-1">
+            <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+              <div className="flex min-w-0 flex-1 items-center gap-1 sm:flex-none">
                 <Input
-                  className="w-44"
+                  className="w-full sm:w-44"
                   placeholder="搜索名称 / URL"
                   value={q}
                   onChange={(e) => setQ(e.target.value)}
@@ -261,6 +279,57 @@ export function GatewayProvidersPanel() {
             </div>
           </div>
 
+          {isMobile ? (
+            <div className="space-y-2">
+              {loading && items.length === 0 ? (
+                <div className="py-8 text-center text-muted-foreground">
+                  <Loader2 className="mx-auto size-4 animate-spin" />
+                </div>
+              ) : items.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-border py-8 text-center text-sm text-muted-foreground">
+                  暂无直连渠道，点击「新建」添加
+                </p>
+              ) : (
+                items.map((p) => (
+                  <div key={p.id} className="space-y-2 rounded-xl border border-border p-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium">{p.name}</div>
+                        <div className="truncate font-mono text-[11px] text-muted-foreground" title={p.base_url}>
+                          {p.base_url}
+                        </div>
+                      </div>
+                      {p.enabled ? (
+                        <Badge variant="default" className="shrink-0">启用</Badge>
+                      ) : (
+                        <Badge variant="secondary" className="shrink-0">禁用</Badge>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                      <span>{providerProtocolLabel(p.upstream_protocol)}</span>
+                      <span className="tabular-nums">倍率 {p.default_billing_rate}</span>
+                      <span className="font-mono">{p.api_key_hint || "无 Key"}</span>
+                      {p.proxy_enabled ? <Badge variant="outline">代理</Badge> : null}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Button size="sm" variant="outline" className="h-9" onClick={() => openEdit(p)}>
+                        <Pencil className="size-3.5" /> 编辑
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-9 text-destructive"
+                        disabled={busy}
+                        onClick={() => void remove(p)}
+                      >
+                        <Trash2 className="size-3.5" /> 删除
+                      </Button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          ) : (
           <div className="overflow-x-auto rounded-md border">
             <Table>
               <TableHeader>
@@ -295,18 +364,7 @@ export function GatewayProvidersPanel() {
                       <TableCell className="max-w-[16rem] truncate font-mono text-xs" title={p.base_url}>
                         {p.base_url}
                       </TableCell>
-                      <TableCell className="text-sm">
-                        {p.upstream_protocol === "openai_responses"
-                          ? "Responses"
-                          : p.upstream_protocol === "openai_chat" ||
-                              p.upstream_protocol === "openai"
-                            ? "Chat"
-                            : p.upstream_protocol === "anthropic"
-                              ? "Anthropic"
-                              : p.upstream_protocol === "gemini"
-                                ? "Gemini"
-                                : "自动"}
-                      </TableCell>
+                      <TableCell className="text-sm">{providerProtocolLabel(p.upstream_protocol)}</TableCell>
                       <TableCell className="tabular-nums text-sm">
                         {p.default_billing_rate}
                       </TableCell>
@@ -348,6 +406,7 @@ export function GatewayProvidersPanel() {
               </TableBody>
             </Table>
           </div>
+          )}
 
           {page && page.pages > 1 && (
             <div className="flex items-center justify-between text-sm">

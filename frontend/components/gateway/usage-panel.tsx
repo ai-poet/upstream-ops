@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
-import { Check, ChevronsUpDown, Loader2, RefreshCw, Search } from "lucide-react"
+import { Check, ChevronDown, ChevronsUpDown, Loader2, RefreshCw, Search } from "lucide-react"
+import { useIsMobile } from "@/hooks/use-mobile"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import {
@@ -323,10 +324,13 @@ export function UsagePanel({
   refreshUsage,
   goUsagePage,
 }: UsagePanelProps) {
+  const isMobile = useIsMobile()
+  // 手机上筛选条件默认收起（7 个字段竖着排太长），快捷时间与查询按钮常显
+  const [filtersOpen, setFiltersOpen] = useState(false)
   return (
     <div className="space-y-4">
 {usageStats ? (
-  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+  <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
     {[
       {
         label: "请求数",
@@ -390,7 +394,18 @@ export function UsagePanel({
   <CardContent className="space-y-3 p-4 sm:p-5">
     {/* 筛选条：网格对齐，快捷时间 + 查询/重置 */}
     <div className="space-y-3 rounded-xl border border-border bg-muted/15 p-3 sm:p-4">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7">
+      {isMobile ? (
+        <button
+          type="button"
+          className="flex w-full items-center justify-between text-xs font-medium text-muted-foreground"
+          aria-expanded={filtersOpen}
+          onClick={() => setFiltersOpen((v) => !v)}
+        >
+          筛选条件
+          <ChevronDown className={cn("size-4 transition-transform", filtersOpen && "rotate-180")} />
+        </button>
+      ) : null}
+      <div className={cn("grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7", isMobile && !filtersOpen && "hidden")}>
         <div className="space-y-1.5">
           <Label className="text-xs font-medium text-muted-foreground">
             网关组

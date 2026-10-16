@@ -151,6 +151,7 @@ func (a *AdminService) SaveRoutes(groupID uint, inputs []RouteInput) ([]storage.
 			Concurrency:           in.Concurrency,
 			UserAgentMode:         uaMode,
 			UserAgentCustom:       uaCustom,
+			ImagesURLToB64JSON:    in.ImagesURLToB64JSON,
 		}
 		if kind == storage.GatewayRouteSourceProvider {
 			if in.GatewayProviderID == 0 {

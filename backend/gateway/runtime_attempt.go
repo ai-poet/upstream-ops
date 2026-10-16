@@ -144,6 +144,10 @@ func (rt *Runtime) writeAttemptSuccess(req *relayRequest, at *relayAttempt, out 
 	tokens := parseUsageByKind(out.Body, false, at.upstreamKind)
 	at.meta.BillingInput = req.billing.WithResponse(out.Body)
 	clientBody := rt.convertResponseWithPlan(c.Request.Context(), out.Body, at.plan)
+	// 路由开了「生图结果 url 转 base64」：只有 url 的图片由网关下载回填 b64_json（同 sub2api）
+	if at.route.ImagesURLToB64JSON && isImagesResultEndpoint(req.in.Path) && !clientWantsImageURL(req.contentType, req.body) {
+		clientBody = rt.backfillImagesB64JSON(c.Request.Context(), req.id, clientBody)
+	}
 	if at.plan.Converted && rt.Log != nil && len(clientBody) == 0 && len(out.Body) > 0 {
 		rt.Log.Warn("response convert produced empty body")
 	}

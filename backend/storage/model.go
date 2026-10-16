@@ -518,6 +518,8 @@ type GatewayRoute struct {
 	// UserAgentCustom 仅 mode=custom 时生效；转发/模型测试/拉模型共用。
 	// 不用 omitempty：空串也要返回，前端编辑回填才能区分。
 	UserAgentCustom         string     `gorm:"size:512;not null;default:''" json:"user_agent_custom"`
+	// ImagesURLToB64JSON 生图结果 url 转 base64：Images 非流式响应里只有 url 没有 b64_json 的图片，网关下载后回填（同 sub2api 账号开关）
+	ImagesURLToB64JSON      bool       `gorm:"not null;default:false" json:"images_url_to_b64_json"`
 	SourceAPIKeyID          int64      `gorm:"not null;default:0" json:"source_api_key_id"`
 	SourceAPIKeyName        string     `gorm:"size:256;not null;default:''" json:"source_api_key_name"`
 	SourceAPIKeyCipher      string     `gorm:"type:text" json:"-"`

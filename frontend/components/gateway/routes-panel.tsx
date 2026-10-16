@@ -1,5 +1,6 @@
-import { useState, type Dispatch, type SetStateAction } from "react"
-import { Check, ChevronDown, Play, Plus } from "lucide-react"
+import { useEffect, useState, type Dispatch, type ReactNode, type SetStateAction } from "react"
+import { ArrowUpToLine, Check, ChevronDown, Minus, Play, Plus } from "lucide-react"
+import { useIsMobile } from "@/hooks/use-mobile"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -83,12 +84,20 @@ const UA_MODE_OPTIONS: {
  * 路由优先级输入：编辑中允许清空重输，只有不小于 1 的整数才写回；
  * 失焦时若为空或非法，回到上一个有效值（最小 1）。
  */
-function PriorityInput({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+function PriorityInput({
+  value,
+  onChange,
+  className,
+}: {
+  value: number
+  onChange: (value: number) => void
+  className?: string
+}) {
   // null = 未在编辑，直接显示已提交的值
   const [draft, setDraft] = useState<string | null>(null)
   return (
     <Input
-      className="w-16"
+      className={cn("w-16", className)}
       type="number"
       inputMode="numeric"
       min={1}
@@ -104,6 +113,103 @@ function PriorityInput({ value, onChange }: { value: number; onChange: (value: n
       onBlur={() => setDraft(null)}
     />
   )
+}
+
+/** 手机端的优先级调节：大按钮加减、可直接输入，另有「置顶」（设为当前最高 + 1）。 */
+function PriorityStepper({
+  value,
+  onChange,
+  onTop,
+}: {
+  value: number
+  onChange: (value: number) => void
+  onTop: () => void
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <div className="min-w-0">
+        <div className="text-sm font-medium">优先级</div>
+        <div className="text-[11px] text-muted-foreground">数字越大越先调用</div>
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="size-10"
+          aria-label="降低优先级"
+          disabled={value <= 1}
+          onClick={() => onChange(Math.max(1, value - 1))}
+        >
+          <Minus className="size-4" />
+        </Button>
+        <PriorityInput value={value} onChange={onChange} className="h-10 w-14 text-center text-base" />
+        <Button
+          type="button"
+          variant="outline"
+          size="icon"
+          className="size-10"
+          aria-label="提高优先级"
+          onClick={() => onChange(value + 1)}
+        >
+          <Plus className="size-4" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-10"
+          aria-label="置顶：设为当前最高优先级"
+          title="置顶：设为当前最高优先级"
+          onClick={onTop}
+        >
+          <ArrowUpToLine className="size-4" />
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+/** 手机端卡片里的一项设置：默认标签在上、控件撑满；inline 时标签在左、控件在右（开关类）。 */
+function MobileField({
+  label,
+  hint,
+  inline,
+  children,
+}: {
+  label: string
+  hint?: string
+  inline?: boolean
+  children: ReactNode
+}) {
+  if (inline) {
+    return (
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-xs font-medium text-foreground">{label}</div>
+          {hint ? <div className="text-[11px] leading-4 text-muted-foreground">{hint}</div> : null}
+        </div>
+        <div className="shrink-0">{children}</div>
+      </div>
+    )
+  }
+  return (
+    <div className="grid gap-1.5">
+      <div className="text-xs font-medium text-foreground">{label}</div>
+      <div className="min-w-0 [&_[data-slot=select-trigger]]:w-full [&_[data-slot=select-trigger]]:min-w-0 [&_input]:w-full [&>button]:w-full [&>button]:max-w-none">
+        {children}
+      </div>
+    </div>
+  )
+}
+
+const UPSTREAM_PROTOCOL_LABELS: Record<string, string> = {
+  auto: "自动",
+  openai_chat: "OpenAI Chat",
+  openai_responses: "OpenAI Responses",
+  anthropic: "Anthropic",
+  gemini: "Gemini",
+  openai: "openai",
 }
 
 /**
@@ -262,6 +368,18 @@ export function RoutesPanel({
 }: RoutesPanelProps) {
   // 正在编辑转发模型的路由（routeDrafts 下标）
   const [modelsEditIdx, setModelsEditIdx] = useState<number | null>(null)
+  const isMobile = useIsMobile()
+  // 手机上点加减时列表按优先级实时重排，卡片会从手指下面跑掉：改优先级期间先冻结当前顺序，
+  // 保存、增删路由或切换排序方向后再按新优先级排
+  const [frozenOrder, setFrozenOrder] = useState<number[] | null>(null)
+  useEffect(() => {
+    setFrozenOrder(null)
+  }, [routeDrafts.length, rateSort])
+  const saveRoutes = () => {
+    setFrozenOrder(null)
+    void onSaveRoutes()
+  }
+  const addRoute = () => setRouteDrafts([...routeDrafts, emptyRoute()])
   const routeLabel = (r: Partial<GatewayRoute>) => {
     if (routeSourceKind(r) === "provider") {
       const p = providerOptions.find((x) => x.id === (Number(r.gateway_provider_id) || 0))
@@ -271,9 +389,516 @@ export function RoutesPanel({
     const name = ch?.name || `渠道 #${r.source_channel_id ?? "-"}`
     return r.source_group_name ? `${name} / ${r.source_group_name}` : name
   }
+  // 每条路由的编辑控件只写一份：桌面端放进表格单元格，手机端放进卡片
+  const routeViews = sortedRouteRows.map(({ route: r, index: idx }) => {
+      const kind = routeSourceKind(r)
+      const chId = Number(r.source_channel_id) || 0
+      const providerID = Number(r.gateway_provider_id) || 0
+      const sgs = sourceGroupsByChannel[chId] ?? []
+      const provider = providerOptions.find((p) => p.id === providerID)
+      const calculatedRate =
+        kind === "provider"
+          ? (r.rate_convert_mode as string) === "custom"
+            ? Number(r.rate_convert_value) ||
+              provider?.default_billing_rate ||
+              1
+            : provider?.default_billing_rate || 1
+          : routeAccountRate(r, sgs)
+      const uaMode: GatewayUserAgentMode =
+        r.user_agent_mode === "group" || r.user_agent_mode === "custom"
+          ? r.user_agent_mode
+          : "passthrough"
+    const setWeight = (weight: number) => {
+      setRouteDrafts((prev) => {
+        const next = [...prev]
+        next[idx] = { ...next[idx], weight }
+        return next
+      })
+    }
+    const cells = {
+      kind: (
+        <>
+          <Select
+            value={kind}
+            onValueChange={(v) => {
+              const nextKind = v as GatewayRouteSourceKind
+              setRouteDrafts((prev) => {
+                const next = [...prev]
+                if (nextKind === "provider") {
+                  next[idx] = {
+                    ...next[idx],
+                    source_kind: "provider",
+                    source_channel_id: 0,
+                    source_group_id: null,
+                    source_group_name: "",
+                    rate_convert_mode: "custom",
+                    rate_convert_value:
+                      next[idx].rate_convert_value ?? 1,
+                  }
+                } else {
+                  next[idx] = {
+                    ...next[idx],
+                    source_kind: "monitor",
+                    gateway_provider_id: 0,
+                    rate_convert_mode: "raw",
+                  }
+                }
+                return next
+              })
+              if (nextKind === "provider") void onLoadProviderOptions()
+            }}
+          >
+            <SelectTrigger className="w-28">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="monitor">监控渠道</SelectItem>
+              <SelectItem value="provider">直连渠道</SelectItem>
+            </SelectContent>
+          </Select>
+        </>
+      ),
+      source: (
+        <>
+          {kind === "provider" ? (
+            <Select
+              value={providerID ? String(providerID) : ""}
+              onValueChange={(v) => {
+                const id = Number(v)
+                const p = providerOptions.find((x) => x.id === id)
+                setRouteDrafts((prev) => {
+                  const next = [...prev]
+                  next[idx] = {
+                    ...next[idx],
+                    source_kind: "provider",
+                    gateway_provider_id: id,
+                    source_channel_id: 0,
+                    rate_convert_mode: "custom",
+                    rate_convert_value:
+                      p?.default_billing_rate ?? 1,
+                    upstream_protocol:
+                      (p?.upstream_protocol as GatewayUpstreamProtocol) ||
+                      next[idx].upstream_protocol ||
+                      "auto",
+                  }
+                  return next
+                })
+              }}
+            >
+              <SelectTrigger className="min-w-36">
+                <SelectValue placeholder="选择直连渠道" />
+              </SelectTrigger>
+              <SelectContent>
+                {providerOptions.map((p) => (
+                  <SelectItem key={p.id} value={String(p.id)}>
+                    {p.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <Select
+              value={chId ? String(chId) : ""}
+              onValueChange={(v) => {
+                const id = Number(v)
+                void onLoadSourceGroups(id)
+                setRouteDrafts((prev) => {
+                  const next = [...prev]
+                  next[idx] = {
+                    ...next[idx],
+                    source_kind: "monitor",
+                    source_channel_id: id,
+                    gateway_provider_id: 0,
+                    source_group_id: null,
+                    source_group_name: "",
+                  }
+                  return next
+                })
+              }}
+            >
+              <SelectTrigger className="min-w-32">
+                <SelectValue placeholder="选择监控渠道" />
+              </SelectTrigger>
+              <SelectContent>
+                {channelList.map((ch) => (
+                  <SelectItem key={ch.id} value={String(ch.id)}>
+                    {ch.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+        </>
+      ),
+      sourceGroup: (
+        <>
+          {kind === "provider" ? (
+            <span className="text-xs text-muted-foreground">—</span>
+          ) : (
+          <Select
+            value={sourceGroupSelectValue(r)}
+            onValueChange={(value) => {
+              if (value === "none") {
+                setRouteDrafts((prev) => {
+                  const next = [...prev]
+                  next[idx] = {
+                    ...next[idx],
+                    source_group_id: null,
+                    source_group_name: "",
+                  }
+                  return next
+                })
+                return
+              }
+              const sg = sgs.find(
+                (g) => sourceGroupOptionValue(g) === value,
+              )
+              setRouteDrafts((prev) => {
+                const next = [...prev]
+                next[idx] = {
+                  ...next[idx],
+                  // sub2api 有 remote_group_id，newapi 常仅有名称；两者都要落库名称便于展示
+                  source_group_id:
+                    sg?.remote_group_id != null
+                      ? sg.remote_group_id
+                      : null,
+                  source_group_name: (sg?.model_name ?? "").trim(),
+                }
+                return next
+              })
+            }}
+          >
+            <SelectTrigger className="min-w-36">
+              {(() => {
+                const selected = sgs.find(
+                  (g) =>
+                    sourceGroupOptionValue(g) ===
+                    sourceGroupSelectValue(r),
+                )
+                if (selected) {
+                  return (
+                    <SelectValue>
+                      {selected.model_name} ·{" "}
+                      {formatRatio(selected.ratio)}
+                    </SelectValue>
+                  )
+                }
+                return <SelectValue placeholder="源分组" />
+              })()}
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">不绑定分组</SelectItem>
+              {sgs.map((g) => (
+                <SelectItem
+                  key={sourceGroupOptionValue(g)}
+                  value={sourceGroupOptionValue(g)}
+                >
+                  <span className="flex flex-col items-start">
+                    <span>
+                      {g.model_name} · {formatRatio(g.ratio)}
+                    </span>
+                    {g.description ? (
+                      <span className="max-w-96 whitespace-normal break-words text-[11px] text-muted-foreground">
+                        {g.description}
+                      </span>
+                    ) : null}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          )}
+        </>
+      ),
+      protocol: (
+        <>
+          <Select
+            value={(r.upstream_protocol as string) || "auto"}
+            onValueChange={(v) => {
+              setRouteDrafts((prev) => {
+                const next = [...prev]
+                next[idx] = {
+                  ...next[idx],
+                  upstream_protocol: v as GatewayUpstreamProtocol,
+                }
+                return next
+              })
+            }}
+          >
+            <SelectTrigger className="w-36">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="min-w-[14rem]">
+              <SelectItem value="auto" description="入站协议 + 模型启发">
+                自动
+              </SelectItem>
+              <SelectItem
+                value="openai_chat"
+                description="/v1/chat/completions"
+              >
+                OpenAI Chat
+              </SelectItem>
+              <SelectItem
+                value="openai_responses"
+                description="/v1/responses"
+              >
+                OpenAI Responses
+              </SelectItem>
+              <SelectItem value="anthropic" description="/v1/messages">
+                Anthropic
+              </SelectItem>
+              <SelectItem value="gemini" description="/v1beta/models/{model}:generateContent">
+                Gemini
+              </SelectItem>
+              <SelectItem value="openai" description="兼容，等同 Chat">
+                openai
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </>
+      ),
+      models: (
+        <>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-9 max-w-44 justify-start font-normal"
+            title={(r.supported_models ?? []).join("\n") || "全部模型（不限）"}
+            onClick={() => setModelsEditIdx(idx)}
+          >
+            <span
+              className={cn(
+                "truncate",
+                (r.supported_models ?? []).length === 0 && "text-muted-foreground",
+              )}
+            >
+              {supportedModelsSummary(r.supported_models)}
+            </span>
+          </Button>
+        </>
+      ),
+      ua: (
+        <>
+          <RouteUserAgentSelect
+            mode={uaMode}
+            custom={r.user_agent_custom ?? ""}
+            onModeChange={(mode) => {
+              setRouteDrafts((prev) => {
+                const next = [...prev]
+                next[idx] = {
+                  ...next[idx],
+                  user_agent_mode: mode,
+                  // 切走自定义时保留草稿，避免来回切换丢内容；保存时仍按 mode 清空
+                  user_agent_custom: next[idx].user_agent_custom ?? "",
+                }
+                return next
+              })
+            }}
+            onCustomChange={(value) => {
+              setRouteDrafts((prev) => {
+                const next = [...prev]
+                next[idx] = {
+                  ...next[idx],
+                  user_agent_custom: value,
+                }
+                return next
+              })
+            }}
+          />
+        </>
+      ),
+      priority: (
+        <>
+          <PriorityInput
+            value={r.weight ?? 1}
+            onChange={(weight) => {
+              setRouteDrafts((prev) => {
+                const next = [...prev]
+                next[idx] = { ...next[idx], weight }
+                return next
+              })
+            }}
+          />
+        </>
+      ),
+      rateMode: (
+        <>
+          <Select
+            value={(r.rate_convert_mode as string) || "raw"}
+            onValueChange={(v) => {
+              setRouteDrafts((prev) => {
+                const next = [...prev]
+                next[idx] = {
+                  ...next[idx],
+                  rate_convert_mode: v as GatewayRateConvertMode,
+                }
+                return next
+              })
+            }}
+          >
+            <SelectTrigger className="w-28">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="raw">原值</SelectItem>
+              <SelectItem value="multiply_100">x100</SelectItem>
+              <SelectItem value="divide_100">/100</SelectItem>
+              <SelectItem value="custom">自定义</SelectItem>
+            </SelectContent>
+          </Select>
+        </>
+      ),
+      rate: (
+        <>
+          <Input
+            className="w-32"
+            type="number"
+            step="0.01"
+            title="账号计费倍率（原值显示源分组倍率）"
+            value={
+              (r.rate_convert_mode as string) === "custom"
+                ? String(r.rate_convert_value ?? 0)
+                : formatRate(calculatedRate)
+            }
+            disabled={(r.rate_convert_mode as string) !== "custom"}
+            onChange={(e) => {
+              setRouteDrafts((prev) => {
+                const next = [...prev]
+                next[idx] = {
+                  ...next[idx],
+                  rate_convert_value: Number(e.target.value || 0),
+                }
+                return next
+              })
+            }}
+          />
+        </>
+      ),
+      images: (
+        <>
+          <Switch
+            checked={r.images_url_to_b64_json === true}
+            aria-label="生图结果 URL 转 base64"
+            onCheckedChange={(v) => {
+              setRouteDrafts((prev) => {
+                const next = [...prev]
+                next[idx] = { ...next[idx], images_url_to_b64_json: v }
+                return next
+              })
+            }}
+          />
+        </>
+      ),
+      enabled: (
+        <>
+          <Switch
+            checked={r.enabled !== false}
+            onCheckedChange={(v) => {
+              setRouteDrafts((prev) => {
+                const next = [...prev]
+                next[idx] = { ...next[idx], enabled: v }
+                return next
+              })
+            }}
+          />
+        </>
+      ),
+      keyLabel: (
+        <>
+          <div className="truncate">
+            {kind === "provider" ? (
+              provider ? (
+                <span title={provider.base_url}>
+                  {provider.name}
+                  {provider.api_key_hint
+                    ? ` · ${provider.api_key_hint}`
+                    : ""}
+                </span>
+              ) : (
+                <span className="text-muted-foreground">
+                  未选直连渠道
+                </span>
+              )
+            ) : (
+              r.source_api_key_name || (
+                <span className="text-muted-foreground">保存后生成</span>
+              )
+            )}
+          </div>
+        </>
+      ),
+      pause: (
+        <>
+          {hasRoutePauseError(r) && (
+            <div className="mt-1 flex flex-wrap items-center gap-1">
+              {r.auto_disabled ? (
+                <Badge
+                  variant="destructive"
+                  title={
+                    r.auto_disabled_at
+                      ? `自动禁用于 ${new Date(r.auto_disabled_at).toLocaleString("zh-CN")}，后台探测成功后恢复`
+                      : "已自动禁用，后台探测成功后恢复"
+                  }
+                >
+                  已自动禁用
+                </Badge>
+              ) : isRouteTempPaused(r.temp_unschedulable_until) ? (
+                <Badge variant="destructive" title={
+                  r.temp_unschedulable_until
+                    ? `冷却至 ${new Date(r.temp_unschedulable_until).toLocaleString("zh-CN")}`
+                    : undefined
+                }>
+                  暂停中
+                  {r.temp_unschedulable_until
+                    ? ` · ${new Date(r.temp_unschedulable_until).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
+                    : ""}
+                </Badge>
+              ) : (
+                <Badge variant="secondary">已恢复</Badge>
+              )}
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 px-1.5 text-xs"
+                onClick={() => onShowPauseError(r)}
+              >
+                错误
+              </Button>
+              {r.id ? (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 px-1.5 text-xs"
+                  onClick={() => void onClearRoutePause(r.id)}
+                >
+                  清除
+                </Button>
+              ) : null}
+            </div>
+          )}
+        </>
+      ),
+      remove: (
+        <>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() =>
+              setRouteDrafts((prev) => prev.filter((_, i) => i !== idx))
+            }
+          >
+            删除
+          </Button>
+        </>
+      ),
+    }
+    return { r, idx, kind, provider, calculatedRate, setWeight, cells }
+  })
+
   return (
     <div className="space-y-4">
-<Card className="overflow-hidden border-border shadow-none">
+<Card className="border-border shadow-none md:overflow-hidden">
   <CardContent className="space-y-3 p-4 sm:p-5">
     <div className="flex flex-wrap items-center gap-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -304,22 +929,16 @@ export function RoutesPanel({
         </Button>
       </div>
       <div className="flex-1" />
-      <Button
-        size="sm"
-        variant="outline"
-        className="h-9"
-        onClick={() => setRouteDrafts([...routeDrafts, emptyRoute()])}
-      >
-        <Plus className="size-3.5" /> 添加路由
-      </Button>
-      <Button
-        size="sm"
-        className="h-9"
-        onClick={() => void onSaveRoutes()}
-        disabled={busy}
-      >
-        保存路由
-      </Button>
+      {!isMobile ? (
+        <>
+          <Button size="sm" variant="outline" className="h-9" onClick={addRoute}>
+            <Plus className="size-3.5" /> 添加路由
+          </Button>
+          <Button size="sm" className="h-9" onClick={saveRoutes} disabled={busy}>
+            保存路由
+          </Button>
+        </>
+      ) : null}
       <Button
         size="sm"
         variant="secondary"
@@ -331,7 +950,17 @@ export function RoutesPanel({
         <Play className="size-3.5" /> 修复上游密钥
       </Button>
     </div>
-    <p className="text-[11px] leading-5 text-muted-foreground">
+    <details className="group text-[11px] leading-5 text-muted-foreground md:hidden">
+      <summary className="flex cursor-pointer list-none items-center gap-1">
+        排序说明 <ChevronDown className="size-3.5 transition-transform group-open:rotate-180" />
+      </summary>
+      <p className="mt-1">
+        列表按优先级从高到低；同优先级再按账号计费倍率
+        {rateSort === "desc" ? "从高到低" : "从低到高"}
+        排列。「保存排序」写入组配置；「保存路由」也会按当前排序写回顺序。
+      </p>
+    </details>
+    <p className="hidden text-[11px] leading-5 text-muted-foreground md:block">
       列表顺序：先按优先级数字从高到低（与 new-api 一致）；同优先级再按账号计费倍率
       {rateSort === "desc" ? "从高到低" : "从低到高"}
       排列。实际尝试时，开启「按模型优先」会先试模型清单里声明了该模型的路由，随机模式会打散同优先级的路由，异步任务的查询会先回到创建它的路由。
@@ -340,6 +969,102 @@ export function RoutesPanel({
         : "未开启价格倍率重排时，仅保存路由 / 改排序方向会落库顺序；可在编辑组中开启。"}
       点「保存排序」写入组配置；「保存路由」也会按当前排序写回 position。
     </p>
+    {isMobile ? (
+      <div className="space-y-3">
+        {frozenOrder ? (
+          <div className="flex items-center justify-between gap-2 rounded-lg border border-dashed border-border px-3 py-1.5 text-xs text-muted-foreground">
+            <span>优先级已改，保存后按新优先级排序</span>
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 px-2 text-xs"
+              onClick={() => setFrozenOrder(null)}
+            >
+              立即重排
+            </Button>
+          </div>
+        ) : null}
+        {(frozenOrder
+          ? frozenOrder
+              .map((i) => routeViews.find((v) => v.idx === i))
+              .filter((v): v is (typeof routeViews)[number] => v !== undefined)
+          : routeViews
+        ).map(({ r, idx, kind, calculatedRate, setWeight, cells }) => {
+          const changeWeight = (weight: number) => {
+            if (!frozenOrder) setFrozenOrder(routeViews.map((v) => v.idx))
+            setWeight(weight)
+          }
+          const moveToTop = () => {
+            const current = r.weight ?? 1
+            const others = routeDrafts.filter((_, i) => i !== idx).map((x) => x.weight ?? 1)
+            const top = others.length > 0 ? Math.max(...others) : 0
+            if (current > top) return
+            changeWeight(top + 1)
+          }
+          return (
+            <div
+              key={r.id ?? `new-${idx}`}
+              className={cn(
+                "space-y-3 rounded-xl border border-border bg-card p-3",
+                r.enabled === false && "opacity-70",
+              )}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">{routeLabel(r)}</div>
+                  <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                    {kind === "provider" ? "直连" : "监控"} ·{" "}
+                    {UPSTREAM_PROTOCOL_LABELS[(r.upstream_protocol as string) || "auto"] ?? r.upstream_protocol}{" "}
+                    · 计费 ×{formatRate(calculatedRate)} · {supportedModelsSummary(r.supported_models)}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+                  启用 {cells.enabled}
+                </div>
+              </div>
+              {cells.pause}
+              <PriorityStepper value={r.weight ?? 1} onChange={changeWeight} onTop={moveToTop} />
+              <details className="group rounded-lg border border-border">
+                <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2 text-sm">
+                  更多设置
+                  <ChevronDown className="size-4 text-muted-foreground transition-transform group-open:rotate-180" />
+                </summary>
+                <div className="grid gap-3 border-t border-border p-3">
+                  <MobileField label="类型">{cells.kind}</MobileField>
+                  <MobileField label="来源">{cells.source}</MobileField>
+                  {kind !== "provider" ? <MobileField label="源分组">{cells.sourceGroup}</MobileField> : null}
+                  <MobileField label="上游协议">{cells.protocol}</MobileField>
+                  <MobileField label="转发模型">{cells.models}</MobileField>
+                  <MobileField label="User-Agent">{cells.ua}</MobileField>
+                  <MobileField label="倍率换算">{cells.rateMode}</MobileField>
+                  <MobileField label="账号计费倍率">{cells.rate}</MobileField>
+                  <MobileField label="生图转 base64" hint="上游只返回 url 时网关下载回填 b64_json" inline>
+                    {cells.images}
+                  </MobileField>
+                  <MobileField label="上游 Key">
+                    <div className="text-xs">{cells.keyLabel}</div>
+                  </MobileField>
+                  <div className="flex justify-end">{cells.remove}</div>
+                </div>
+              </details>
+            </div>
+          )
+        })}
+        {routeDrafts.length === 0 ? (
+          <p className="rounded-xl border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
+            添加路由后保存。监控渠道保存时自动在上游生成密钥；直连渠道使用已配置的 Key
+          </p>
+        ) : null}
+        <div className="sticky bottom-2 z-20 flex gap-2 rounded-xl border border-border bg-background/95 p-2 shadow-lg backdrop-blur">
+          <Button variant="outline" className="h-10 flex-1" onClick={addRoute}>
+            <Plus className="size-4" /> 添加路由
+          </Button>
+          <Button className="h-10 flex-1" onClick={saveRoutes} disabled={busy}>
+            保存路由
+          </Button>
+        </div>
+      </div>
+    ) : (
     <div className="overflow-x-auto">
       <Table>
         <TableHeader>
@@ -353,471 +1078,38 @@ export function RoutesPanel({
             <TableHead title="数字越大越先调用；同优先级按倍率排序">优先级</TableHead>
             <TableHead className="min-w-28">倍率换算</TableHead>
             <TableHead className="min-w-32">账号计费倍率</TableHead>
+            <TableHead title="上游生图只返回 url 时，网关下载图片回填 b64_json（url 保留），兼容只认 base64 的客户端（如 Codex）；仅 Images 非流式响应，下载失败原样返回">
+              生图转 base64
+            </TableHead>
             <TableHead>启用</TableHead>
             <TableHead>上游 Key</TableHead>
             <TableHead />
           </TableRow>
         </TableHeader>
         <TableBody>
-          {sortedRouteRows.map(({ route: r, index: idx }) => {
-            const kind = routeSourceKind(r)
-            const chId = Number(r.source_channel_id) || 0
-            const providerID = Number(r.gateway_provider_id) || 0
-            const sgs = sourceGroupsByChannel[chId] ?? []
-            const provider = providerOptions.find((p) => p.id === providerID)
-            const calculatedRate =
-              kind === "provider"
-                ? (r.rate_convert_mode as string) === "custom"
-                  ? Number(r.rate_convert_value) ||
-                    provider?.default_billing_rate ||
-                    1
-                  : provider?.default_billing_rate || 1
-                : routeAccountRate(r, sgs)
-            const uaMode: GatewayUserAgentMode =
-              r.user_agent_mode === "group" || r.user_agent_mode === "custom"
-                ? r.user_agent_mode
-                : "passthrough"
-            return (
-              <TableRow key={r.id ?? `new-${idx}`}>
-                <TableCell>
-                  <Select
-                    value={kind}
-                    onValueChange={(v) => {
-                      const nextKind = v as GatewayRouteSourceKind
-                      setRouteDrafts((prev) => {
-                        const next = [...prev]
-                        if (nextKind === "provider") {
-                          next[idx] = {
-                            ...next[idx],
-                            source_kind: "provider",
-                            source_channel_id: 0,
-                            source_group_id: null,
-                            source_group_name: "",
-                            rate_convert_mode: "custom",
-                            rate_convert_value:
-                              next[idx].rate_convert_value ?? 1,
-                          }
-                        } else {
-                          next[idx] = {
-                            ...next[idx],
-                            source_kind: "monitor",
-                            gateway_provider_id: 0,
-                            rate_convert_mode: "raw",
-                          }
-                        }
-                        return next
-                      })
-                      if (nextKind === "provider") void onLoadProviderOptions()
-                    }}
-                  >
-                    <SelectTrigger className="w-28">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="monitor">监控渠道</SelectItem>
-                      <SelectItem value="provider">直连渠道</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </TableCell>
-                <TableCell>
-                  {kind === "provider" ? (
-                    <Select
-                      value={providerID ? String(providerID) : ""}
-                      onValueChange={(v) => {
-                        const id = Number(v)
-                        const p = providerOptions.find((x) => x.id === id)
-                        setRouteDrafts((prev) => {
-                          const next = [...prev]
-                          next[idx] = {
-                            ...next[idx],
-                            source_kind: "provider",
-                            gateway_provider_id: id,
-                            source_channel_id: 0,
-                            rate_convert_mode: "custom",
-                            rate_convert_value:
-                              p?.default_billing_rate ?? 1,
-                            upstream_protocol:
-                              (p?.upstream_protocol as GatewayUpstreamProtocol) ||
-                              next[idx].upstream_protocol ||
-                              "auto",
-                          }
-                          return next
-                        })
-                      }}
-                    >
-                      <SelectTrigger className="min-w-36">
-                        <SelectValue placeholder="选择直连渠道" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {providerOptions.map((p) => (
-                          <SelectItem key={p.id} value={String(p.id)}>
-                            {p.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <Select
-                      value={chId ? String(chId) : ""}
-                      onValueChange={(v) => {
-                        const id = Number(v)
-                        void onLoadSourceGroups(id)
-                        setRouteDrafts((prev) => {
-                          const next = [...prev]
-                          next[idx] = {
-                            ...next[idx],
-                            source_kind: "monitor",
-                            source_channel_id: id,
-                            gateway_provider_id: 0,
-                            source_group_id: null,
-                            source_group_name: "",
-                          }
-                          return next
-                        })
-                      }}
-                    >
-                      <SelectTrigger className="min-w-32">
-                        <SelectValue placeholder="选择监控渠道" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {channelList.map((ch) => (
-                          <SelectItem key={ch.id} value={String(ch.id)}>
-                            {ch.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                </TableCell>
-                <TableCell>
-                  {kind === "provider" ? (
-                    <span className="text-xs text-muted-foreground">—</span>
-                  ) : (
-                  <Select
-                    value={sourceGroupSelectValue(r)}
-                    onValueChange={(value) => {
-                      if (value === "none") {
-                        setRouteDrafts((prev) => {
-                          const next = [...prev]
-                          next[idx] = {
-                            ...next[idx],
-                            source_group_id: null,
-                            source_group_name: "",
-                          }
-                          return next
-                        })
-                        return
-                      }
-                      const sg = sgs.find(
-                        (g) => sourceGroupOptionValue(g) === value,
-                      )
-                      setRouteDrafts((prev) => {
-                        const next = [...prev]
-                        next[idx] = {
-                          ...next[idx],
-                          // sub2api 有 remote_group_id，newapi 常仅有名称；两者都要落库名称便于展示
-                          source_group_id:
-                            sg?.remote_group_id != null
-                              ? sg.remote_group_id
-                              : null,
-                          source_group_name: (sg?.model_name ?? "").trim(),
-                        }
-                        return next
-                      })
-                    }}
-                  >
-                    <SelectTrigger className="min-w-36">
-                      {(() => {
-                        const selected = sgs.find(
-                          (g) =>
-                            sourceGroupOptionValue(g) ===
-                            sourceGroupSelectValue(r),
-                        )
-                        if (selected) {
-                          return (
-                            <SelectValue>
-                              {selected.model_name} ·{" "}
-                              {formatRatio(selected.ratio)}
-                            </SelectValue>
-                          )
-                        }
-                        return <SelectValue placeholder="源分组" />
-                      })()}
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">不绑定分组</SelectItem>
-                      {sgs.map((g) => (
-                        <SelectItem
-                          key={sourceGroupOptionValue(g)}
-                          value={sourceGroupOptionValue(g)}
-                        >
-                          <span className="flex flex-col items-start">
-                            <span>
-                              {g.model_name} · {formatRatio(g.ratio)}
-                            </span>
-                            {g.description ? (
-                              <span className="max-w-96 whitespace-normal break-words text-[11px] text-muted-foreground">
-                                {g.description}
-                              </span>
-                            ) : null}
-                          </span>
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  )}
-                </TableCell>
-                <TableCell>
-                  <Select
-                    value={(r.upstream_protocol as string) || "auto"}
-                    onValueChange={(v) => {
-                      setRouteDrafts((prev) => {
-                        const next = [...prev]
-                        next[idx] = {
-                          ...next[idx],
-                          upstream_protocol: v as GatewayUpstreamProtocol,
-                        }
-                        return next
-                      })
-                    }}
-                  >
-                    <SelectTrigger className="w-36">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent className="min-w-[14rem]">
-                      <SelectItem value="auto" description="入站协议 + 模型启发">
-                        自动
-                      </SelectItem>
-                      <SelectItem
-                        value="openai_chat"
-                        description="/v1/chat/completions"
-                      >
-                        OpenAI Chat
-                      </SelectItem>
-                      <SelectItem
-                        value="openai_responses"
-                        description="/v1/responses"
-                      >
-                        OpenAI Responses
-                      </SelectItem>
-                      <SelectItem value="anthropic" description="/v1/messages">
-                        Anthropic
-                      </SelectItem>
-                      <SelectItem value="gemini" description="/v1beta/models/{model}:generateContent">
-                        Gemini
-                      </SelectItem>
-                      <SelectItem value="openai" description="兼容，等同 Chat">
-                        openai
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
-                </TableCell>
-                <TableCell>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="h-9 max-w-44 justify-start font-normal"
-                    title={(r.supported_models ?? []).join("\n") || "全部模型（不限）"}
-                    onClick={() => setModelsEditIdx(idx)}
-                  >
-                    <span
-                      className={cn(
-                        "truncate",
-                        (r.supported_models ?? []).length === 0 && "text-muted-foreground",
-                      )}
-                    >
-                      {supportedModelsSummary(r.supported_models)}
-                    </span>
-                  </Button>
-                </TableCell>
-                <TableCell>
-                  <RouteUserAgentSelect
-                    mode={uaMode}
-                    custom={r.user_agent_custom ?? ""}
-                    onModeChange={(mode) => {
-                      setRouteDrafts((prev) => {
-                        const next = [...prev]
-                        next[idx] = {
-                          ...next[idx],
-                          user_agent_mode: mode,
-                          // 切走自定义时保留草稿，避免来回切换丢内容；保存时仍按 mode 清空
-                          user_agent_custom: next[idx].user_agent_custom ?? "",
-                        }
-                        return next
-                      })
-                    }}
-                    onCustomChange={(value) => {
-                      setRouteDrafts((prev) => {
-                        const next = [...prev]
-                        next[idx] = {
-                          ...next[idx],
-                          user_agent_custom: value,
-                        }
-                        return next
-                      })
-                    }}
-                  />
-                </TableCell>
-                <TableCell>
-                  <PriorityInput
-                    value={r.weight ?? 1}
-                    onChange={(weight) => {
-                      setRouteDrafts((prev) => {
-                        const next = [...prev]
-                        next[idx] = { ...next[idx], weight }
-                        return next
-                      })
-                    }}
-                  />
-                </TableCell>
-                <TableCell>
-                  <Select
-                    value={(r.rate_convert_mode as string) || "raw"}
-                    onValueChange={(v) => {
-                      setRouteDrafts((prev) => {
-                        const next = [...prev]
-                        next[idx] = {
-                          ...next[idx],
-                          rate_convert_mode: v as GatewayRateConvertMode,
-                        }
-                        return next
-                      })
-                    }}
-                  >
-                    <SelectTrigger className="w-28">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="raw">原值</SelectItem>
-                      <SelectItem value="multiply_100">x100</SelectItem>
-                      <SelectItem value="divide_100">/100</SelectItem>
-                      <SelectItem value="custom">自定义</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </TableCell>
-                <TableCell>
-                  <Input
-                    className="w-32"
-                    type="number"
-                    step="0.01"
-                    title="账号计费倍率（原值显示源分组倍率）"
-                    value={
-                      (r.rate_convert_mode as string) === "custom"
-                        ? String(r.rate_convert_value ?? 0)
-                        : formatRate(calculatedRate)
-                    }
-                    disabled={(r.rate_convert_mode as string) !== "custom"}
-                    onChange={(e) => {
-                      setRouteDrafts((prev) => {
-                        const next = [...prev]
-                        next[idx] = {
-                          ...next[idx],
-                          rate_convert_value: Number(e.target.value || 0),
-                        }
-                        return next
-                      })
-                    }}
-                  />
-                </TableCell>
-                <TableCell>
-                  <Switch
-                    checked={r.enabled !== false}
-                    onCheckedChange={(v) => {
-                      setRouteDrafts((prev) => {
-                        const next = [...prev]
-                        next[idx] = { ...next[idx], enabled: v }
-                        return next
-                      })
-                    }}
-                  />
-                </TableCell>
-                <TableCell className="text-xs max-w-36">
-                  <div className="truncate">
-                    {kind === "provider" ? (
-                      provider ? (
-                        <span title={provider.base_url}>
-                          {provider.name}
-                          {provider.api_key_hint
-                            ? ` · ${provider.api_key_hint}`
-                            : ""}
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">
-                          未选直连渠道
-                        </span>
-                      )
-                    ) : (
-                      r.source_api_key_name || (
-                        <span className="text-muted-foreground">保存后生成</span>
-                      )
-                    )}
-                  </div>
-                  {hasRoutePauseError(r) && (
-                    <div className="mt-1 flex flex-wrap items-center gap-1">
-                      {r.auto_disabled ? (
-                        <Badge
-                          variant="destructive"
-                          title={
-                            r.auto_disabled_at
-                              ? `自动禁用于 ${new Date(r.auto_disabled_at).toLocaleString("zh-CN")}，后台探测成功后恢复`
-                              : "已自动禁用，后台探测成功后恢复"
-                          }
-                        >
-                          已自动禁用
-                        </Badge>
-                      ) : isRouteTempPaused(r.temp_unschedulable_until) ? (
-                        <Badge variant="destructive" title={
-                          r.temp_unschedulable_until
-                            ? `冷却至 ${new Date(r.temp_unschedulable_until).toLocaleString("zh-CN")}`
-                            : undefined
-                        }>
-                          暂停中
-                          {r.temp_unschedulable_until
-                            ? ` · ${new Date(r.temp_unschedulable_until).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
-                            : ""}
-                        </Badge>
-                      ) : (
-                        <Badge variant="secondary">已恢复</Badge>
-                      )}
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="h-6 px-1.5 text-xs"
-                        onClick={() => onShowPauseError(r)}
-                      >
-                        错误
-                      </Button>
-                      {r.id ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="h-6 px-1.5 text-xs"
-                          onClick={() => void onClearRoutePause(r.id)}
-                        >
-                          清除
-                        </Button>
-                      ) : null}
-                    </div>
-                  )}
-                </TableCell>
-                <TableCell className="text-right">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      setRouteDrafts((prev) => prev.filter((_, i) => i !== idx))
-                    }
-                  >
-                    删除
-                  </Button>
-                </TableCell>
-              </TableRow>
-            )
-          })}
+          {routeViews.map(({ r, idx, cells }) => (
+            <TableRow key={r.id ?? `new-${idx}`}>
+              <TableCell>{cells.kind}</TableCell>
+              <TableCell>{cells.source}</TableCell>
+              <TableCell>{cells.sourceGroup}</TableCell>
+              <TableCell>{cells.protocol}</TableCell>
+              <TableCell>{cells.models}</TableCell>
+              <TableCell>{cells.ua}</TableCell>
+              <TableCell>{cells.priority}</TableCell>
+              <TableCell>{cells.rateMode}</TableCell>
+              <TableCell>{cells.rate}</TableCell>
+              <TableCell>{cells.images}</TableCell>
+              <TableCell>{cells.enabled}</TableCell>
+              <TableCell className="text-xs max-w-36">
+                {cells.keyLabel}
+                {cells.pause}
+              </TableCell>
+              <TableCell className="text-right">{cells.remove}</TableCell>
+            </TableRow>
+          ))}
           {routeDrafts.length === 0 && (
             <TableRow>
-              <TableCell colSpan={12} className="text-center text-muted-foreground">
+              <TableCell colSpan={13} className="text-center text-muted-foreground">
                 添加路由后保存。监控渠道保存时自动在上游生成密钥；直连渠道使用已配置的 Key
               </TableCell>
             </TableRow>
@@ -825,6 +1117,7 @@ export function RoutesPanel({
         </TableBody>
       </Table>
     </div>
+    )}
   </CardContent>
 </Card>
 

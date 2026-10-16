@@ -21,6 +21,7 @@ import {
 import { fullDateTime, money, relativeTime } from "@/lib/format"
 import { copyText } from "@/lib/clipboard"
 import { cn } from "@/lib/utils"
+import { useIsMobile } from "@/hooks/use-mobile"
 import type { GatewayKey } from "@/lib/api-types"
 
 type KeysPanelProps = {
@@ -46,6 +47,15 @@ export function KeysPanel({
   onToggle,
   onDelete,
 }: KeysPanelProps) {
+  const isMobile = useIsMobile()
+  const copySecret = (secret: string) => {
+    if (!secret) return
+    void copyText(secret)
+      .then(() => toast.success("已复制密钥"))
+      .catch(() => toast.error("复制失败"))
+  }
+  const quotaText = (k: GatewayKey) =>
+    k.quota > 0 ? `${money(k.quota_used)} / ${money(k.quota)}` : `${money(k.quota_used)} / ∞`
   return (
     <TooltipProvider delayDuration={200}>
       <div className="space-y-4">
@@ -76,6 +86,61 @@ export function KeysPanel({
                 </Button>
               </div>
             </div>
+            {isMobile ? (
+              <div className="space-y-2">
+                {keys.map((k) => {
+                  const secret = keySecrets[k.id] ?? ""
+                  return (
+                    <div key={k.id} className="space-y-2 rounded-xl border border-border p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0 truncate text-sm font-medium">{k.name}</div>
+                        <Switch
+                          checked={k.status === "active"}
+                          aria-label={`启用密钥 ${k.name}`}
+                          onCheckedChange={() => void onToggle(k)}
+                        />
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <Input
+                          className="h-9 font-mono text-xs"
+                          readOnly
+                          value={secret || k.key_prefix || ""}
+                          placeholder="加载中…"
+                        />
+                        <Button
+                          size="icon"
+                          variant="outline"
+                          className="size-9 shrink-0"
+                          disabled={!secret}
+                          aria-label="复制密钥"
+                          onClick={() => copySecret(secret)}
+                        >
+                          <Copy className="size-4" />
+                        </Button>
+                      </div>
+                      <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                        <span>
+                          额度 {quotaText(k)} · {k.last_used_at ? `${relativeTime(k.last_used_at)}使用` : "未使用"}
+                        </span>
+                        <span className="flex shrink-0 gap-1.5">
+                          <Button size="sm" variant="outline" className="h-8" onClick={() => onEdit(k)}>
+                            编辑
+                          </Button>
+                          <Button size="sm" variant="outline" className="h-8" onClick={() => void onDelete(k.id)}>
+                            删除
+                          </Button>
+                        </span>
+                      </div>
+                    </div>
+                  )
+                })}
+                {keys.length === 0 ? (
+                  <p className="rounded-xl border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
+                    组内暂无密钥，创建后客户端用该密钥访问 /v1/*
+                  </p>
+                ) : null}
+              </div>
+            ) : (
             <Table>
               <TableHeader>
                 <TableRow>
@@ -176,6 +241,7 @@ export function KeysPanel({
                 )}
               </TableBody>
             </Table>
+            )}
           </CardContent>
         </Card>
       </div>

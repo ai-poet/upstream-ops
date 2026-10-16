@@ -335,6 +335,7 @@ export const emptyRoute = (): Partial<GatewayRoute> => ({
   concurrency: 10,
   user_agent_mode: "passthrough",
   user_agent_custom: "",
+  images_url_to_b64_json: false,
 })
 
 export function routeSourceKind(r: Partial<GatewayRoute>): GatewayRouteSourceKind {

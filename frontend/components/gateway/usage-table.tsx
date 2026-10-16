@@ -51,6 +51,7 @@ import { fullDateTime, formatDurationMS, formatTokens } from "@/lib/format"
 import { apiFetch } from "@/lib/api"
 import type { GatewayUsageLog } from "@/lib/api-types"
 import { cn } from "@/lib/utils"
+import { useIsMobile } from "@/hooks/use-mobile"
 import { formatSourceGroupDisplay } from "./gateway-utils"
 
 /** datetime-local 字符串（本地）→ ISO RFC3339 */
@@ -1219,6 +1220,17 @@ function LatencyCell({ u }: { u: GatewayUsageLog }) {
   )
 }
 
+/** 账户列的两行：渠道 / 直连名，以及源密钥名（直连没有源密钥时写「直连」）。 */
+function usageAccountLines(u: GatewayUsageLog): [string, string] {
+  const primary =
+    u.provider_name ||
+    u.channel_name ||
+    (u.gateway_provider_id ? `直连 #${u.gateway_provider_id}` : u.channel_id ? `#${u.channel_id}` : "—")
+  const isDirect = !!(u.provider_name || u.gateway_provider_id)
+  const secondary = (u.source_api_key_name || "").trim() || (isDirect ? "直连" : "")
+  return [primary, secondary]
+}
+
 export function GatewayUsageTable({
   items,
   emptyText = "暂无使用记录",
@@ -1232,6 +1244,7 @@ export function GatewayUsageTable({
   const [errorOpen, setErrorOpen] = useState<Record<number, boolean>>({})
   const [chainOpen, setChainOpen] = useState<Record<string, boolean>>({})
   const [cleanupOpen, setCleanupOpen] = useState(false)
+  const isMobile = useIsMobile()
   const [colVisible, setColVisible] = useState<UsageColVisibility>(() =>
     loadUsageColVisibility(),
   )
@@ -1319,6 +1332,7 @@ export function GatewayUsageTable({
             <Trash2 className="size-3.5" />
             清理
           </Button>
+          {!isMobile ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button type="button" size="sm" variant="outline" className="h-8 gap-1.5">
@@ -1348,6 +1362,7 @@ export function GatewayUsageTable({
               <DropdownMenuItem onSelect={resetCols}>恢复默认</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+          ) : null}
         </div>
 
         <UsageCleanupDialog
@@ -1356,7 +1371,112 @@ export function GatewayUsageTable({
           onCleaned={onCleaned}
         />
 
-        {/* 整表横向滚动：列按内容撑开，不在单元格内滚动 */}
+        {isMobile ? (
+          <div className="space-y-2">
+            {mainRows.map((u) => {
+              const steps = mappingSteps(u)
+              const rid = (u.request_id || "").trim()
+              const chain = rid ? chainByReq.get(rid) : undefined
+              const chainTotal = chain?.length ?? 1
+              const hasChain = chainTotal > 1
+              const chainIndex = hasChain ? chain!.findIndex((r) => r.id === u.id) + 1 : undefined
+              const chainExpanded = hasChain && !!chainOpen[rid]
+              const canError = hasErrorDetail(u) && (!u.success || isClientDisconnectResult(u))
+              const errExpanded = !!errorOpen[u.id]
+              const [account, sourceKey] = usageAccountLines(u)
+              const group = (u.gateway_group_name || "").trim()
+              return (
+                <div
+                  key={u.id}
+                  className={cn(
+                    "space-y-2 rounded-xl border border-border p-3",
+                    !u.success && !isClientDisconnectResult(u) && "bg-red-50/40 dark:bg-red-950/10",
+                    isClientDisconnectResult(u) && "bg-amber-50/40 dark:bg-amber-950/10",
+                    hasChain && "border-l-2 border-l-violet-400/80",
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-medium">{steps[0]}</div>
+                      {steps.length > 1 ? (
+                        <div className="truncate text-[11px] text-muted-foreground">↳ {steps.slice(1).join(" → ")}</div>
+                      ) : null}
+                      <div className="text-[11px] text-muted-foreground">
+                        {fullDateTime(u.created_at)} ·{" "}
+                        {u.gateway_key_name || (u.gateway_key_id ? `#${u.gateway_key_id}` : "—")}
+                      </div>
+                    </div>
+                    <div className="shrink-0">
+                      <StatusCell
+                        u={u}
+                        chainTotal={hasChain ? chainTotal : undefined}
+                        chainIndex={hasChain ? chainIndex || chainTotal : undefined}
+                      />
+                    </div>
+                  </div>
+                  {/* 三栏在 375px 下会把费用的「未定价」标记挤成竖排：Token 与延迟并排，费用独占一行 */}
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-xs">
+                    <div className="min-w-0">
+                      <div className="text-[10px] text-muted-foreground">Token</div>
+                      <TokenCell u={u} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-[10px] text-muted-foreground">延迟</div>
+                      <LatencyCell u={u} />
+                    </div>
+                    <div className="col-span-2 min-w-0">
+                      <div className="text-[10px] text-muted-foreground">费用</div>
+                      <CostCell u={u} />
+                    </div>
+                  </div>
+                  <div className="truncate text-[11px] text-muted-foreground">
+                    {account}
+                    {sourceKey ? ` · ${sourceKey}` : ""}
+                    {group ? ` · ${group}` : ""}
+                  </div>
+                  {hasChain || canError ? (
+                    <button
+                      type="button"
+                      className="text-xs text-violet-700 hover:underline dark:text-violet-300"
+                      onClick={() => {
+                        if (hasChain) setChainOpen((prev) => ({ ...prev, [rid]: !prev[rid] }))
+                        else setErrorOpen((prev) => ({ ...prev, [u.id]: !prev[u.id] }))
+                      }}
+                    >
+                      {hasChain
+                        ? chainExpanded
+                          ? "收起请求链路"
+                          : `查看全部 ${chainTotal} 次尝试`
+                        : errExpanded
+                          ? "收起错误详情"
+                          : "查看错误详情"}
+                    </button>
+                  ) : null}
+                  {hasChain && chainExpanded ? (
+                    <div className="overflow-x-auto rounded-lg bg-muted/15 p-2">
+                      <ChainTimeline
+                        rows={chain!}
+                        errorOpen={errorOpen}
+                        onToggleError={(id) => setErrorOpen((prev) => ({ ...prev, [id]: !prev[id] }))}
+                      />
+                    </div>
+                  ) : null}
+                  {!hasChain && canError && errExpanded ? (
+                    <div className="overflow-x-auto rounded-lg bg-muted/20 p-2">
+                      <ErrorDetailPanel u={u} />
+                    </div>
+                  ) : null}
+                </div>
+              )
+            })}
+            {mainRows.length === 0 ? (
+              <p className="rounded-xl border border-dashed border-border py-8 text-center text-sm text-muted-foreground">
+                {emptyText}
+              </p>
+            ) : null}
+          </div>
+        ) : (
+        /* 整表横向滚动：列按内容撑开，不在单元格内滚动 */
         <div className="overflow-x-auto rounded-md border">
           <Table className="w-max min-w-full">
             <TableHeader>
@@ -1766,6 +1886,7 @@ export function GatewayUsageTable({
             </TableBody>
           </Table>
         </div>
+        )}
       </div>
     </TooltipProvider>
   )
