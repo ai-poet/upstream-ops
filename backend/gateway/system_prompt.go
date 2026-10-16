@@ -42,7 +42,7 @@ func (rt *Runtime) applySystemPrompt(group *storage.GatewayGroup, key *storage.G
 		return body, nil
 	}
 
-	rules := parseSystemPromptRules(group.SystemPromptRulesJSON)
+	rules := cachedSystemPromptRules(group.SystemPromptRulesJSON)
 	matching := make([]SystemPromptRule, 0, len(rules))
 	for _, rule := range rules {
 		if (rule.Enabled == nil || *rule.Enabled) && strings.TrimSpace(rule.Text) != "" && systemPromptRuleAppliesToKey(rule, key.ID) {

@@ -3,6 +3,9 @@ package gateway
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // ModelMap 模型名映射（客户端 → 上游）；键 "*" 表示通配。
@@ -77,21 +80,15 @@ func ResolveModel(requested string, maps ...map[string]string) (upstream string,
 	return current, strings.Join(parts, "->")
 }
 
-// RewriteModelInBody 若 body 是 JSON 对象则改写 model 字段。
+// RewriteModelInBody 若 body 是 JSON 对象则改写 model 字段（原地替换，不重新编码整个 body）。
 func RewriteModelInBody(body []byte, upstreamModel string) []byte {
-	if len(body) == 0 || strings.TrimSpace(upstreamModel) == "" {
+	if len(body) == 0 || strings.TrimSpace(upstreamModel) == "" || !looksLikeJSONObject(body) {
 		return body
 	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(body, &obj); err != nil {
+	if cur := gjson.GetBytes(body, "model"); cur.Type == gjson.String && cur.Str == upstreamModel {
 		return body
 	}
-	raw, err := json.Marshal(upstreamModel)
-	if err != nil {
-		return body
-	}
-	obj["model"] = raw
-	out, err := json.Marshal(obj)
+	out, err := sjson.SetBytes(body, "model", upstreamModel)
 	if err != nil {
 		return body
 	}
@@ -100,30 +97,18 @@ func RewriteModelInBody(body []byte, upstreamModel string) []byte {
 
 // ExtractModelFromBody 从 JSON 请求体取 model。
 func ExtractModelFromBody(body []byte) string {
-	if len(body) == 0 {
+	if !looksLikeJSONObject(body) {
 		return ""
 	}
-	var obj struct {
-		Model string `json:"model"`
+	if r := gjson.GetBytes(body, "model"); r.Type == gjson.String {
+		return strings.TrimSpace(r.Str)
 	}
-	if err := json.Unmarshal(body, &obj); err != nil {
-		return ""
-	}
-	return strings.TrimSpace(obj.Model)
+	return ""
 }
 
 // ExtractStreamFlag 从请求体判断是否 stream。
 func ExtractStreamFlag(body []byte) bool {
-	if len(body) == 0 {
-		return false
-	}
-	var obj struct {
-		Stream bool `json:"stream"`
-	}
-	if err := json.Unmarshal(body, &obj); err != nil {
-		return false
-	}
-	return obj.Stream
+	return looksLikeJSONObject(body) && gjson.GetBytes(body, "stream").Type == gjson.True
 }
 
 // ExtractMetaFromBody 提取 service_tier / reasoning_effort（尽力而为）。
@@ -135,78 +120,17 @@ func ExtractStreamFlag(body []byte) bool {
 //  5. 国产 thinking 开启但无档位时默认 "high"（见 ApplyThinkingEnabledEffortFallback；
 //     此处仅用 body.model 做初判，路由映射后的上游模型在转发路径再补一次）
 func ExtractMetaFromBody(body []byte) (serviceTier, reasoningEffort string) {
-	if len(body) == 0 {
-		return "", ""
-	}
-	var obj struct {
-		Model           string `json:"model"`
-		ServiceTier     string `json:"service_tier"`
-		ReasoningEffort string `json:"reasoning_effort"`
-		Reasoning       *struct {
-			Effort string `json:"effort"`
-		} `json:"reasoning"`
-		OutputConfig *struct {
-			Effort string `json:"effort"`
-		} `json:"output_config"`
-		Thinking *struct {
-			Type string `json:"type"`
-		} `json:"thinking"`
-	}
-	if err := json.Unmarshal(body, &obj); err != nil {
-		return "", ""
-	}
-	serviceTier = strings.TrimSpace(obj.ServiceTier)
-
-	if obj.Reasoning != nil {
-		if e := normalizeOpenAIReasoningEffort(obj.Reasoning.Effort); e != "" {
-			return serviceTier, e
-		}
-	}
-	if e := normalizeOpenAIReasoningEffort(obj.ReasoningEffort); e != "" {
-		return serviceTier, e
-	}
-	if obj.OutputConfig != nil {
-		if e := normalizeClaudeOutputEffort(obj.OutputConfig.Effort); e != "" {
-			return serviceTier, e
-		}
-	}
-	if e := deriveReasoningEffortFromModel(obj.Model); e != "" {
-		return serviceTier, e
-	}
-	// 初判：thinking 已开且 body.model 属于国产 passback 族 → high
-	// （映射后的上游模型在 attempt 侧再走一遍 ApplyThinkingEnabledEffortFallback）
-	if bodyThinkingEnabled(obj.Thinking) {
-		if e := defaultEffortForThinkingEnabled(obj.Model); e != "" {
-			return serviceTier, e
-		}
-	}
-	return serviceTier, ""
+	f := scanRequestFacts("", body)
+	return f.serviceTier, f.reasoningEffort
 }
 
 // bodyHasThinkingEnabled 检测入站 body 是否开启 thinking（Anthropic / 国产兼容）。
 // 对齐 sub2api：thinking.type 为 enabled 或 adaptive。
 func bodyHasThinkingEnabled(body []byte) bool {
-	if len(body) == 0 {
+	if !looksLikeJSONObject(body) {
 		return false
 	}
-	var obj struct {
-		Thinking *struct {
-			Type string `json:"type"`
-		} `json:"thinking"`
-	}
-	if err := json.Unmarshal(body, &obj); err != nil {
-		return false
-	}
-	return bodyThinkingEnabled(obj.Thinking)
-}
-
-func bodyThinkingEnabled(thinking *struct {
-	Type string `json:"type"`
-}) bool {
-	if thinking == nil {
-		return false
-	}
-	typ := strings.ToLower(strings.TrimSpace(thinking.Type))
+	typ := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()))
 	return typ == "enabled" || typ == "adaptive"
 }
 

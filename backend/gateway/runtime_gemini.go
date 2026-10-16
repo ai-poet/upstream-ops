@@ -87,8 +87,8 @@ func (rt *Runtime) handleGeminiCountTokens(c *gin.Context, model string) {
 		rt.writeGatewayError(c, protocol.KindGemini, http.StatusBadRequest, "invalid_request_error", "failed to read body")
 		return
 	}
-	routes, _ := rt.Routes.ListByGroupID(auth.Group.ID)
-	groupMapping := ParseModelMapping(auth.Group.ModelMappingJSON)
+	routes, _ := rt.cachedRoutes(auth.Group.ID)
+	groupMapping := cachedModelMapping(auth.Group.ModelMappingJSON)
 	mapped, _ := ResolveModel(model, groupMapping)
 	routes = filterRoutesForModel(routes, model, mapped)
 	groupsByChannel := rt.loadGroupsByChannel(c.Request.Context(), routes)
@@ -97,7 +97,7 @@ func (rt *Runtime) handleGeminiCountTokens(c *gin.Context, model string) {
 	})
 	for _, cand := range cands {
 		route := cand.Route
-		upstreamModel, _ := ResolveModel(model, ParseModelMapping(route.ModelMappingJSON), groupMapping)
+		upstreamModel, _ := ResolveModel(model, cachedModelMapping(route.ModelMappingJSON), groupMapping)
 		if upstreamModel == "" {
 			upstreamModel = model
 		}
@@ -141,7 +141,7 @@ func (rt *Runtime) geminiPassthroughCapable(route *storage.GatewayRoute, upstrea
 	if proto == storage.GatewayUpstreamProtocolAuto &&
 		route.NormalizeSourceKind() == storage.GatewayRouteSourceProvider &&
 		rt.Providers != nil && route.GatewayProviderID > 0 {
-		if p, err := rt.Providers.FindByID(route.GatewayProviderID); err == nil && p != nil {
+		if p, err := rt.cachedProvider(route.GatewayProviderID); err == nil && p != nil {
 			if pp := rt.normalizeProviderProtocol(p.UpstreamProtocol); pp != storage.GatewayUpstreamProtocolAuto {
 				proto = pp
 			}

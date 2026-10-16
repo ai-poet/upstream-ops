@@ -102,6 +102,9 @@ type PricingCatalog struct {
 	defaults  map[string]ModelPricing
 	fallbacks map[string]ModelPricing
 	overrides *storage.ModelPriceOverrides
+	// overrideCache 价格覆盖整表缓存（计费每个请求都要查，表很小）；写入后随网关配置版本失效
+	overrideCacheOnce sync.Once
+	overrideCache     *configCache[string, priceOverrideSnapshot]
 
 	runMu  sync.Mutex
 	stopCh chan struct{}
@@ -534,17 +537,9 @@ func (c *PricingCatalog) Resolve(model string) ModelPricing {
 	if model == "" {
 		return ModelPricing{}
 	}
-	// DB 覆盖：原名与小写都试
-	if c.overrides != nil {
-		if item, err := c.overrides.FindByModel(model); err == nil && item != nil && item.Enabled {
-			return pricingFromOverride(item)
-		}
-		lower := strings.ToLower(model)
-		if lower != model {
-			if item, err := c.overrides.FindByModel(lower); err == nil && item != nil && item.Enabled {
-				return pricingFromOverride(item)
-			}
-		}
+	// DB 覆盖（内存快照）：原名与小写都试
+	if item, ok := c.lookupOverride(model); ok && item.Enabled {
+		return pricingFromOverride(&item)
 	}
 
 	c.mu.RLock()
@@ -1035,4 +1030,42 @@ func cacheCreationCost(tokens UsageTokens, price5m, price1h, multiplier float64)
 	}
 	return (float64(tokens.CacheCreation5mTokens)*price5m +
 		float64(tokens.CacheCreation1hTokens)*price1h) * multiplier
+}
+
+// priceOverrideSnapshot 价格覆盖表快照：原名索引 + 小写索引。
+type priceOverrideSnapshot struct {
+	exact map[string]storage.ModelPriceOverride
+	lower map[string]storage.ModelPriceOverride
+}
+
+// lookupOverride 按原名、再按小写名找价格覆盖（与以前逐条查库的顺序一致）。
+func (c *PricingCatalog) lookupOverride(model string) (storage.ModelPriceOverride, bool) {
+	if c.overrides == nil {
+		return storage.ModelPriceOverride{}, false
+	}
+	c.overrideCacheOnce.Do(func() {
+		c.overrideCache = newConfigCache[string, priceOverrideSnapshot](configCacheTTL, true)
+	})
+	snap, err := c.overrideCache.get("all", func() (priceOverrideSnapshot, error) {
+		list, err := c.overrides.List()
+		if err != nil {
+			return priceOverrideSnapshot{}, err
+		}
+		snap := priceOverrideSnapshot{exact: map[string]storage.ModelPriceOverride{}, lower: map[string]storage.ModelPriceOverride{}}
+		for _, item := range list {
+			snap.exact[item.ModelName] = item
+			if _, ok := snap.lower[strings.ToLower(item.ModelName)]; !ok {
+				snap.lower[strings.ToLower(item.ModelName)] = item
+			}
+		}
+		return snap, nil
+	})
+	if err != nil {
+		return storage.ModelPriceOverride{}, false
+	}
+	if item, ok := snap.exact[model]; ok {
+		return item, true
+	}
+	item, ok := snap.lower[strings.ToLower(model)]
+	return item, ok
 }

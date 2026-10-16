@@ -117,6 +117,8 @@ func main() {
 	gatewaySvc.UpdateGatewayConfig(cfg.Gateway)
 	gatewaySvc.StartPricing(cfg.Pricing)
 	gatewaySvc.StartAutoRecover()
+	// 用量日志、密钥额度改为后台批量写入；退出时由 gatewaySvc.Stop 写完缓冲
+	gatewaySvc.StartWriteBehind()
 	defer gatewaySvc.Stop()
 	dispatcher := notify.NewDispatcher(notifies, cipher, log, notify.Policy{
 		NotificationPrefix:                       cfg.App.NotificationPrefix,

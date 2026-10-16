@@ -110,13 +110,20 @@ func (r *GatewayProviders) FindByName(name string) (*GatewayProvider, error) {
 }
 
 // Create 插入记录。
-func (r *GatewayProviders) Create(item *GatewayProvider) error { return r.db.Create(item).Error }
+func (r *GatewayProviders) Create(item *GatewayProvider) (err error) {
+	defer bumpGatewayConfig(&err)
+	return r.db.Create(item).Error
+}
 
 // Update 全量保存。
-func (r *GatewayProviders) Update(item *GatewayProvider) error { return r.db.Save(item).Error }
+func (r *GatewayProviders) Update(item *GatewayProvider) (err error) {
+	defer bumpGatewayConfig(&err)
+	return r.db.Save(item).Error
+}
 
 // Delete 按主键删除。
-func (r *GatewayProviders) Delete(id uint) error {
+func (r *GatewayProviders) Delete(id uint) (err error) {
+	defer bumpGatewayConfig(&err)
 	return r.db.Delete(&GatewayProvider{}, id).Error
 }
 
@@ -149,7 +156,8 @@ func (r *GatewayGroups) NextPosition() (int, error) {
 }
 
 // Reorder 按 ids 顺序重写 position（0..n-1）。未出现在 ids 中的组保持原 position。
-func (r *GatewayGroups) Reorder(ids []uint) error {
+func (r *GatewayGroups) Reorder(ids []uint) (err error) {
+	defer bumpGatewayConfig(&err)
 	if len(ids) == 0 {
 		return nil
 	}
@@ -194,7 +202,8 @@ func (r *GatewayGroups) FindByName(name string) (*GatewayGroup, error) {
 //
 // default:true 的布尔列在 gorm Create 时传 false 会被换成列默认值（并回写结构体），
 // 先记下调用方的取值，插入后显式写回。
-func (r *GatewayGroups) Create(item *GatewayGroup) error {
+func (r *GatewayGroups) Create(item *GatewayGroup) (err error) {
+	defer bumpGatewayConfig(&err)
 	retry, failover, modelAware := item.RetryEnabled, item.FailoverEnabled, item.ModelAwareRouting
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(item).Error; err != nil {
@@ -209,10 +218,14 @@ func (r *GatewayGroups) Create(item *GatewayGroup) error {
 }
 
 // Update 全量保存。
-func (r *GatewayGroups) Update(item *GatewayGroup) error { return r.db.Save(item).Error }
+func (r *GatewayGroups) Update(item *GatewayGroup) (err error) {
+	defer bumpGatewayConfig(&err)
+	return r.db.Save(item).Error
+}
 
 // Delete 按主键删除。
-func (r *GatewayGroups) Delete(id uint) error {
+func (r *GatewayGroups) Delete(id uint) (err error) {
+	defer bumpGatewayConfig(&err)
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("gateway_group_id = ?", id).Delete(&GatewayRoute{}).Error; err != nil {
 			return err
@@ -276,18 +289,26 @@ func (r *GatewayKeys) FindByName(name string) (*GatewayKey, error) {
 }
 
 // Create 插入记录。
-func (r *GatewayKeys) Create(item *GatewayKey) error { return r.db.Create(item).Error }
+func (r *GatewayKeys) Create(item *GatewayKey) (err error) {
+	defer bumpGatewayConfig(&err)
+	return r.db.Create(item).Error
+}
 
 // Update 全量保存。
-func (r *GatewayKeys) Update(item *GatewayKey) error { return r.db.Save(item).Error }
+func (r *GatewayKeys) Update(item *GatewayKey) (err error) {
+	defer bumpGatewayConfig(&err)
+	return r.db.Save(item).Error
+}
 
 // Delete 按主键删除。
-func (r *GatewayKeys) Delete(id uint) error {
+func (r *GatewayKeys) Delete(id uint) (err error) {
+	defer bumpGatewayConfig(&err)
 	return r.db.Delete(&GatewayKey{}, id).Error
 }
 
 // DeleteWithGroupMutation 在同一事务内更新所属组并删除 Key。
-func (r *GatewayKeys) DeleteWithGroupMutation(id uint, mutate func(*GatewayGroup) bool) error {
+func (r *GatewayKeys) DeleteWithGroupMutation(id uint, mutate func(*GatewayGroup) bool) (err error) {
+	defer bumpGatewayConfig(&err)
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		var key GatewayKey
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&key, id).Error; err != nil {
@@ -314,12 +335,51 @@ func (r *GatewayKeys) TouchLastUsed(id uint, at time.Time) error {
 }
 
 // AddQuotaUsed 累加密钥已用额度。
-func (r *GatewayKeys) AddQuotaUsed(id uint, amount float64) error {
+func (r *GatewayKeys) AddQuotaUsed(id uint, amount float64) (err error) {
+	defer bumpGatewayConfig(&err)
 	if amount == 0 {
 		return nil
 	}
 	return r.db.Model(&GatewayKey{}).Where("id = ?", id).
 		UpdateColumn("quota_used", gorm.Expr("quota_used + ?", amount)).Error
+}
+
+// KeyUsageDelta 一把密钥在一个写回周期内累计的已用额度与最后使用时间（网关后台批量写回用）。
+type KeyUsageDelta struct {
+	QuotaUsed  float64
+	LastUsedAt *time.Time
+}
+
+// ApplyUsageDeltas 一个事务写回多把密钥的额度增量与最后使用时间。
+// 只有额度变了才让网关配置版本加一（额度检查要看到新值；最后使用时间不影响转发，不必让缓存失效）。
+func (r *GatewayKeys) ApplyUsageDeltas(deltas map[uint]KeyUsageDelta) error {
+	if len(deltas) == 0 {
+		return nil
+	}
+	quotaChanged := false
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		for id, d := range deltas {
+			updates := map[string]any{}
+			if d.QuotaUsed != 0 {
+				updates["quota_used"] = gorm.Expr("quota_used + ?", d.QuotaUsed)
+				quotaChanged = true
+			}
+			if d.LastUsedAt != nil {
+				updates["last_used_at"] = *d.LastUsedAt
+			}
+			if len(updates) == 0 {
+				continue
+			}
+			if err := tx.Model(&GatewayKey{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err == nil && quotaChanged {
+		gatewayConfigVersion.Add(1)
+	}
+	return err
 }
 
 // GatewayRoutes 网关路由仓储。
@@ -353,7 +413,8 @@ func (r *GatewayRoutes) FindByID(id uint) (*GatewayRoute, error) {
 // route_id 悬空，从而丢失「上游密钥名 / 源分组」等展示字段。仅真正删除的路由才 Delete。
 //
 // position 有 (group_id, position) 唯一索引：先写临时 position 再写最终值，避免换序冲突。
-func (r *GatewayRoutes) SaveForGroup(groupID uint, list []GatewayRoute) error {
+func (r *GatewayRoutes) SaveForGroup(groupID uint, list []GatewayRoute) (err error) {
+	defer bumpGatewayConfig(&err)
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		var existing []GatewayRoute
 		if err := tx.Where("gateway_group_id = ?", groupID).Find(&existing).Error; err != nil {
@@ -535,7 +596,10 @@ func NormalizeModelList(list []string) []string {
 }
 
 // Update 全量保存。
-func (r *GatewayRoutes) Update(item *GatewayRoute) error { return r.db.Save(item).Error }
+func (r *GatewayRoutes) Update(item *GatewayRoute) (err error) {
+	defer bumpGatewayConfig(&err)
+	return r.db.Save(item).Error
+}
 
 // FindKeyedBySourceKeyName 任意一条已存了该上游 Key（按名字）的路由；上游 Key 按「渠道 + 源分组」跨网关组共用。
 func (r *GatewayRoutes) FindKeyedBySourceKeyName(name string) (*GatewayRoute, error) {
@@ -548,7 +612,8 @@ func (r *GatewayRoutes) FindKeyedBySourceKeyName(name string) (*GatewayRoute, er
 }
 
 // UpdateSourceKey 更新路由绑定的上游密钥密文。
-func (r *GatewayRoutes) UpdateSourceKey(id uint, keyID int64, keyName, keyCipher string) error {
+func (r *GatewayRoutes) UpdateSourceKey(id uint, keyID int64, keyName, keyCipher string) (err error) {
+	defer bumpGatewayConfig(&err)
 	return r.db.Model(&GatewayRoute{}).Where("id = ?", id).Updates(map[string]any{
 		"source_api_key_id":     keyID,
 		"source_api_key_name":   keyName,
@@ -557,7 +622,8 @@ func (r *GatewayRoutes) UpdateSourceKey(id uint, keyID int64, keyName, keyCipher
 }
 
 // UpdateSourceGroupSnapshot 补全源分组显示名（保留 source_group_id）。
-func (r *GatewayRoutes) UpdateSourceGroupSnapshot(id uint, groupID *int64, groupName string) error {
+func (r *GatewayRoutes) UpdateSourceGroupSnapshot(id uint, groupID *int64, groupName string) (err error) {
+	defer bumpGatewayConfig(&err)
 	updates := map[string]any{
 		"source_group_name": strings.TrimSpace(groupName),
 	}
@@ -568,7 +634,8 @@ func (r *GatewayRoutes) UpdateSourceGroupSnapshot(id uint, groupID *int64, group
 }
 
 // SetTempUnschedulable 写入冷却截止时间、错误详情，以及触发失败的请求时间/ request_id。
-func (r *GatewayRoutes) SetTempUnschedulable(id uint, until time.Time, reason string, failedAt time.Time, requestID string) error {
+func (r *GatewayRoutes) SetTempUnschedulable(id uint, until time.Time, reason string, failedAt time.Time, requestID string) (err error) {
+	defer bumpGatewayConfig(&err)
 	if failedAt.IsZero() {
 		failedAt = time.Now()
 	}
@@ -582,7 +649,8 @@ func (r *GatewayRoutes) SetTempUnschedulable(id uint, until time.Time, reason st
 }
 
 // ClearTempUnschedulable 手动清除暂停时间与错误信息（含自动禁用）。
-func (r *GatewayRoutes) ClearTempUnschedulable(id uint) error {
+func (r *GatewayRoutes) ClearTempUnschedulable(id uint) (err error) {
+	defer bumpGatewayConfig(&err)
 	// 用 Exec 强制写 NULL；GORM Updates(map) 对 nil 在部分版本会跳过
 	return r.db.Exec(
 		`UPDATE gateway_routes SET temp_unschedulable_until = NULL, temp_unschedulable_reason = '', temp_unschedulable_at = NULL, temp_unschedulable_request_id = '', recover_success_streak = 0, auto_disabled = ?, auto_disabled_at = NULL, auto_disabled_reason = '', updated_at = ? WHERE id = ?`,
@@ -591,7 +659,8 @@ func (r *GatewayRoutes) ClearTempUnschedulable(id uint) error {
 }
 
 // SetAutoDisabled 自动禁用路由（鉴权 / 额度类错误），同时记下触发的失败请求。
-func (r *GatewayRoutes) SetAutoDisabled(id uint, reason string, at time.Time, requestID string) error {
+func (r *GatewayRoutes) SetAutoDisabled(id uint, reason string, at time.Time, requestID string) (err error) {
+	defer bumpGatewayConfig(&err)
 	if at.IsZero() {
 		at = time.Now()
 	}
@@ -607,7 +676,8 @@ func (r *GatewayRoutes) SetAutoDisabled(id uint, reason string, at time.Time, re
 }
 
 // ClearAutoDisabled 探测恢复后解除自动禁用（保留错误残留，交由连续成功逻辑清理）。
-func (r *GatewayRoutes) ClearAutoDisabled(id uint) error {
+func (r *GatewayRoutes) ClearAutoDisabled(id uint) (err error) {
+	defer bumpGatewayConfig(&err)
 	return r.db.Exec(
 		`UPDATE gateway_routes SET auto_disabled = ?, auto_disabled_at = NULL, auto_disabled_reason = '', updated_at = ? WHERE id = ?`,
 		false, time.Now(), id,
@@ -622,7 +692,8 @@ func (r *GatewayRoutes) ListAutoDisabled() ([]GatewayRoute, error) {
 }
 
 // ClearTempUnschedulableUntil 仅结束临时暂停（恢复调度），保留 reason / request_id / at 供排查。
-func (r *GatewayRoutes) ClearTempUnschedulableUntil(id uint) error {
+func (r *GatewayRoutes) ClearTempUnschedulableUntil(id uint) (err error) {
+	defer bumpGatewayConfig(&err)
 	return r.db.Exec(
 		`UPDATE gateway_routes SET temp_unschedulable_until = NULL, updated_at = ? WHERE id = ?`,
 		time.Now(), id,
@@ -633,7 +704,8 @@ func (r *GatewayRoutes) ClearTempUnschedulableUntil(id uint) error {
 // 1) 立刻结束冷却（恢复可调度）；
 // 2) 若仍有错误残留，累加连续成功次数；
 // 3) 达到 RouteRecoverSuccessClearStreak 后清空「已恢复/错误/清除」相关展示字段。
-func (r *GatewayRoutes) NoteSuccessForPauseError(id uint) error {
+func (r *GatewayRoutes) NoteSuccessForPauseError(id uint) (err error) {
+	defer bumpGatewayConfig(&err)
 	if id == 0 {
 		return nil
 	}
@@ -680,6 +752,21 @@ func (r *GatewayUsageLogs) Create(item *GatewayUsageLog) error {
 		item.CreatedAt = time.Now()
 	}
 	return r.db.Create(item).Error
+}
+
+// CreateBatch 一个事务批量插入用量日志（网关后台批量写入用）。
+func (r *GatewayUsageLogs) CreateBatch(items []*GatewayUsageLog) error {
+	if len(items) == 0 {
+		return nil
+	}
+	now := time.Now()
+	for _, item := range items {
+		if item.CreatedAt.IsZero() {
+			item.CreatedAt = now
+		}
+	}
+	// 每批 100 行：单条用量日志列很多，控制单条 INSERT 的参数个数
+	return r.db.CreateInBatches(items, 100).Error
 }
 
 // CountBefore 统计 created_at < before 的记录数。
@@ -1301,7 +1388,8 @@ func (r *ModelPriceOverrides) FindByModel(name string) (*ModelPriceOverride, err
 }
 
 // Upsert 按模型名插入或更新价目覆盖。
-func (r *ModelPriceOverrides) Upsert(item *ModelPriceOverride) error {
+func (r *ModelPriceOverrides) Upsert(item *ModelPriceOverride) (err error) {
+	defer bumpGatewayConfig(&err)
 	item.ModelName = strings.TrimSpace(item.ModelName)
 	if item.ID == 0 {
 		var existing ModelPriceOverride
@@ -1314,7 +1402,8 @@ func (r *ModelPriceOverrides) Upsert(item *ModelPriceOverride) error {
 }
 
 // Delete 按主键删除。
-func (r *ModelPriceOverrides) Delete(id uint) error {
+func (r *ModelPriceOverrides) Delete(id uint) (err error) {
+	defer bumpGatewayConfig(&err)
 	return r.db.Delete(&ModelPriceOverride{}, id).Error
 }
 

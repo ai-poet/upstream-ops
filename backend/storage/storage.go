@@ -78,7 +78,12 @@ func Open(cfg DBConfig) (*gorm.DB, error) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return nil, fmt.Errorf("create sqlite dir: %w", err)
 		}
-		dialector = sqliteDriver.Open(path)
+		// 读写分离：SELECT 走多连接只读池，写与事务走单个写连接（见 sqlite_pool.go）
+		pool, err := openSQLiteSplitPool(path)
+		if err != nil {
+			return nil, fmt.Errorf("open sqlite: %w", err)
+		}
+		dialector = sqliteDriver.Dialector{Conn: pool}
 	case DBDriverMySQL:
 		dialector = mysqlDriver.Open(cfg.MySQLDSN())
 	default:
@@ -101,9 +106,7 @@ func Open(cfg DBConfig) (*gorm.DB, error) {
 		if err := db.Exec("PRAGMA journal_mode=WAL").Error; err != nil {
 			return nil, fmt.Errorf("set sqlite journal mode: %w", err)
 		}
-		if err := db.Exec("PRAGMA busy_timeout=5000").Error; err != nil {
-			return nil, fmt.Errorf("set sqlite busy timeout: %w", err)
-		}
+		// busy_timeout / synchronous 由连接串的 _pragma 在每个新连接上设置；写连接保持单连接
 		sqlDB.SetMaxOpenConns(1)
 		sqlDB.SetMaxIdleConns(1)
 	default:

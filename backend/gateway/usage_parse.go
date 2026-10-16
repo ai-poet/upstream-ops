@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/bejix/upstream-ops/backend/gateway/protocol"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // 本文件 usage 解析对齐 sub2api：
@@ -509,25 +511,31 @@ func ParseUsage(body []byte, stream bool, kind protocol.Kind) UsageTokens {
 // EnsureStreamUsageOption 对齐 sub2api ensureOpenAIChatStreamUsage：
 // 强制 stream_options.include_usage=true（覆盖 false），保证末帧带完整 usage。
 func EnsureStreamUsageOption(body []byte, stream bool) []byte {
-	if !stream || len(body) == 0 {
+	if !stream || !looksLikeJSONObject(body) {
 		return body
 	}
-	var m map[string]any
-	if err := json.Unmarshal(body, &m); err != nil {
+	cur := gjson.GetBytes(body, "stream")
+	if cur.Type == gjson.False {
 		return body
 	}
-	if s, ok := m["stream"].(bool); ok && !s {
+	// 已经是 stream=true 且 include_usage=true 时不动（转发路径会调用两次）
+	if cur.Type == gjson.True && gjson.GetBytes(body, "stream_options.include_usage").Type == gjson.True {
 		return body
 	}
-	m["stream"] = true
-	so, _ := m["stream_options"].(map[string]any)
-	if so == nil {
-		so = map[string]any{}
+	out := body
+	var err error
+	if cur.Type != gjson.True {
+		if out, err = sjson.SetBytes(out, "stream", true); err != nil {
+			return body
+		}
 	}
-	so["include_usage"] = true
-	m["stream_options"] = so
-	out, err := json.Marshal(m)
-	if err != nil {
+	// stream_options 不是对象（如 null）时整体换成对象
+	if so := gjson.GetBytes(out, "stream_options"); so.Exists() && !so.IsObject() {
+		if out, err = sjson.SetRawBytes(out, "stream_options", []byte(`{}`)); err != nil {
+			return body
+		}
+	}
+	if out, err = sjson.SetBytes(out, "stream_options.include_usage", true); err != nil {
 		return body
 	}
 	return out

@@ -5,33 +5,9 @@ import (
 	"strings"
 )
 
+// billingInputFromRequest 请求里的计费参数（张数、尺寸、视频时长、是否 Responses 生图）。
 func billingInputFromRequest(path string, body []byte) BillingInput {
-	input := BillingInput{RequestCount: 1}
-	if strings.Contains(path, "/images/") {
-		input.EndpointMode = BillingModeImage
-	}
-	if strings.Contains(path, "/videos/") {
-		input.EndpointMode = BillingModeVideo
-	}
-	var raw map[string]any
-	if json.Unmarshal(body, &raw) != nil {
-		return input
-	}
-	if n := jsonInt(raw["n"]); n > 0 {
-		input.RequestCount = n
-	}
-	input.SizeTier = jsonString(raw["size"])
-	if input.SizeTier == "" {
-		input.SizeTier = jsonString(raw["resolution"])
-	}
-	input.VideoDurationSeconds = jsonInt(raw["duration"])
-	if input.EndpointMode == BillingModeVideo && input.SizeTier == "" {
-		input.SizeTier = "480p"
-	}
-	if strings.Contains(path, "/responses") && responsesRequestHasImageGeneration(raw) {
-		input.EndpointMode = BillingModeImage
-	}
-	return input
+	return scanRequestFacts(path, body).billing
 }
 
 func billingInputWithResponse(input BillingInput, body []byte) BillingInput {
@@ -99,40 +75,6 @@ func responsesImageOutputCount(response map[string]any) (int, string) {
 		}
 	}
 	return count, size
-}
-
-func responsesRequestHasImageGeneration(raw map[string]any) bool {
-	var hasTool func(any) bool
-	hasTool = func(value any) bool {
-		tools, ok := value.([]any)
-		if !ok {
-			return false
-		}
-		for _, item := range tools {
-			tool, _ := item.(map[string]any)
-			if tool == nil {
-				continue
-			}
-			if jsonString(tool["type"]) == "image_generation" {
-				return true
-			}
-			if jsonString(tool["type"]) == "namespace" && jsonString(tool["name"]) == "image_gen" {
-				return true
-			}
-		}
-		return false
-	}
-	if hasTool(raw["tools"]) {
-		return true
-	}
-	input, _ := raw["input"].([]any)
-	for _, item := range input {
-		entry, _ := item.(map[string]any)
-		if entry != nil && jsonString(entry["type"]) == "additional_tools" && hasTool(entry["tools"]) {
-			return true
-		}
-	}
-	return false
 }
 
 func jsonString(v any) string {

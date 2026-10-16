@@ -70,13 +70,13 @@ func (rt *Runtime) HandleResponsesWebSocket(c *gin.Context) {
 		rt.writeWSResponsesFailed(ctx, client, "invalid_request_error", "system prompt injection failed: "+err.Error())
 		return
 	}
-	_ = rt.Keys.TouchLastUsed(key.ID, time.Now())
-	routes, err := rt.Routes.ListByGroupID(group.ID)
+	rt.touchKey(key.ID, time.Now())
+	routes, err := rt.cachedRoutes(group.ID)
 	if err != nil || len(routes) == 0 {
 		rt.writeWSResponsesFailed(ctx, client, "api_error", "no routes configured")
 		return
 	}
-	groupMapping := ParseModelMapping(group.ModelMappingJSON)
+	groupMapping := cachedModelMapping(group.ModelMappingJSON)
 	groupMappedModel, _ := ResolveModel(requestedModel, groupMapping)
 	// 转发模型：只留下接这个模型的路由
 	if routes = filterRoutesForModel(routes, requestedModel, groupMappedModel); len(routes) == 0 {
@@ -89,7 +89,7 @@ func (rt *Runtime) HandleResponsesWebSocket(c *gin.Context) {
 	var selected *wsResponsesRoute
 	for _, cand := range candidates {
 		route := cand.Route
-		upstreamModel, chain := ResolveModel(requestedModel, ParseModelMapping(route.ModelMappingJSON), groupMapping)
+		upstreamModel, chain := ResolveModel(requestedModel, cachedModelMapping(route.ModelMappingJSON), groupMapping)
 		if upstreamModel == "" {
 			upstreamModel = requestedModel
 		}
@@ -249,7 +249,7 @@ func (rt *Runtime) forwardResponsesWebSocket(
 			meta.BillingInput = billingInputWithResponse(meta.BillingInput, body.Bytes())
 			rt.recordWSResponsesUsage(key, group, selected, reqID, requestedModel, rt.finalizeStreamTokens(tokens, body.Bytes(), protocol.KindOpenAIResponses), success, errType, errText, body.Bytes(), time.Since(started), c, meta)
 			if success {
-				_ = rt.Routes.NoteSuccessForPauseError(selected.route.ID)
+				rt.noteRouteSuccess(&selected.route)
 			}
 			return
 		}

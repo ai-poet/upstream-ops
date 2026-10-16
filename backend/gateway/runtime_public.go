@@ -24,7 +24,7 @@ func (rt *Runtime) HandleModels(c *gin.Context) {
 		rt.writeAuthError(c, protocolOpenAI, err.Error())
 		return
 	}
-	_ = rt.Keys.TouchLastUsed(auth.Key.ID, time.Now())
+	rt.touchKey(auth.Key.ID, time.Now())
 	payload, err := rt.groupModelsPayload(c, auth.Group)
 	if err != nil {
 		rt.writeGatewayError(c, protocolOpenAI, http.StatusInternalServerError, "api_error", err.Error())
@@ -116,7 +116,7 @@ func (rt *Runtime) groupModelsPayload(c *gin.Context, group *storage.GatewayGrou
 	if mode == "" {
 		mode = storage.GatewayModelsModeAuto
 	}
-	stored := rt.ParseModelsJSON(group.ModelsJSON)
+	stored := rt.cachedModelsJSON(group.ModelsJSON)
 
 	if mode == storage.GatewayModelsModeManual {
 		for _, it := range stored {
@@ -124,13 +124,13 @@ func (rt *Runtime) groupModelsPayload(c *gin.Context, group *storage.GatewayGrou
 		}
 	} else {
 		// auto / hybrid: live aggregate
-		routes, err := rt.Routes.ListByGroupID(group.ID)
+		routes, err := rt.cachedRoutes(group.ID)
 		if err != nil {
 			return nil, err
 		}
 		groupsByChannel := rt.loadGroupsByChannel(c.Request.Context(), routes)
 		candidates := SortRoutes(routes, groupsByChannel, group.RateSortDirection, time.Now(), nil)
-		groupMapping := ParseModelMapping(group.ModelMappingJSON)
+		groupMapping := cachedModelMapping(group.ModelMappingJSON)
 
 		for _, cand := range candidates {
 			route := cand.Route
@@ -160,7 +160,7 @@ func (rt *Runtime) groupModelsPayload(c *gin.Context, group *storage.GatewayGrou
 			if err != nil {
 				continue
 			}
-			routeMapping := ParseModelMapping(route.ModelMappingJSON)
+			routeMapping := cachedModelMapping(route.ModelMappingJSON)
 			for _, m := range models {
 				id := m
 				for src, dst := range routeMapping {
@@ -270,9 +270,9 @@ func (rt *Runtime) HandleCountTokens(c *gin.Context) {
 		return
 	}
 	// 尝试转发到第一条可用路由的 /v1/messages/count_tokens（只看转发模型接这个模型的路由）
-	routes, _ := rt.Routes.ListByGroupID(auth.Group.ID)
+	routes, _ := rt.cachedRoutes(auth.Group.ID)
 	if model := ExtractModelFromBody(body); model != "" {
-		mapped, _ := ResolveModel(model, ParseModelMapping(auth.Group.ModelMappingJSON))
+		mapped, _ := ResolveModel(model, cachedModelMapping(auth.Group.ModelMappingJSON))
 		routes = filterRoutesForModel(routes, model, mapped)
 	}
 	groupsByChannel := rt.loadGroupsByChannel(c.Request.Context(), routes)

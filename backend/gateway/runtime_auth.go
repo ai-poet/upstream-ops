@@ -28,7 +28,7 @@ func (rt *Runtime) Authenticate(c *gin.Context) (*AuthResult, error) {
 	if raw == "" {
 		return nil, errors.New("missing api key")
 	}
-	key, err := rt.Keys.FindByHash(HashAPIKey(raw))
+	key, err := rt.cachedKeyByHash(HashAPIKey(raw))
 	if err != nil {
 		return nil, errors.New("invalid api key")
 	}
@@ -38,10 +38,11 @@ func (rt *Runtime) Authenticate(c *gin.Context) (*AuthResult, error) {
 	if err := rt.checkIPAccess(c.ClientIP(), key.IPWhitelistJSON, key.IPBlacklistJSON); err != nil {
 		return nil, err
 	}
-	if key.Quota > 0 && key.QuotaUsed >= key.Quota {
+	// 已用额度 = 库里的 + 后台还没写回的增量
+	if key.Quota > 0 && key.QuotaUsed+rt.pendingKeyQuota(key.ID) >= key.Quota {
 		return nil, errors.New("api key quota exceeded")
 	}
-	group, err := rt.Groups.FindByID(key.GroupID)
+	group, err := rt.cachedGroup(key.GroupID)
 	if err != nil {
 		return nil, errors.New("gateway group not found")
 	}

@@ -11,7 +11,9 @@ package gateway
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bejix/upstream-ops/backend/config"
@@ -61,6 +63,8 @@ type Service struct {
 	proxyConfig config.ProxyConfig
 	upstream    config.UpstreamConfig
 	gatewayCfg  config.GatewayConfig
+	// gatewayCfgReady gatewayCfg 已经过 WithDefaults（热路径上每个请求要读几十次，避免重复规范化）
+	gatewayCfgReady bool
 
 	modelsCacheMu sync.Mutex
 	modelsCache   map[uint]modelsCacheEntry // keyed by group id
@@ -68,12 +72,25 @@ type Service struct {
 	// 源分组列表缓存（ListAPIKeyGroups 远程调用昂贵；列表接口不再实时拉，运行时/保存仍可复用缓存）
 	channelGroupsCacheMu sync.Mutex
 	channelGroupsCache   map[uint]channelGroupsCacheEntry // keyed by channel id
+	// 进行中的源分组拉取（同一渠道并发只打一次上游），由 channelGroupsCacheMu 保护
+	channelGroupsInflight map[uint]*channelGroupsCall
 
 	// 异步任务（图片 / 视频 / Seedance / 语音 / cachedContents）创建时的路由，供后续查询回到同一上游
 	tasks *taskAffinity
 
 	autoRecoverMu   sync.Mutex
 	autoRecoverStop chan struct{}
+
+	// 热路径配置缓存（密钥 / 分组 / 路由 / 渠道，见 runtime_config_cache.go）
+	configCacheOnce sync.Once
+	cfgCache        *runtimeConfigCache
+
+	// 后台批量写入（用量日志、密钥额度 / 最后使用时间），见 write_behind.go；nil 时同步写
+	writer atomic.Pointer[writeBehind]
+
+	// 转发用的 HTTP 客户端，按「代理 + 转发超时」复用连接（见 httpClientForTarget）
+	upstreamClientsMu sync.Mutex
+	upstreamClients   map[string]*http.Client
 }
 
 type modelsCacheEntry struct {
@@ -110,6 +127,7 @@ func NewService(
 		Pricing:            NewPricingCatalog(prices),
 		Log:                log,
 		gatewayCfg:         config.GatewayConfig{}.WithDefaults(),
+		gatewayCfgReady:    true,
 		modelsCache:        map[uint]modelsCacheEntry{},
 		channelGroupsCache: map[uint]channelGroupsCacheEntry{},
 		tasks:              newTaskAffinity(),
@@ -134,8 +152,9 @@ func (s *Service) ListDefaultPrices(query string) []DefaultPriceItem {
 
 func (s *Service) UpdateProxyConfig(cfg config.ProxyConfig) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.proxyConfig = cfg
+	s.mu.Unlock()
+	s.resetUpstreamClients()
 }
 
 func (s *Service) UpdateUpstreamConfig(cfg config.UpstreamConfig) {
@@ -146,9 +165,11 @@ func (s *Service) UpdateUpstreamConfig(cfg config.UpstreamConfig) {
 
 func (s *Service) UpdateGatewayConfig(cfg config.GatewayConfig) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.gatewayCfg = cfg.WithDefaults()
+	s.gatewayCfgReady = true
 	protocol.SetEngine(s.gatewayCfg.ProtocolEngine)
+	s.mu.Unlock()
+	s.resetUpstreamClients()
 }
 
 // StartPricing 启动模型价格远程同步。内置价目始终可用，远程失败不会中断网关。
@@ -172,4 +193,5 @@ func (s *Service) Stop() {
 		s.Pricing.Stop()
 	}
 	s.stopAutoRecover()
+	s.stopWriteBehind()
 }

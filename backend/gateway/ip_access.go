@@ -10,12 +10,12 @@ import (
 
 func (svc *Service) checkIPAccess(ip, whitelistJSON, blacklistJSON string) error {
 	ip = strings.TrimSpace(ip)
-	if bl := svc.parseStringListJSON(blacklistJSON); len(bl) > 0 {
+	if bl := svc.cachedStringList(blacklistJSON); len(bl) > 0 {
 		if svc.matchIPList(ip, bl) {
 			return errors.New("ip blocked")
 		}
 	}
-	if wl := svc.parseStringListJSON(whitelistJSON); len(wl) > 0 {
+	if wl := svc.cachedStringList(whitelistJSON); len(wl) > 0 {
 		if !svc.matchIPList(ip, wl) {
 			return errors.New("ip not allowed")
 		}

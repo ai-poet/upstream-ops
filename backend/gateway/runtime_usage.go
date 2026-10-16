@@ -154,11 +154,9 @@ func (rt *Runtime) recordUsage(
 		UserAgent:             c.Request.UserAgent(),
 		CreatedAt:             time.Now(),
 	}
-	if err := rt.Usage.Create(item); err != nil && rt.Log != nil {
-		rt.Log.Error("write usage log failed", "err", err)
-	}
+	rt.saveUsageLog(item)
 	if success && cost.ActualCost > 0 {
-		_ = rt.Keys.AddQuotaUsed(key.ID, cost.ActualCost)
+		rt.addKeyQuotaUsed(key.ID, cost.ActualCost)
 	}
 }
 

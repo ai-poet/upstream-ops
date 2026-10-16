@@ -64,32 +64,43 @@ func (rt *Runtime) handleForward(c *gin.Context, req forwardRequest) {
 	}
 
 	contentType := c.GetHeader("Content-Type")
+	// 请求体只扫一遍：model、stream、服务等级、推理档位、thinking、计费参数一次拿齐
+	facts := scanRequestFacts(path, body)
 	requestedModel := strings.TrimSpace(req.Model)
 	if requestedModel == "" {
+		requestedModel = facts.model
+	}
+	if requestedModel == "" {
+		// multipart（音频、图片编辑）的 model 在表单里
 		requestedModel = requestModel(contentType, body)
 	}
+	beforeTier := body
 	body, err = rt.applyServiceTierRules(group, key, kind, requestedModel, body)
 	if err != nil {
 		rt.writeGatewayError(c, kind, http.StatusForbidden, "permission_error", err.Error())
 		return
 	}
-	stream := ExtractStreamFlag(body)
+	if !sameBuffer(beforeTier, body) {
+		// 服务等级规则改写了 body（去掉或强制 service_tier）：按改写后的重新取
+		facts = scanRequestFacts(path, body)
+	}
+	stream := facts.stream
 	if req.Stream != nil {
 		stream = *req.Stream
 	}
-	billingInput := billingInputFromRequest(path, body)
-	serviceTier, reasoningEffort := ExtractMetaFromBody(body)
+	billingInput := facts.billing
+	serviceTier, reasoningEffort := facts.serviceTier, facts.reasoningEffort
 	// thinking 是否开启：国产模型无 effort 档位时，按上游映射模型补默认 high（对齐 sub2api）
-	thinkingEnabled := bodyHasThinkingEnabled(body)
-	_ = rt.Keys.TouchLastUsed(key.ID, time.Now())
+	thinkingEnabled := facts.thinkingEnabled
+	rt.touchKey(key.ID, time.Now())
 
-	routes, err := rt.Routes.ListByGroupID(group.ID)
+	routes, err := rt.cachedRoutes(group.ID)
 	if err != nil || len(routes) == 0 {
 		rt.writeGatewayError(c, kind, http.StatusServiceUnavailable, "api_error", "no routes configured")
 		return
 	}
 
-	groupMapping := ParseModelMapping(group.ModelMappingJSON)
+	groupMapping := cachedModelMapping(group.ModelMappingJSON)
 	groupMappedModel, _ := ResolveModel(requestedModel, groupMapping)
 	// 转发模型：只留下接这个模型的路由（同 new-api 渠道的模型列表）
 	if routes = filterRoutesForModel(routes, requestedModel, groupMappedModel); len(routes) == 0 {
@@ -157,7 +168,7 @@ func (rt *Runtime) handleForward(c *gin.Context, req forwardRequest) {
 
 		cand := candidates[0]
 		route := cand.Route
-		routeMapping := ParseModelMapping(route.ModelMappingJSON)
+		routeMapping := cachedModelMapping(route.ModelMappingJSON)
 		upstreamModel, chain := ResolveModel(requestedModel, routeMapping, groupMapping)
 		if upstreamModel == "" {
 			upstreamModel = requestedModel
@@ -389,7 +400,7 @@ func (rt *Runtime) handleForward(c *gin.Context, req forwardRequest) {
 					}
 				}
 				if success {
-					_ = rt.Routes.NoteSuccessForPauseError(route.ID)
+					rt.noteRouteSuccess(&route)
 				} else if rt.Log != nil {
 					rt.Log.Warn("gateway stream ended with error after commit",
 						"request_id", reqID,
@@ -536,7 +547,7 @@ func (rt *Runtime) handleForward(c *gin.Context, req forwardRequest) {
 			c.Status(status)
 			_, _ = c.Writer.Write(clientBody)
 			// 成功：立刻恢复调度；连续成功达到阈值后自动清除错误残留展示
-			_ = rt.Routes.NoteSuccessForPauseError(route.ID)
+			rt.noteRouteSuccess(&route)
 			rt.recordUsage(key, group, &route, target, reqID, requestedModel, upstreamModel, chain, tokens, cand.EffectiveRate, cand.BillingRate, stream, status, true, usageErrorInfo{}, duration, firstTokenMS, c, usageMeta)
 			return
 		}
@@ -694,7 +705,7 @@ func (rt *Runtime) resolveUpstreamTarget(route *storage.GatewayRoute) (*upstream
 		if route.GatewayProviderID == 0 {
 			return nil, errors.New("gateway_provider_id is required")
 		}
-		p, err := rt.Providers.FindByID(route.GatewayProviderID)
+		p, err := rt.cachedProvider(route.GatewayProviderID)
 		if err != nil {
 			return nil, fmt.Errorf("provider not found: %w", err)
 		}
@@ -711,7 +722,7 @@ func (rt *Runtime) resolveUpstreamTarget(route *storage.GatewayRoute) (*upstream
 			Provider: p,
 		}, nil
 	}
-	ch, err := rt.Channels.FindByID(route.SourceChannelID)
+	ch, err := rt.cachedChannel(route.SourceChannelID)
 	if err != nil {
 		return nil, fmt.Errorf("channel not found: %w", err)
 	}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/bejix/upstream-ops/backend/gateway/protocol"
 	"github.com/bejix/upstream-ops/backend/storage"
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -146,6 +147,10 @@ func (e *serviceTierBlockedError) Error() string {
 
 func (rt *Runtime) applyServiceTierRules(group *storage.GatewayGroup, key *storage.GatewayKey, kind protocolKind, model string, body []byte) ([]byte, error) {
 	if group == nil || key == nil || !protocol.IsOpenAIFamily(kind) {
+		return body, nil
+	}
+	// 绝大多数请求不带 service_tier：扫一下就返回，不整包解析
+	if !looksLikeJSONObject(body) || gjson.GetBytes(body, "service_tier").Type != gjson.String {
 		return body, nil
 	}
 	var request map[string]json.RawMessage

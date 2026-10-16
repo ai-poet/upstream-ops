@@ -483,7 +483,7 @@ func (svc *Service) modelRouteIDs(group *storage.GatewayGroup, routes []storage.
 	}
 	ids := map[uint]struct{}{}
 	channels := map[uint]struct{}{}
-	for _, item := range svc.ParseModelsJSON(group.ModelsJSON) {
+	for _, item := range svc.cachedModelsJSON(group.ModelsJSON) {
 		if _, ok := wanted[strings.ToLower(item.ID)]; !ok {
 			continue
 		}
@@ -506,7 +506,7 @@ func (svc *Service) modelRouteIDs(group *storage.GatewayGroup, routes []storage.
 			ids[r.ID] = struct{}{}
 		}
 		// 路由级映射或转发模型显式写了该模型，也算声明
-		for k := range ParseModelMapping(r.ModelMappingJSON) {
+		for k := range cachedModelMapping(r.ModelMappingJSON) {
 			if _, ok := wanted[strings.ToLower(strings.TrimSpace(k))]; ok {
 				ids[r.ID] = struct{}{}
 			}
