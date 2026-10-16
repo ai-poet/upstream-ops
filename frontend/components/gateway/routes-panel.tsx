@@ -28,6 +28,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { formatRatio } from "@/lib/format"
+import { SupportedModelsDialog, supportedModelsSummary } from "./supported-models-dialog"
 import type {
   GatewayProviderOption,
   GatewayRateConvertMode,
@@ -224,6 +225,8 @@ type RoutesPanelProps = {
   setRouteDrafts: Dispatch<SetStateAction<Partial<GatewayRoute>[]>>
   sortedRouteRows: SortedRouteRow[]
   channelList: ChannelOption[]
+  /** 组模型清单，供「转发模型」点选 */
+  modelOptions: string[]
   providerOptions: GatewayProviderOption[]
   sourceGroupsByChannel: Record<number, RateSnapshot[]>
   onLoadSourceGroups: (channelID: number) => void
@@ -244,6 +247,7 @@ export function RoutesPanel({
   setRouteDrafts,
   sortedRouteRows,
   channelList,
+  modelOptions,
   providerOptions,
   sourceGroupsByChannel,
   onLoadSourceGroups,
@@ -253,6 +257,17 @@ export function RoutesPanel({
   onClearRoutePause,
   onShowPauseError,
 }: RoutesPanelProps) {
+  // 正在编辑转发模型的路由（routeDrafts 下标）
+  const [modelsEditIdx, setModelsEditIdx] = useState<number | null>(null)
+  const routeLabel = (r: Partial<GatewayRoute>) => {
+    if (routeSourceKind(r) === "provider") {
+      const p = providerOptions.find((x) => x.id === (Number(r.gateway_provider_id) || 0))
+      return p?.name || `直连 #${r.gateway_provider_id ?? "-"}`
+    }
+    const ch = channelList.find((x) => x.id === (Number(r.source_channel_id) || 0))
+    const name = ch?.name || `渠道 #${r.source_channel_id ?? "-"}`
+    return r.source_group_name ? `${name} / ${r.source_group_name}` : name
+  }
   return (
     <div className="space-y-4">
 <Card className="overflow-hidden border-border shadow-none">
@@ -330,6 +345,7 @@ export function RoutesPanel({
             <TableHead>来源</TableHead>
             <TableHead>源分组</TableHead>
             <TableHead>上游协议</TableHead>
+            <TableHead title="这条路由只接这些模型的请求；全部模型 = 不限">转发模型</TableHead>
             <TableHead>User-Agent</TableHead>
             <TableHead title="数字越大越先调用；同优先级按倍率排序">优先级</TableHead>
             <TableHead className="min-w-28">倍率换算</TableHead>
@@ -594,6 +610,25 @@ export function RoutesPanel({
                   </Select>
                 </TableCell>
                 <TableCell>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-9 max-w-44 justify-start font-normal"
+                    title={(r.supported_models ?? []).join("\n") || "全部模型（不限）"}
+                    onClick={() => setModelsEditIdx(idx)}
+                  >
+                    <span
+                      className={cn(
+                        "truncate",
+                        (r.supported_models ?? []).length === 0 && "text-muted-foreground",
+                      )}
+                    >
+                      {supportedModelsSummary(r.supported_models)}
+                    </span>
+                  </Button>
+                </TableCell>
+                <TableCell>
                   <RouteUserAgentSelect
                     mode={uaMode}
                     custom={r.user_agent_custom ?? ""}
@@ -779,7 +814,7 @@ export function RoutesPanel({
           })}
           {routeDrafts.length === 0 && (
             <TableRow>
-              <TableCell colSpan={11} className="text-center text-muted-foreground">
+              <TableCell colSpan={12} className="text-center text-muted-foreground">
                 添加路由后保存。监控渠道保存时自动在上游生成密钥；直连渠道使用已配置的 Key
               </TableCell>
             </TableRow>
@@ -790,6 +825,26 @@ export function RoutesPanel({
   </CardContent>
 </Card>
 
+      {modelsEditIdx !== null && routeDrafts[modelsEditIdx] ? (
+        <SupportedModelsDialog
+          key={modelsEditIdx}
+          open
+          routeLabel={routeLabel(routeDrafts[modelsEditIdx])}
+          initial={routeDrafts[modelsEditIdx].supported_models ?? []}
+          modelOptions={modelOptions}
+          onOpenChange={(open) => {
+            if (!open) setModelsEditIdx(null)
+          }}
+          onSave={(models) => {
+            const idx = modelsEditIdx
+            setRouteDrafts((prev) => {
+              const next = [...prev]
+              next[idx] = { ...next[idx], supported_models: models }
+              return next
+            })
+          }}
+        />
+      ) : null}
     </div>
   )
 }

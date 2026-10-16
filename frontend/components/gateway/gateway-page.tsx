@@ -1049,6 +1049,7 @@ export function GatewayPage() {
             billing_rate_multiplier: value > 0 ? value : 1,
             enabled: r.enabled !== false,
             model_mapping: r.model_mapping ?? "",
+            supported_models: r.supported_models ?? [],
             upstream_protocol: r.upstream_protocol ?? "auto",
             concurrency: r.concurrency ?? 10,
             user_agent_mode: uaMode,
@@ -1080,6 +1081,7 @@ export function GatewayPage() {
           billing_rate_multiplier: accountRate > 0 ? accountRate : 1,
           enabled: r.enabled !== false,
           model_mapping: r.model_mapping ?? "",
+          supported_models: r.supported_models ?? [],
           upstream_protocol: r.upstream_protocol ?? "auto",
           concurrency: r.concurrency ?? 10,
           user_agent_mode: uaMode,
@@ -1642,6 +1644,7 @@ export function GatewayPage() {
                         setRouteDrafts={setRouteDrafts}
                         sortedRouteRows={sortedRouteRows}
                         channelList={channelList}
+                        modelOptions={modelItems.map((m) => m.id)}
                         providerOptions={providerOptions}
                         sourceGroupsByChannel={sourceGroupsByChannel}
                         onLoadSourceGroups={(id) => void loadSourceGroups(id)}

@@ -73,6 +73,8 @@ func (a *AdminService) collectGroupModels(
 			continue
 		}
 		route := routes[i]
+		// 配了转发模型的路由只贡献它接的模型
+		pull.models = applySupportedModels(&route, pull.models)
 		srcKey := fmt.Sprintf("%d:%d:%d:%v:%s",
 			pull.src.RouteID, pull.src.ChannelID, route.GatewayProviderID,
 			pull.src.SourceGroupID, pull.src.SourceGroupName)
@@ -290,6 +292,7 @@ func (a *AdminService) TestGroupModel(ctx context.Context, groupID uint, in Test
 		return nil, err
 	}
 	groupMapping := ParseModelMapping(group.ModelMappingJSON)
+	groupMappedModel, _ := ResolveModel(model, groupMapping)
 	now := time.Now()
 
 	targets := make([]storage.GatewayRoute, 0, len(routes))
@@ -314,6 +317,10 @@ func (a *AdminService) TestGroupModel(ctx context.Context, groupID uint, in Test
 		}
 		cp := r
 		if !IsRouteSchedulable(&cp, now) {
+			continue
+		}
+		// 转发模型不接这个模型的路由不参与批量测试（单测指定路由时不限）
+		if !routeSupportsModel(&cp, model, groupMappedModel) {
 			continue
 		}
 		targets = append(targets, r)

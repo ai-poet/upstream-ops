@@ -88,8 +88,10 @@ func (rt *Runtime) handleGeminiCountTokens(c *gin.Context, model string) {
 		return
 	}
 	routes, _ := rt.Routes.ListByGroupID(auth.Group.ID)
-	groupsByChannel := rt.loadGroupsByChannel(c.Request.Context(), routes)
 	groupMapping := ParseModelMapping(auth.Group.ModelMappingJSON)
+	mapped, _ := ResolveModel(model, groupMapping)
+	routes = filterRoutesForModel(routes, model, mapped)
+	groupsByChannel := rt.loadGroupsByChannel(c.Request.Context(), routes)
 	cands := orderCandidates(routes, groupsByChannel, auth.Group, time.Now(), nil, routePreferences{
 		ModelRouteIDs: rt.modelRouteIDs(auth.Group, routes, model),
 	})

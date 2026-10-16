@@ -704,6 +704,8 @@ export interface GatewayRoute {
   billing_rate_multiplier: number
   enabled: boolean
   model_mapping?: string
+  /** 转发模型：只接这些模型的请求，空表示全部（末尾 * 为前缀匹配） */
+  supported_models?: string[] | null
   upstream_protocol: GatewayUpstreamProtocol
   concurrency: number
   /** 透传 / 组 UA / 自定义；默认透传 */

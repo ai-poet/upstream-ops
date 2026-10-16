@@ -153,6 +153,10 @@ func (rt *Runtime) groupModelsPayload(c *gin.Context, group *storage.GatewayGrou
 			}
 			// 拉模型：组+路由 UA，空则默认 UA（与模型测试一致；转发仍透传客户端）
 			models, err := rt.fetchUpstreamModels(c.Request.Context(), ch, target.APIKey, rt.resolveAdminUserAgent(group, &route))
+			// 转发模型里写明的模型总是列出（上游 /v1/models 不列、或拉取失败也一样）
+			for _, m := range exactSupportedModels(&route) {
+				add(m)
+			}
 			if err != nil {
 				continue
 			}
@@ -170,6 +174,10 @@ func (rt *Runtime) groupModelsPayload(c *gin.Context, group *storage.GatewayGrou
 						id = src
 						break
 					}
+				}
+				// 配了转发模型的路由只列它接的模型
+				if !routeSupportsModel(&route, id, m) {
+					continue
 				}
 				add(id)
 			}
@@ -261,8 +269,12 @@ func (rt *Runtime) HandleCountTokens(c *gin.Context) {
 		rt.writeGatewayError(c, protocolAnthropic, http.StatusBadRequest, "invalid_request_error", "system prompt injection failed: "+err.Error())
 		return
 	}
-	// 尝试转发到第一条可用路由的 /v1/messages/count_tokens
+	// 尝试转发到第一条可用路由的 /v1/messages/count_tokens（只看转发模型接这个模型的路由）
 	routes, _ := rt.Routes.ListByGroupID(auth.Group.ID)
+	if model := ExtractModelFromBody(body); model != "" {
+		mapped, _ := ResolveModel(model, ParseModelMapping(auth.Group.ModelMappingJSON))
+		routes = filterRoutesForModel(routes, model, mapped)
+	}
 	groupsByChannel := rt.loadGroupsByChannel(c.Request.Context(), routes)
 	cands := SortRoutes(routes, groupsByChannel, auth.Group.RateSortDirection, time.Now(), nil)
 	for _, cand := range cands {

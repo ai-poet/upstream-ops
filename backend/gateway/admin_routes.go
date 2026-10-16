@@ -145,6 +145,7 @@ func (a *AdminService) SaveRoutes(groupID uint, inputs []RouteInput) ([]storage.
 			BillingRateMultiplier: in.BillingRateMultiplier,
 			Enabled:               in.Enabled,
 			ModelMappingJSON:      strings.TrimSpace(in.ModelMappingJSON),
+			SupportedModels:       in.SupportedModels,
 			UpstreamProtocol:      up,
 			Concurrency:           in.Concurrency,
 			UserAgentMode:         uaMode,

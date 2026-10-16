@@ -94,8 +94,15 @@ func (s *Service) RecoverAutoDisabledRoutes(ctx context.Context) int {
 // probeModelForRoute 选一个这条路由声明过的模型；都没有时用组模型清单的第一个，
 // 清单也是空的（组没同步过模型）再问上游 /v1/models。
 func (s *Service) probeModelForRoute(ctx context.Context, group *storage.GatewayGroup, route storage.GatewayRoute) string {
+	// 转发模型里写明的模型最可靠：这条路由本来就只接它们
+	if exact := exactSupportedModels(&route); len(exact) > 0 {
+		return exact[0]
+	}
 	items := s.ParseModelsJSON(group.ModelsJSON)
 	for _, item := range items {
+		if !routeSupportsModel(&route, item.ID) {
+			continue
+		}
 		for _, src := range item.Sources {
 			if src.RouteID == route.ID {
 				return item.ID
@@ -107,8 +114,10 @@ func (s *Service) probeModelForRoute(ctx context.Context, group *storage.Gateway
 			return k
 		}
 	}
-	if len(items) > 0 {
-		return items[0].ID
+	for _, item := range items {
+		if routeSupportsModel(&route, item.ID) {
+			return item.ID
+		}
 	}
 	return s.firstUpstreamModel(ctx, group, route)
 }
@@ -134,7 +143,7 @@ func (s *Service) firstUpstreamModel(ctx context.Context, group *storage.Gateway
 		return ""
 	}
 	for _, m := range models {
-		if m = strings.TrimSpace(m); m != "" {
+		if m = strings.TrimSpace(m); m != "" && routeSupportsModel(&route, m) {
 			return m
 		}
 	}

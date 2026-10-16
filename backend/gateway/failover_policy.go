@@ -469,7 +469,7 @@ func shufflePriorityTiers(cands []ScoredRoute) {
 // modelRouteIDs 组模型清单里声明了 requested（或组级映射后的模型）的路由。
 // 清单里没有该模型、或只有手工条目没有来源时返回 nil（不区分路由）。
 func (svc *Service) modelRouteIDs(group *storage.GatewayGroup, routes []storage.GatewayRoute, models ...string) map[uint]struct{} {
-	if group == nil || !group.ModelAwareRouting || strings.TrimSpace(group.ModelsJSON) == "" {
+	if group == nil || !group.ModelAwareRouting {
 		return nil
 	}
 	wanted := map[string]struct{}{}
@@ -505,11 +505,14 @@ func (svc *Service) modelRouteIDs(group *storage.GatewayGroup, routes []storage.
 		if _, ok := channels[r.SourceChannelID]; ok && r.SourceChannelID > 0 && byChannel {
 			ids[r.ID] = struct{}{}
 		}
-		// 路由级映射显式写了该模型，也算声明
+		// 路由级映射或转发模型显式写了该模型，也算声明
 		for k := range ParseModelMapping(r.ModelMappingJSON) {
 			if _, ok := wanted[strings.ToLower(strings.TrimSpace(k))]; ok {
 				ids[r.ID] = struct{}{}
 			}
+		}
+		if routeDeclaresModel(&r, models...) {
+			ids[r.ID] = struct{}{}
 		}
 	}
 	if len(ids) == 0 {

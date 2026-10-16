@@ -512,6 +512,26 @@ func normalizeGatewayRoute(item *GatewayRoute) {
 		item.UpstreamProtocol = GatewayUpstreamProtocolAuto
 	}
 	item.SourceGroupName = strings.TrimSpace(item.SourceGroupName)
+	item.SupportedModels = NormalizeModelList(item.SupportedModels)
+}
+
+// NormalizeModelList 模型名清单：去空白、去空项、不区分大小写去重（保留第一次出现的写法）；空清单返回 nil。
+func NormalizeModelList(list []string) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	for _, m := range list {
+		m = strings.TrimSpace(m)
+		if m == "" {
+			continue
+		}
+		k := strings.ToLower(m)
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{}
+		out = append(out, m)
+	}
+	return out
 }
 
 // Update 全量保存。

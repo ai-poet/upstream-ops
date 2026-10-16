@@ -133,8 +133,10 @@ type RouteInput struct {
 	BillingRateMultiplier float64 `json:"billing_rate_multiplier"`
 	Enabled               bool    `json:"enabled"`
 	ModelMappingJSON      string  `json:"model_mapping"`
-	UpstreamProtocol      string  `json:"upstream_protocol"`
-	Concurrency           int     `json:"concurrency"`
+	// SupportedModels 转发模型：只接这些模型的请求，空表示不限（末尾 * 为前缀匹配）
+	SupportedModels  []string `json:"supported_models"`
+	UpstreamProtocol string   `json:"upstream_protocol"`
+	Concurrency      int      `json:"concurrency"`
 	// UserAgentMode: passthrough | group | custom
 	UserAgentMode   string `json:"user_agent_mode"`
 	UserAgentCustom string `json:"user_agent_custom"`

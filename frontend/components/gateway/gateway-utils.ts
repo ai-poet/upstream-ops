@@ -330,6 +330,7 @@ export const emptyRoute = (): Partial<GatewayRoute> => ({
   billing_rate_multiplier: 1,
   enabled: true,
   model_mapping: "",
+  supported_models: [],
   upstream_protocol: "auto",
   concurrency: 10,
   user_agent_mode: "passthrough",

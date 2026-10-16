@@ -89,9 +89,15 @@ func (rt *Runtime) handleForward(c *gin.Context, req forwardRequest) {
 		return
 	}
 
-	groupsByChannel := rt.loadGroupsByChannel(c.Request.Context(), routes)
 	groupMapping := ParseModelMapping(group.ModelMappingJSON)
 	groupMappedModel, _ := ResolveModel(requestedModel, groupMapping)
+	// 转发模型：只留下接这个模型的路由（同 new-api 渠道的模型列表）
+	if routes = filterRoutesForModel(routes, requestedModel, groupMappedModel); len(routes) == 0 {
+		rt.writeGatewayError(c, kind, http.StatusNotFound, "invalid_request_error",
+			fmt.Sprintf("model %q is not available: no route in this group forwards it", requestedModel))
+		return
+	}
+	groupsByChannel := rt.loadGroupsByChannel(c.Request.Context(), routes)
 	prefs := routePreferences{
 		ModelRouteIDs: rt.modelRouteIDs(group, routes, requestedModel, groupMappedModel),
 	}

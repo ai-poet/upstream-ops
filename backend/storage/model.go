@@ -508,8 +508,11 @@ type GatewayRoute struct {
 	BillingRateMultiplier float64 `gorm:"not null;default:1" json:"billing_rate_multiplier"`
 	Enabled               bool    `gorm:"default:true" json:"enabled"`
 	ModelMappingJSON      string  `gorm:"type:text" json:"model_mapping,omitempty"`
-	UpstreamProtocol      string  `gorm:"size:16;not null;default:'auto'" json:"upstream_protocol"`
-	Concurrency           int     `gorm:"default:100" json:"concurrency"`
+	// SupportedModels 转发模型：这条路由只接这些模型的请求（同 new-api 渠道的模型列表），空表示不限。
+	// 按客户端请求的模型名（或组级映射后的名字）匹配，不区分大小写，末尾 * 表示前缀匹配。
+	SupportedModels  []string `gorm:"type:text;serializer:json" json:"supported_models"`
+	UpstreamProtocol string   `gorm:"size:16;not null;default:'auto'" json:"upstream_protocol"`
+	Concurrency      int      `gorm:"default:100" json:"concurrency"`
 	// UserAgentMode: passthrough | group | custom（见 GatewayUserAgentMode*）
 	UserAgentMode string `gorm:"size:16;not null;default:'passthrough'" json:"user_agent_mode"`
 	// UserAgentCustom 仅 mode=custom 时生效；转发/模型测试/拉模型共用。

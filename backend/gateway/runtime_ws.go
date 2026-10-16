@@ -76,8 +76,14 @@ func (rt *Runtime) HandleResponsesWebSocket(c *gin.Context) {
 		rt.writeWSResponsesFailed(ctx, client, "api_error", "no routes configured")
 		return
 	}
-	groupsByChannel := rt.loadGroupsByChannel(c.Request.Context(), routes)
 	groupMapping := ParseModelMapping(group.ModelMappingJSON)
+	groupMappedModel, _ := ResolveModel(requestedModel, groupMapping)
+	// 转发模型：只留下接这个模型的路由
+	if routes = filterRoutesForModel(routes, requestedModel, groupMappedModel); len(routes) == 0 {
+		rt.writeWSResponsesFailed(ctx, client, "invalid_request_error", fmt.Sprintf("model %q is not available: no route in this group forwards it", requestedModel))
+		return
+	}
+	groupsByChannel := rt.loadGroupsByChannel(c.Request.Context(), routes)
 	candidates := SortRoutes(routes, groupsByChannel, group.RateSortDirection, time.Now(), nil)
 
 	var selected *wsResponsesRoute
