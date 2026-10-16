@@ -64,10 +64,10 @@ func (a *AdminService) CreateProvider(in CreateProviderInput) (*storage.GatewayP
 		Name:               name,
 		BaseURL:            base,
 		APIKeyCipher:       cipherText,
-		APIKeyHint:         a.apiKeyHint(key),
-		UpstreamProtocol:   a.normalizeProviderProtocol(in.UpstreamProtocol),
+		APIKeyHint:         apiKeyHint(key),
+		UpstreamProtocol:   normalizeProviderProtocol(in.UpstreamProtocol),
 		DefaultBillingRate: rate,
-		AuthStyle:          a.normalizeProviderAuthStyle(in.AuthStyle),
+		AuthStyle:          normalizeProviderAuthStyle(in.AuthStyle),
 		Enabled:            enabled,
 		ProxyEnabled:       proxyEnabled,
 		ExtraHeadersJSON:   strings.TrimSpace(in.ExtraHeadersJSON),
@@ -115,11 +115,11 @@ func (a *AdminService) UpdateProvider(id uint, in UpdateProviderInput) (*storage
 				return nil, err
 			}
 			item.APIKeyCipher = cipherText
-			item.APIKeyHint = a.apiKeyHint(key)
+			item.APIKeyHint = apiKeyHint(key)
 		}
 	}
 	if in.UpstreamProtocol != nil {
-		item.UpstreamProtocol = a.normalizeProviderProtocol(*in.UpstreamProtocol)
+		item.UpstreamProtocol = normalizeProviderProtocol(*in.UpstreamProtocol)
 	}
 	if in.DefaultBillingRate != nil {
 		rate := *in.DefaultBillingRate
@@ -129,7 +129,7 @@ func (a *AdminService) UpdateProvider(id uint, in UpdateProviderInput) (*storage
 		item.DefaultBillingRate = rate
 	}
 	if in.AuthStyle != nil {
-		item.AuthStyle = a.normalizeProviderAuthStyle(*in.AuthStyle)
+		item.AuthStyle = normalizeProviderAuthStyle(*in.AuthStyle)
 	}
 	if in.Enabled != nil {
 		item.Enabled = *in.Enabled

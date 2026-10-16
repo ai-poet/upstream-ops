@@ -68,7 +68,7 @@ func (rt *Runtime) retryPolicyFor(group *storage.GatewayGroup) retryPolicy {
 		failoverEnabled:      group.FailoverEnabled,
 		failoverMax:          max(group.FailoverMax, 0),
 		cooldownSec:          max(group.CooldownSeconds, 0),
-		firstTokenTimeoutSec: rt.clampFirstTokenTimeoutSec(group.FirstTokenTimeoutSec),
+		firstTokenTimeoutSec: clampFirstTokenTimeoutSec(group.FirstTokenTimeoutSec),
 	}
 	if p.firstTokenTimeoutSec > 0 {
 		p.firstTokenTimeout = time.Duration(p.firstTokenTimeoutSec) * time.Second

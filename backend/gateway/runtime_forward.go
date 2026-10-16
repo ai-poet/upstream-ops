@@ -51,10 +51,10 @@ func (rt *Runtime) handleForward(c *gin.Context, in forwardRequest) {
 // prepareRelay 请求级准备：鉴权 → 读 body → 准备候选路由。出错时已向客户端写好错误并返回 nil。
 func (rt *Runtime) prepareRelay(c *gin.Context, in forwardRequest) *relayRequest {
 	// 尽早生成/透传 request id，保证后续任意错误体都可带上
-	req := &relayRequest{c: c, in: in, id: rt.ensureGatewayRequestID(c)}
+	req := &relayRequest{c: c, in: in, id: ensureGatewayRequestID(c)}
 	auth, err := rt.Authenticate(c)
 	if err != nil {
-		rt.writeAuthError(c, in.Kind, err.Error())
+		writeAuthError(c, in.Kind, err.Error())
 		return nil
 	}
 	req.key, req.group = auth.Key, auth.Group
@@ -73,12 +73,12 @@ func (rt *Runtime) readRelayBody(req *relayRequest) bool {
 	c, kind, path := req.c, req.in.Kind, req.in.Path
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		rt.writeGatewayError(c, kind, http.StatusBadRequest, "invalid_request_error", "failed to read body")
+		writeGatewayError(c, kind, http.StatusBadRequest, "invalid_request_error", "failed to read body")
 		return false
 	}
 	body, err = rt.applySystemPrompt(req.group, req.key, path, kind, body)
 	if err != nil {
-		rt.writeGatewayError(c, kind, http.StatusBadRequest, "invalid_request_error", "system prompt injection failed: "+err.Error())
+		writeGatewayError(c, kind, http.StatusBadRequest, "invalid_request_error", "system prompt injection failed: "+err.Error())
 		return false
 	}
 
@@ -96,7 +96,7 @@ func (rt *Runtime) readRelayBody(req *relayRequest) bool {
 	beforeTier := body
 	body, err = rt.applyServiceTierRules(req.group, req.key, kind, req.model, body)
 	if err != nil {
-		rt.writeGatewayError(c, kind, http.StatusForbidden, "permission_error", err.Error())
+		writeGatewayError(c, kind, http.StatusForbidden, "permission_error", err.Error())
 		return false
 	}
 	if !sameBuffer(beforeTier, body) {
@@ -121,14 +121,14 @@ func (rt *Runtime) prepareRelayRoutes(req *relayRequest) bool {
 	c, kind := req.c, req.in.Kind
 	routes, err := rt.cachedRoutes(req.group.ID)
 	if err != nil || len(routes) == 0 {
-		rt.writeGatewayError(c, kind, http.StatusServiceUnavailable, "api_error", "no routes configured")
+		writeGatewayError(c, kind, http.StatusServiceUnavailable, "api_error", "no routes configured")
 		return false
 	}
 	req.groupMapping = cachedModelMapping(req.group.ModelMappingJSON)
 	groupMappedModel, _ := ResolveModel(req.model, req.groupMapping)
 	// 转发模型：只留下接这个模型的路由（同 new-api 渠道的模型列表）
 	if routes = filterRoutesForModel(routes, req.model, groupMappedModel); len(routes) == 0 {
-		rt.writeGatewayError(c, kind, http.StatusNotFound, "invalid_request_error",
+		writeGatewayError(c, kind, http.StatusNotFound, "invalid_request_error",
 			fmt.Sprintf("model %q is not available: no route in this group forwards it", req.model))
 		return false
 	}
@@ -200,7 +200,7 @@ func (rt *Runtime) relayWithFailover(req *relayRequest) {
 func (rt *Runtime) routeFirstTokenTimeout(req *relayRequest, st *failoverState) time.Duration {
 	remainingAfter := SortRoutes(req.routes, req.groupsByChannel, req.group.RateSortDirection, time.Now(), st.exclude)
 	p := req.policy
-	return rt.effectiveFirstTokenTimeout(
+	return effectiveFirstTokenTimeout(
 		p.firstTokenTimeout,
 		p.enabled, p.failoverEnabled,
 		st.failoversDone, p.failoverMax,
@@ -230,8 +230,8 @@ func (rt *Runtime) tryRoute(req *relayRequest, choice *routeChoice, st *failover
 func (rt *Runtime) writeLastFailure(req *relayRequest, st *failoverState) {
 	c := req.c
 	if st.lastStatus > 0 && len(st.lastBody) > 0 {
-		out := rt.injectUpstreamOpsRequestID(st.lastBody, req.id)
-		rt.setGatewayRequestIDHeaders(c, req.id)
+		out := injectUpstreamOpsRequestID(st.lastBody, req.id)
+		setGatewayRequestIDHeaders(c, req.id)
 		c.Header("Content-Type", "application/json")
 		c.Writer.Header().Del("Content-Length")
 		c.Status(st.lastStatus)
@@ -247,7 +247,7 @@ func (rt *Runtime) writeLastFailure(req *relayRequest, st *failoverState) {
 			status, errType = http.StatusBadRequest, "invalid_request_error"
 		}
 	}
-	rt.writeGatewayError(c, req.in.Kind, status, errType, msg)
+	writeGatewayError(c, req.in.Kind, status, errType, msg)
 }
 
 // forwardOnce 非流式转发一次（流式请求在 stream=true 时整包读完，供探测等场景）。
@@ -268,7 +268,7 @@ func (rt *Runtime) forwardOnce(ctx context.Context, call upstreamCall) (status i
 
 	client := rt.httpClientForTarget(call.target.Channel, call.target.Provider)
 	start := time.Now()
-	resp, err := rt.doHTTPWithFirstTokenDeadline(reqCtx, abortReq, client, req, start, firstTokenTimeout)
+	resp, err := doHTTPWithFirstTokenDeadline(reqCtx, abortReq, client, req, start, firstTokenTimeout)
 	if err != nil {
 		return 0, nil, nil, nil, err
 	}
@@ -295,7 +295,7 @@ func (rt *Runtime) forwardOnce(ctx context.Context, call upstreamCall) (status i
 	var ft *int64
 	var data []byte
 
-	bodyWait, timedOut := rt.remainingFirstTokenWait(start, firstTokenTimeout)
+	bodyWait, timedOut := remainingFirstTokenWait(start, firstTokenTimeout)
 	if timedOut {
 		closeBody()
 		abortReq()
@@ -304,9 +304,9 @@ func (rt *Runtime) forwardOnce(ctx context.Context, call upstreamCall) (status i
 		return 0, resp.Header.Clone(), nil, ft, fmt.Errorf("%w after %s", errFirstTokenTimeout, firstTokenTimeout)
 	}
 
-	firstChunk, firstErr := rt.readFirstChunk(resp.Body, bodyWait)
+	firstChunk, firstErr := readFirstChunk(resp.Body, bodyWait)
 	if firstErr != nil {
-		if rt.isFirstTokenTimeout(firstErr) {
+		if isFirstTokenTimeout(firstErr) {
 			// 主动掐断连接，触发重试/顺延（上游可能已开始计费）
 			closeBody()
 			abortReq()

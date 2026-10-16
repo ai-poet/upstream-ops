@@ -48,10 +48,10 @@ func (a *AdminService) CreateGroup(in CreateGroupInput) (*storage.GatewayGroup, 
 	if in.CooldownSeconds != nil {
 		cooldown = *in.CooldownSeconds
 	}
-	retryCount, failoverMax, cooldown = a.clampGroupRetryPolicy(retryCount, failoverMax, cooldown)
+	retryCount, failoverMax, cooldown = clampGroupRetryPolicy(retryCount, failoverMax, cooldown)
 	ftTimeout := 0
 	if in.FirstTokenTimeoutSec != nil {
-		ftTimeout = a.clampFirstTokenTimeoutSec(*in.FirstTokenTimeoutSec)
+		ftTimeout = clampFirstTokenTimeoutSec(*in.FirstTokenTimeoutSec)
 	}
 	serviceTierRules, err := normalizeServiceTierRulesJSON(in.ServiceTierRulesJSON)
 	if err != nil {
@@ -205,9 +205,9 @@ func (a *AdminService) UpdateGroup(id uint, in UpdateGroupInput) (*storage.Gatew
 	if in.CooldownSeconds != nil {
 		cd = *in.CooldownSeconds
 	}
-	item.RetryCount, item.FailoverMax, item.CooldownSeconds = a.clampGroupRetryPolicy(rc, fm, cd)
+	item.RetryCount, item.FailoverMax, item.CooldownSeconds = clampGroupRetryPolicy(rc, fm, cd)
 	if in.FirstTokenTimeoutSec != nil {
-		item.FirstTokenTimeoutSec = a.clampFirstTokenTimeoutSec(*in.FirstTokenTimeoutSec)
+		item.FirstTokenTimeoutSec = clampFirstTokenTimeoutSec(*in.FirstTokenTimeoutSec)
 	}
 	if in.UserAgent != nil {
 		item.UserAgent = strings.TrimSpace(*in.UserAgent)

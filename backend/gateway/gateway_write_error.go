@@ -10,7 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func (rt *Runtime) estimateTokenCount(body []byte) int {
+func estimateTokenCount(body []byte) int {
 	var obj struct {
 		Messages []struct {
 			Content any `json:"content"`
@@ -50,12 +50,12 @@ func (rt *Runtime) estimateTokenCount(body []byte) int {
 }
 
 // HandleUsage GET /v1/usage — 当前密钥近期用量摘要。
-func (rt *Runtime) writeAuthError(c *gin.Context, kind protocolKind, msg string) {
-	rt.writeGatewayError(c, kind, http.StatusUnauthorized, "authentication_error", msg)
+func writeAuthError(c *gin.Context, kind protocolKind, msg string) {
+	writeGatewayError(c, kind, http.StatusUnauthorized, "authentication_error", msg)
 }
 
-func (rt *Runtime) writeGatewayError(c *gin.Context, kind protocolKind, status int, typ, msg string) {
-	reqID := rt.ensureGatewayRequestID(c)
+func writeGatewayError(c *gin.Context, kind protocolKind, status int, typ, msg string) {
+	reqID := ensureGatewayRequestID(c)
 	if protocol.NormalizeKind(kind) == protocol.KindGemini {
 		c.JSON(status, gin.H{
 			"error": gin.H{

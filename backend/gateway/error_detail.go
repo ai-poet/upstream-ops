@@ -59,9 +59,9 @@ func (rt *Runtime) buildUpstreamErrorInfoCfg(
 ) usageErrorInfo {
 	cfg = cfg.WithDefaults()
 	info := usageErrorInfo{}
-	headerJSON := rt.formatDebugHeaders(respHeaders, cfg.UsageErrorHeadersJSONBytes, cfg.UsageErrorHeaderValueRunes)
-	headerPlain := rt.formatHeadersPlain(respHeaders, cfg.UsageErrorHeaderValueRunes)
-	bodyText := rt.truncateBytesForLog(respBody, cfg.UsageErrorBodyBytes)
+	headerJSON := formatDebugHeaders(respHeaders, cfg.UsageErrorHeadersJSONBytes, cfg.UsageErrorHeaderValueRunes)
+	headerPlain := formatHeadersPlain(respHeaders, cfg.UsageErrorHeaderValueRunes)
+	bodyText := truncateBytesForLog(respBody, cfg.UsageErrorBodyBytes)
 	bodySnippet := rt.extractUpstreamErrorSnippet(respBody)
 
 	if fwdErr != nil {
@@ -72,7 +72,7 @@ func (rt *Runtime) buildUpstreamErrorInfoCfg(
 		if status > 0 {
 			fmt.Fprintf(&b, "partial_status: %d\n", status)
 		}
-		rt.appendUpstreamHeadersToDetail(&b, headerPlain)
+		appendUpstreamHeadersToDetail(&b, headerPlain)
 		if bodyText != "" {
 			fmt.Fprintf(&b, "partial_body:\n%s\n", bodyText)
 		}
@@ -93,10 +93,10 @@ func (rt *Runtime) buildUpstreamErrorInfoCfg(
 	if ct := respHeaders.Get("Content-Type"); ct != "" {
 		fmt.Fprintf(&b, "content_type: %s\n", ct)
 	}
-	if rid := rt.firstHeader(respHeaders, "x-request-id", "x-openai-request-id", "cf-ray", "x-trace-id", "x-client-request-id"); rid != "" {
+	if rid := firstHeader(respHeaders, "x-request-id", "x-openai-request-id", "cf-ray", "x-trace-id", "x-client-request-id"); rid != "" {
 		fmt.Fprintf(&b, "upstream_request_id: %s\n", rid)
 	}
-	rt.appendUpstreamHeadersToDetail(&b, headerPlain)
+	appendUpstreamHeadersToDetail(&b, headerPlain)
 	if bodyText != "" {
 		fmt.Fprintf(&b, "body:\n%s\n", bodyText)
 	} else {
@@ -108,7 +108,7 @@ func (rt *Runtime) buildUpstreamErrorInfoCfg(
 	return info
 }
 
-func (rt *Runtime) appendUpstreamHeadersToDetail(b *strings.Builder, headerPlain string) {
+func appendUpstreamHeadersToDetail(b *strings.Builder, headerPlain string) {
 	if b == nil {
 		return
 	}
@@ -123,7 +123,7 @@ func (rt *Runtime) appendUpstreamHeadersToDetail(b *strings.Builder, headerPlain
 	}
 }
 
-func (rt *Runtime) firstHeader(h http.Header, keys ...string) string {
+func firstHeader(h http.Header, keys ...string) string {
 	if h == nil {
 		return ""
 	}
@@ -136,14 +136,14 @@ func (rt *Runtime) firstHeader(h http.Header, keys ...string) string {
 }
 
 // formatDebugHeaders 序列化完整上游响应头为 JSON（敏感头脱敏；尽量不截断）。
-func (rt *Runtime) formatDebugHeaders(h http.Header, maxJSONBytes, maxValueRunes int) string {
+func formatDebugHeaders(h http.Header, maxJSONBytes, maxValueRunes int) string {
 	if maxJSONBytes <= 0 {
 		maxJSONBytes = config.DefaultGatewayUsageErrorHeadersJSONBytes
 	}
 	if maxValueRunes <= 0 {
 		maxValueRunes = config.DefaultGatewayUsageErrorHeaderValueRunes
 	}
-	pairs := rt.collectDebugHeaderPairs(h, maxValueRunes)
+	pairs := collectDebugHeaderPairs(h, maxValueRunes)
 	if len(pairs) == 0 {
 		return ""
 	}
@@ -159,11 +159,11 @@ func (rt *Runtime) formatDebugHeaders(h http.Header, maxJSONBytes, maxValueRunes
 }
 
 // formatHeadersPlain 将完整上游响应头格式化为 Name: value 文本（敏感头脱敏）。
-func (rt *Runtime) formatHeadersPlain(h http.Header, maxValueRunes int) string {
+func formatHeadersPlain(h http.Header, maxValueRunes int) string {
 	if maxValueRunes <= 0 {
 		maxValueRunes = config.DefaultGatewayUsageErrorHeaderValueRunes
 	}
-	pairs := rt.collectDebugHeaderPairs(h, maxValueRunes)
+	pairs := collectDebugHeaderPairs(h, maxValueRunes)
 	if len(pairs) == 0 {
 		return ""
 	}
@@ -185,7 +185,7 @@ type debugHeaderPair struct {
 	Values []string `json:"values"`
 }
 
-func (rt *Runtime) collectDebugHeaderPairs(h http.Header, maxValueRunes int) []debugHeaderPair {
+func collectDebugHeaderPairs(h http.Header, maxValueRunes int) []debugHeaderPair {
 	if h == nil || len(h) == 0 {
 		return nil
 	}
@@ -197,11 +197,11 @@ func (rt *Runtime) collectDebugHeaderPairs(h http.Header, maxValueRunes int) []d
 		ck := http.CanonicalHeaderKey(k)
 		redacted := make([]string, len(vals))
 		for i, v := range vals {
-			if rt.isSensitiveHeader(ck) {
+			if isSensitiveHeader(ck) {
 				redacted[i] = "[redacted]"
 			} else {
 				// 完整保留响应头值；仅极端长值截断防止撑爆库
-				redacted[i] = rt.truncateRunes(v, maxValueRunes)
+				redacted[i] = truncateRunes(v, maxValueRunes)
 			}
 		}
 		out = append(out, debugHeaderPair{Name: ck, Values: redacted})
@@ -211,7 +211,7 @@ func (rt *Runtime) collectDebugHeaderPairs(h http.Header, maxValueRunes int) []d
 	return out
 }
 
-func (rt *Runtime) isSensitiveHeader(canonical string) bool {
+func isSensitiveHeader(canonical string) bool {
 	switch strings.ToLower(canonical) {
 	case "authorization", "cookie", "set-cookie", "x-api-key", "api-key", "proxy-authorization":
 		return true
@@ -244,12 +244,12 @@ func (svc *core) extractUpstreamErrorSnippet(body []byte) string {
 	var raw any
 	if err := json.Unmarshal(body, &raw); err != nil {
 		// 非 JSON：截一段纯文本
-		return svc.truncateRunes(string(body), 200)
+		return truncateRunes(string(body), 200)
 	}
 	if s := svc.walkErrorMessage(raw, 0); s != "" {
-		return svc.truncateRunes(s, 200)
+		return truncateRunes(s, 200)
 	}
-	return svc.truncateRunes(string(body), 200)
+	return truncateRunes(string(body), 200)
 }
 
 func (svc *core) walkErrorMessage(v any, depth int) string {
@@ -293,7 +293,7 @@ func (svc *core) walkErrorMessage(v any, depth int) string {
 	return ""
 }
 
-func (rt *Runtime) truncateBytesForLog(b []byte, max int) string {
+func truncateBytesForLog(b []byte, max int) string {
 	if max <= 0 || len(b) == 0 {
 		return ""
 	}
@@ -309,7 +309,7 @@ func (rt *Runtime) truncateBytesForLog(b []byte, max int) string {
 	return string(cut) + "…(truncated)"
 }
 
-func (svc *core) truncateRunes(str string, max int) string {
+func truncateRunes(str string, max int) string {
 	str = strings.TrimSpace(str)
 	if max <= 0 || str == "" {
 		return str

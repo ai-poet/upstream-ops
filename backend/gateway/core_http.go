@@ -152,7 +152,7 @@ func (svc *core) fetchUpstreamModels(ctx context.Context, ch *storage.Channel, a
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		snippet := svc.extractUpstreamErrorSnippet(body)
 		if snippet == "" {
-			snippet = svc.truncateRunes(string(body), 200)
+			snippet = truncateRunes(string(body), 200)
 		}
 		if snippet == "" {
 			return nil, fmt.Errorf("GET %s: HTTP %d invalid models JSON: %w", url, resp.StatusCode, err)

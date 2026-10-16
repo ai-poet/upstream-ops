@@ -177,7 +177,7 @@ func (rt *Runtime) classifyFailure(group *storage.GatewayGroup, status int, head
 	if group != nil && group.AutoDisableEnabled && rt.matchesAutoDisable(status, body, echoes) {
 		return failureDecision{Action: failDisableRoute, Reason: "auto_disable"}
 	}
-	if rt.isRetryableStatus(group, status) {
+	if isRetryableStatus(group, status) {
 		d := failureDecision{Action: failRetry, Reason: "http_" + strconv.Itoa(status)}
 		if status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable {
 			d.Cooldown = retryAfter(headers, time.Now())
@@ -188,14 +188,14 @@ func (rt *Runtime) classifyFailure(group *storage.GatewayGroup, status int, head
 }
 
 // isRetryableStatus 组配置了 RetryStatusCodes 时按其判定；否则沿用默认：429、5xx，开 FailoverOn4xx 再加全部 4xx。
-func (rt *Runtime) isRetryableStatus(group *storage.GatewayGroup, status int) bool {
+func isRetryableStatus(group *storage.GatewayGroup, status int) bool {
 	if group != nil && strings.TrimSpace(group.RetryStatusCodes) != "" {
 		if ranges, err := parseStatusCodeRanges(group.RetryStatusCodes); err == nil && len(ranges) > 0 {
 			return statusInRanges(status, ranges)
 		}
 	}
 	failoverOn4xx := group != nil && group.FailoverOn4xx
-	return rt.isFailoverStatus(status, failoverOn4xx)
+	return isFailoverStatus(status, failoverOn4xx)
 }
 
 // matchesAutoDisable 状态码或错误信息命中系统设置里的自动禁用规则。

@@ -33,13 +33,13 @@ func (rt *Runtime) recordUsage(c *gin.Context, u usageRecord) {
 		billingMode = string(BillingModeToken)
 	}
 	sourceGroupName := strings.TrimSpace(u.route.SourceGroupName)
-	if sourceGroupName == "" || rt.isSourceGroupIDPlaceholder(sourceGroupName) {
+	if sourceGroupName == "" || isSourceGroupIDPlaceholder(sourceGroupName) {
 		// 运行时再解析一次：旧路由可能只有 id、name 为空
 		if u.route.SourceGroupID != nil && *u.route.SourceGroupID > 0 && u.route.SourceChannelID > 0 {
 			if gs := rt.loadGroupsByChannel(context.Background(), []storage.GatewayRoute{*u.route}); len(gs) > 0 {
 				tmp := *u.route
-				rt.enrichRouteSourceGroupName(&tmp, gs[u.route.SourceChannelID])
-				if n := strings.TrimSpace(tmp.SourceGroupName); n != "" && !rt.isSourceGroupIDPlaceholder(n) {
+				enrichRouteSourceGroupName(&tmp, gs[u.route.SourceChannelID])
+				if n := strings.TrimSpace(tmp.SourceGroupName); n != "" && !isSourceGroupIDPlaceholder(n) {
 					sourceGroupName = n
 				}
 			}
@@ -127,7 +127,7 @@ func (rt *Runtime) recordUsage(c *gin.Context, u usageRecord) {
 		Stream:                u.stream,
 		StatusCode:            u.status,
 		Success:               u.success,
-		ErrorMessage:          rt.truncateRunes(u.errInfo.Summary, rt.gatewayRuntime().UsageErrorMsgRunes),
+		ErrorMessage:          truncateRunes(u.errInfo.Summary, rt.gatewayRuntime().UsageErrorMsgRunes),
 		ErrorType:             u.errInfo.Type,
 		ErrorDetail:           u.errInfo.Detail,
 		UpstreamURL:           u.meta.UpstreamURL,

@@ -10,20 +10,20 @@ import (
 
 func (rt *Runtime) checkIPAccess(ip, whitelistJSON, blacklistJSON string) error {
 	ip = strings.TrimSpace(ip)
-	if bl := rt.cachedStringList(blacklistJSON); len(bl) > 0 {
-		if rt.matchIPList(ip, bl) {
+	if bl := cachedStringList(blacklistJSON); len(bl) > 0 {
+		if matchIPList(ip, bl) {
 			return errors.New("ip blocked")
 		}
 	}
-	if wl := rt.cachedStringList(whitelistJSON); len(wl) > 0 {
-		if !rt.matchIPList(ip, wl) {
+	if wl := cachedStringList(whitelistJSON); len(wl) > 0 {
+		if !matchIPList(ip, wl) {
 			return errors.New("ip not allowed")
 		}
 	}
 	return nil
 }
 
-func (rt *Runtime) parseStringListJSON(raw string) []string {
+func parseStringListJSON(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || raw == "[]" || raw == "null" {
 		return nil
@@ -42,7 +42,7 @@ func (rt *Runtime) parseStringListJSON(raw string) []string {
 	return out
 }
 
-func (rt *Runtime) matchIPList(ip string, list []string) bool {
+func matchIPList(ip string, list []string) bool {
 	parsed := net.ParseIP(ip)
 	for _, item := range list {
 		if item == ip {

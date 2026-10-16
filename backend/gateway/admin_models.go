@@ -97,7 +97,7 @@ func (a *AdminService) collectGroupModels(
 		}
 		preview = append(preview, ModelPreviewItem{
 			ID:         id,
-			ChannelIDs: a.channelIDsFromSources(sources),
+			ChannelIDs: channelIDsFromSources(sources),
 			Sources:    sources,
 		})
 	}
@@ -166,7 +166,7 @@ func (a *AdminService) pullRouteModels(ctx context.Context, group *storage.Gatew
 			return routeModelPull{rr: rr}
 		}
 		rr.ChannelName = ch.Name
-		rr.Label = a.formatChannelGroupLabel(ch.Name, route.SourceGroupName, route.SourceChannelID)
+		rr.Label = formatChannelGroupLabel(ch.Name, route.SourceGroupName, route.SourceChannelID)
 		secret, decErr := a.Cipher.Decrypt(route.SourceAPIKeyCipher)
 		if decErr != nil || strings.TrimSpace(secret) == "" {
 			rr.Skipped = true
@@ -404,15 +404,15 @@ func (a *AdminService) probeRouteModel(
 		res.Label = target.Provider.Name
 	} else if target.Channel != nil {
 		res.ChannelName = target.Channel.Name
-		res.Label = a.formatChannelGroupLabel(target.Channel.Name, route.SourceGroupName, route.SourceChannelID)
+		res.Label = formatChannelGroupLabel(target.Channel.Name, route.SourceGroupName, route.SourceChannelID)
 	}
 
 	// 默认按 OpenAI Chat 入站协议探测
 	inbound := protocol.KindOpenAIChat
-	routeProto := a.normalizeUpstreamProtocol(route.UpstreamProtocol)
+	routeProto := normalizeUpstreamProtocol(route.UpstreamProtocol)
 	if kind == storage.GatewayRouteSourceProvider && target.Provider != nil &&
 		routeProto == storage.GatewayUpstreamProtocolAuto {
-		if p := a.normalizeProviderProtocol(target.Provider.UpstreamProtocol); p != storage.GatewayUpstreamProtocolAuto {
+		if p := normalizeProviderProtocol(target.Provider.UpstreamProtocol); p != storage.GatewayUpstreamProtocolAuto {
 			routeProto = p
 		}
 	}
@@ -422,7 +422,7 @@ func (a *AdminService) probeRouteModel(
 		`{"model":%q,"max_tokens":1,"messages":[{"role":"user","content":"ping"}],"stream":false}`,
 		upstreamModel,
 	))
-	body, path, _, convErr := a.prepareUpstreamRequest(chatBody, inbound, upstreamKind, upstreamModel, false, "/v1/chat/completions")
+	body, path, _, convErr := prepareUpstreamRequest(chatBody, inbound, upstreamKind, upstreamModel, false, "/v1/chat/completions")
 	if convErr != nil {
 		res.Error = "protocol convert: " + convErr.Error()
 		return res
@@ -448,7 +448,7 @@ func (a *AdminService) probeRouteModel(
 		return res
 	}
 	// 业务层错误：尽量截取上游 message
-	msg := a.truncateProbeError(respBody, 240)
+	msg := truncateProbeError(respBody, 240)
 	if msg == "" {
 		msg = fmt.Sprintf("upstream status %d", status)
 	}

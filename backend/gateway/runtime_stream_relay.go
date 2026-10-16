@@ -76,15 +76,15 @@ func (s *streamRelay) markFirstToken() {
 // relayBuffered 仅兜底：三协议互转已走增量真流；此处保留给未知协议或未实现转换器。
 // 行为：先读完再转换，再一次性写出（首写出前仍可 failover）——即「假流」，应尽量避免进入。
 func (s *streamRelay) relayBuffered(body io.Reader) streamAttemptResult {
-	rt, c, plan, r := s.rt, s.c, s.plan, &s.result
+	c, plan, r := s.c, s.plan, &s.result
 	// 从请求发起起算剩余首字预算（含已花费的等响应头时间）
-	bodyWait, timedOut := rt.remainingFirstTokenWait(s.start, s.firstTokenTimeout)
+	bodyWait, timedOut := remainingFirstTokenWait(s.start, s.firstTokenTimeout)
 	if timedOut {
 		return s.firstTokenTimedOut()
 	}
-	firstChunk, firstErr := rt.readFirstChunk(body, bodyWait)
+	firstChunk, firstErr := readFirstChunk(body, bodyWait)
 	if firstErr != nil {
-		if rt.isFirstTokenTimeout(firstErr) {
+		if isFirstTokenTimeout(firstErr) {
 			return s.firstTokenTimedOut()
 		}
 		r.Err = firstErr
@@ -102,12 +102,12 @@ func (s *streamRelay) relayBuffered(body io.Reader) streamAttemptResult {
 	}
 	data = append(data, rest...)
 
-	r.Tokens = rt.parseUsageByKind(data, true, plan.Upstream)
-	clientBody := rt.convertUpstreamResponseWithToolBridge(data, plan.Inbound, plan.Upstream, plan.Model, true, plan.Converted, plan.Bridge)
+	r.Tokens = parseUsageByKind(data, true, plan.Upstream)
+	clientBody := convertUpstreamResponseWithToolBridge(data, plan.Inbound, plan.Upstream, plan.Model, true, plan.Converted, plan.Bridge)
 	if len(clientBody) == 0 {
 		clientBody = data
 	}
-	if err := rt.commitSSEHeaders(c, r.Headers); err != nil {
+	if err := commitSSEHeaders(c, r.Headers); err != nil {
 		r.Body, r.Err = clientBody, err
 		return *r
 	}
@@ -116,7 +116,7 @@ func (s *streamRelay) relayBuffered(body io.Reader) streamAttemptResult {
 		r.ClientDisconnected, r.StreamErr = true, errClientDisconnected
 		return *r
 	}
-	rt.flushWriter(c)
+	flushWriter(c)
 	if r.FirstTokenMS == nil {
 		s.markFirstToken()
 	}
@@ -147,7 +147,7 @@ func (s *streamRelay) relayIncremental(upCtx, clientCtx context.Context, body io
 	// 首字超时：从 start（发起上游请求）起算剩余时间，与 first_token_ms 同一时钟。
 	// 注意：不是「响应头之后再等 N 秒」。
 	if s.firstTokenTimeout > 0 {
-		left, timedOut := rt.remainingFirstTokenWait(s.start, s.firstTokenTimeout)
+		left, timedOut := remainingFirstTokenWait(s.start, s.firstTokenTimeout)
 		if timedOut {
 			return s.firstTokenTimedOut()
 		}
@@ -252,7 +252,7 @@ func (s *streamRelay) onLine(line string) (finished bool) {
 	}
 	// 完整 SSE event 结束。commit 前的纯注释/ping 不计入首字、不停首字计时器，
 	// 否则上游 :PING 会误取消 2s 首字超时，真实内容 7s 才到却无法顺延。
-	if !s.result.Committed && s.conv == nil && !s.rt.sseEventHasPayload(s.pendingLines) {
+	if !s.result.Committed && s.conv == nil && !sseEventHasPayload(s.pendingLines) {
 		s.pendingLines = s.pendingLines[:0]
 		return false
 	}
@@ -264,8 +264,8 @@ func (s *streamRelay) onLine(line string) (finished bool) {
 			s.markFirstToken()
 		}
 	}
-	eventName, eventData := s.rt.parseSSEEventLines(s.pendingLines)
-	terminal, success, terminalMessage := s.rt.upstreamSSETerminal(eventName, eventData, s.upKind)
+	eventName, eventData := parseSSEEventLines(s.pendingLines)
+	terminal, success, terminalMessage := upstreamSSETerminal(eventName, eventData, s.upKind)
 	// 写出失败已标记客户端断开，这里不用再处理
 	_ = s.processEvent(s.pendingLines, eventName, eventData)
 	s.pendingLines = s.pendingLines[:0]
@@ -287,7 +287,7 @@ func (s *streamRelay) onLine(line string) (finished bool) {
 		}
 		s.result.StreamErr = errors.New(terminalMessage)
 	}
-	s.rt.finalizeStreamClientDisconnect(&s.result)
+	finalizeStreamClientDisconnect(&s.result)
 	return true
 }
 
@@ -295,7 +295,7 @@ func (s *streamRelay) onLine(line string) (finished bool) {
 func (s *streamRelay) onUpstreamEOF() streamAttemptResult {
 	r := &s.result
 	if len(s.pendingLines) > 0 {
-		eventName, eventData := s.rt.parseSSEEventLines(s.pendingLines)
+		eventName, eventData := parseSSEEventLines(s.pendingLines)
 		if err := s.processEvent(s.pendingLines, eventName, eventData); err != nil && !r.ClientDisconnected {
 			r.StreamErr = err
 		}
@@ -323,13 +323,13 @@ func (s *streamRelay) onUpstreamEOF() streamAttemptResult {
 			s.sendTerminalError("stream_incomplete", msg)
 		}
 		r.StreamErr = errors.New(msg)
-		s.rt.finalizeStreamClientDisconnect(r)
+		finalizeStreamClientDisconnect(r)
 		return *r
 	}
 	// 已 commit：收尾转换（客户端已断则 writeFrames 会跳过写出）
 	s.closeConverters()
-	r.Tokens = s.rt.finalizeStreamTokens(s.tokens, s.usageBuf.Bytes(), s.upKind)
-	s.rt.finalizeStreamClientDisconnect(r)
+	r.Tokens = finalizeStreamTokens(s.tokens, s.usageBuf.Bytes(), s.upKind)
+	finalizeStreamClientDisconnect(r)
 	return *r
 }
 
@@ -345,9 +345,9 @@ func (s *streamRelay) onReadError(err error) streamAttemptResult {
 		return *r
 	}
 	// 已 commit：尽量落已收集 usage；中途 client 断开优先标记 client
-	r.Tokens = s.rt.finalizeStreamTokens(s.tokens, s.usageBuf.Bytes(), s.upKind)
+	r.Tokens = finalizeStreamTokens(s.tokens, s.usageBuf.Bytes(), s.upKind)
 	if r.ClientDisconnected {
-		s.rt.finalizeStreamClientDisconnect(r)
+		finalizeStreamClientDisconnect(r)
 		return *r
 	}
 	msg := "upstream stream disconnected"
@@ -367,10 +367,10 @@ func (s *streamRelay) onUpstreamCanceled(upCtx context.Context) streamAttemptRes
 		s.abort()
 		return *r
 	}
-	r.Tokens = s.rt.finalizeStreamTokens(s.tokens, s.usageBuf.Bytes(), s.upKind)
+	r.Tokens = finalizeStreamTokens(s.tokens, s.usageBuf.Bytes(), s.upKind)
 	if r.ClientDisconnected {
 		// 客户端已断，上游超时：用已收集 usage 落库；若已交付终端帧则不当 client 失败
-		s.rt.finalizeStreamClientDisconnect(r)
+		finalizeStreamClientDisconnect(r)
 		return *r
 	}
 	msg := "upstream stream canceled"
@@ -414,7 +414,7 @@ func (s *streamRelay) onUpstreamIdle() streamAttemptResult {
 	}
 	s.sendTerminalError("stream_timeout", msg)
 	r.StreamErr = errors.New(msg)
-	r.Tokens = s.rt.finalizeStreamTokens(s.tokens, s.usageBuf.Bytes(), s.upKind)
+	r.Tokens = finalizeStreamTokens(s.tokens, s.usageBuf.Bytes(), s.upKind)
 	return *r
 }
 
@@ -423,7 +423,7 @@ func (s *streamRelay) sendKeepalive() {
 	if s.result.ClientDisconnected || !s.result.Committed || time.Since(s.lastDownstreamAt) < s.keepalive {
 		return
 	}
-	ping := s.rt.streamKeepaliveFrame(s.clientKind)
+	ping := streamKeepaliveFrame(s.clientKind)
 	if s.geminiArray != nil {
 		// JSON 数组里只能插空白
 		ping = []byte("\r\n")
@@ -432,7 +432,7 @@ func (s *streamRelay) sendKeepalive() {
 		s.result.ClientDisconnected = true
 		return
 	}
-	s.rt.flushWriter(s.c)
+	flushWriter(s.c)
 	s.lastDownstreamAt = time.Now()
 }
 
@@ -447,7 +447,7 @@ func (s *streamRelay) processEvent(lines []string, eventName, data string) error
 	if data != "" && data != "[DONE]" {
 		s.usageBuf.WriteString(data)
 		s.usageBuf.WriteByte('\n')
-		s.rt.mergeStreamUsage(&s.tokens, data, s.upKind)
+		mergeStreamUsage(&s.tokens, data, s.upKind)
 	}
 	if s.upKind == protocol.KindGemini && geminiChunkFinished(data) {
 		s.geminiUpstreamFinished = true
@@ -457,7 +457,7 @@ func (s *streamRelay) processEvent(lines []string, eventName, data string) error
 	}
 	// 透传完整 event。commit 前丢弃纯注释/空事件，避免上游 :PING 过早
 	// 提交响应头后无法再 retry/failover，并污染 first_token 统计。
-	if !s.result.Committed && !s.rt.sseEventHasPayload(lines) {
+	if !s.result.Committed && !sseEventHasPayload(lines) {
 		return nil
 	}
 	var b strings.Builder
@@ -476,7 +476,7 @@ func (s *streamRelay) writeFrames(frames [][]byte) error {
 	}
 	r, c := &s.result, s.c
 	if !r.Committed {
-		if err := s.rt.commitSSEHeaders(c, r.Headers); err != nil {
+		if err := commitSSEHeaders(c, r.Headers); err != nil {
 			return err
 		}
 		if s.geminiArray != nil {
@@ -505,14 +505,14 @@ func (s *streamRelay) writeFrames(frames [][]byte) error {
 			// 数组模式：写出 "]" 才算完整交付；带 finishReason 的元素只记下已给出终态
 			if s.geminiArray.closed {
 				r.DownstreamComplete = true
-			} else if s.rt.sseFrameIsTerminal(f) {
+			} else if sseFrameIsTerminal(f) {
 				s.geminiFinishSent = true
 			}
-		} else if s.rt.sseFrameIsTerminal(f) {
+		} else if sseFrameIsTerminal(f) {
 			r.DownstreamComplete = true
 		}
 	}
-	s.rt.flushWriter(c)
+	flushWriter(c)
 	s.lastDownstreamAt = time.Now()
 	return nil
 }
@@ -535,7 +535,7 @@ func (s *streamRelay) sendTerminalError(errType, msg string) {
 		}
 		return
 	}
-	if err := s.rt.writeStreamTerminalError(s.c, s.clientKind, errType, msg); err == nil {
+	if err := writeStreamTerminalError(s.c, s.clientKind, errType, msg); err == nil {
 		r.DownstreamComplete = true
 	}
 }
@@ -562,7 +562,7 @@ func (s *streamRelay) failOnConvertError() bool {
 		s.sendTerminalError("upstream_error", msg)
 	}
 	s.result.StreamErr = errors.New(msg)
-	s.rt.finalizeStreamClientDisconnect(&s.result)
+	finalizeStreamClientDisconnect(&s.result)
 	return true
 }
 
@@ -581,7 +581,7 @@ func (s *streamRelay) closeConverters() {
 // collectUsage 把旁路收集的上游原始 data 存进结果，并据此补算用量。
 func (s *streamRelay) collectUsage() {
 	s.result.Body = append([]byte(nil), s.usageBuf.Bytes()...)
-	s.result.Tokens = s.rt.finalizeStreamTokens(s.tokens, s.result.Body, s.upKind)
+	s.result.Tokens = finalizeStreamTokens(s.tokens, s.result.Body, s.upKind)
 }
 
 func (s *streamRelay) stopFirstTimer() {

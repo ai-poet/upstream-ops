@@ -12,7 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func (rt *Runtime) parseSSEEventLines(lines []string) (eventName, data string) {
+func parseSSEEventLines(lines []string) (eventName, data string) {
 	var dataParts []string
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -29,7 +29,7 @@ func (rt *Runtime) parseSSEEventLines(lines []string) (eventName, data string) {
 }
 
 // sseEventHasPayload 判断 SSE 事件是否包含可提交的有效载荷（非纯注释）。
-func (rt *Runtime) sseEventHasPayload(lines []string) bool {
+func sseEventHasPayload(lines []string) bool {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, ":") {
@@ -48,7 +48,7 @@ func (rt *Runtime) sseEventHasPayload(lines []string) bool {
 // sseFrameIsTerminal 判断已写出（或即将写出）的 SSE 帧是否为客户端侧流结束标记。
 // 用于区分「中途断开」与「收完终端帧后正常关连接」。
 // 覆盖：Chat [DONE]、Anthropic message_stop、Responses response.completed 等。
-func (rt *Runtime) sseFrameIsTerminal(frame []byte) bool {
+func sseFrameIsTerminal(frame []byte) bool {
 	if len(frame) == 0 {
 		return false
 	}
@@ -94,7 +94,7 @@ func (rt *Runtime) sseFrameIsTerminal(frame []byte) bool {
 
 // upstreamSSETerminal 判断上游协议层是否已经给出终态。转换器 Close 会补齐客户端帧，
 // 但不能把上游意外 EOF 伪装成成功完成。
-func (rt *Runtime) upstreamSSETerminal(eventName, data string, kind protocolKind) (terminal, success bool, message string) {
+func upstreamSSETerminal(eventName, data string, kind protocolKind) (terminal, success bool, message string) {
 	data = strings.TrimSpace(data)
 	if data == "[DONE]" {
 		return true, true, ""
@@ -170,7 +170,7 @@ func stringValue(v any) string {
 // finalizeStreamClientDisconnect 在流结束时整理 client 断开标记：
 // - 已向客户端交付终端帧：关连接属正常收尾，清除 ClientDisconnected / errClientDisconnected
 // - 中途断开：补上 StreamErr=errClientDisconnected 供上层记 error_type=client
-func (rt *Runtime) finalizeStreamClientDisconnect(r *streamAttemptResult) {
+func finalizeStreamClientDisconnect(r *streamAttemptResult) {
 	if r == nil || !r.ClientDisconnected {
 		return
 	}
@@ -186,7 +186,7 @@ func (rt *Runtime) finalizeStreamClientDisconnect(r *streamAttemptResult) {
 	}
 }
 
-func (rt *Runtime) commitSSEHeaders(c *gin.Context, upstream http.Header) error {
+func commitSSEHeaders(c *gin.Context, upstream http.Header) error {
 	if c == nil {
 		return errors.New("nil gin context")
 	}
@@ -194,20 +194,20 @@ func (rt *Runtime) commitSSEHeaders(c *gin.Context, upstream http.Header) error 
 		return errors.New("streaming not supported")
 	}
 	if upstream != nil {
-		rt.copyResponseHeaders(c.Writer.Header(), upstream)
+		copyResponseHeaders(c.Writer.Header(), upstream)
 	}
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 	c.Header("X-Accel-Buffering", "no")
 	c.Writer.Header().Del("Content-Length")
-	reqID := rt.ensureGatewayRequestID(c)
-	rt.setGatewayRequestIDHeaders(c, reqID)
+	reqID := ensureGatewayRequestID(c)
+	setGatewayRequestIDHeaders(c, reqID)
 	c.Status(http.StatusOK)
 	return nil
 }
 
-func (rt *Runtime) flushWriter(c *gin.Context) {
+func flushWriter(c *gin.Context) {
 	if c == nil {
 		return
 	}
@@ -216,7 +216,7 @@ func (rt *Runtime) flushWriter(c *gin.Context) {
 	}
 }
 
-func (rt *Runtime) streamKeepaliveFrame(clientKind protocolKind) []byte {
+func streamKeepaliveFrame(clientKind protocolKind) []byte {
 	if protocol.NormalizeKind(clientKind) == protocol.KindAnthropic {
 		return []byte("event: ping\ndata: {\"type\":\"ping\"}\n\n")
 	}
@@ -224,7 +224,7 @@ func (rt *Runtime) streamKeepaliveFrame(clientKind protocolKind) []byte {
 }
 
 // writeStreamTerminalError 在已 commit 的 SSE 流上写入终端错误（只应调用一次）。
-func (rt *Runtime) writeStreamTerminalError(c *gin.Context, kind protocolKind, errType, message string) error {
+func writeStreamTerminalError(c *gin.Context, kind protocolKind, errType, message string) error {
 	if c == nil {
 		return errors.New("nil context")
 	}
@@ -273,11 +273,11 @@ func (rt *Runtime) writeStreamTerminalError(c *gin.Context, kind protocolKind, e
 	if _, err := c.Writer.Write(payload); err != nil {
 		return err
 	}
-	rt.flushWriter(c)
+	flushWriter(c)
 	return nil
 }
 
-func (rt *Runtime) mergeStreamUsage(dst *UsageTokens, data string, kind protocolKind) {
+func mergeStreamUsage(dst *UsageTokens, data string, kind protocolKind) {
 	if dst == nil || data == "" {
 		return
 	}
@@ -310,11 +310,11 @@ func (rt *Runtime) mergeStreamUsage(dst *UsageTokens, data string, kind protocol
 	}
 }
 
-func (rt *Runtime) finalizeStreamTokens(live UsageTokens, raw []byte, kind protocolKind) UsageTokens {
+func finalizeStreamTokens(live UsageTokens, raw []byte, kind protocolKind) UsageTokens {
 	if usageNonEmpty(live) {
 		// 再用整包兜底补 cache 等字段
 		if len(raw) > 0 {
-			fallback := rt.parseUsageByKind(raw, true, kind)
+			fallback := parseUsageByKind(raw, true, kind)
 			if live.CacheReadTokens == 0 && fallback.CacheReadTokens > 0 {
 				live.CacheReadTokens = fallback.CacheReadTokens
 			}
@@ -333,5 +333,5 @@ func (rt *Runtime) finalizeStreamTokens(live UsageTokens, raw []byte, kind proto
 	if len(raw) == 0 {
 		return live
 	}
-	return rt.parseUsageByKind(raw, true, kind)
+	return parseUsageByKind(raw, true, kind)
 }

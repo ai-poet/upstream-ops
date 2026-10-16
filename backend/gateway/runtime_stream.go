@@ -40,7 +40,7 @@ func (rt *Runtime) buildUpstreamHTTPRequest(ctx context.Context, call upstreamCa
 		}
 	}
 	// 请求相关 ID 原样转发上游；网关只在响应侧写 X-Upstream-Ops-Request-Id
-	rt.copyClientRequestIDHeaders(req.Header, inHeader)
+	copyClientRequestIDHeaders(req.Header, inHeader)
 	switch upKind {
 	case protocol.KindAnthropic:
 		if v := inHeader.Get("anthropic-version"); v != "" {
@@ -63,7 +63,7 @@ func (rt *Runtime) buildUpstreamHTTPRequest(ctx context.Context, call upstreamCa
 	}
 	authStyle := storage.GatewayProviderAuthBoth
 	if target.Provider != nil {
-		authStyle = rt.normalizeProviderAuthStyle(target.Provider.AuthStyle)
+		authStyle = normalizeProviderAuthStyle(target.Provider.AuthStyle)
 	}
 	// Gemini 上游的密钥头是 x-goog-api-key（NewAPI / Sub2API 的 /v1beta 也认）
 	keyHeader := "x-api-key"
@@ -147,7 +147,7 @@ func (rt *Runtime) forwardStreamPlan(ctx context.Context, c *gin.Context, call u
 
 	client := rt.httpClientForTarget(call.target.Channel, call.target.Provider)
 	start := time.Now()
-	resp, err := rt.doHTTPWithFirstTokenDeadline(reqCtx, abortReq, client, req, start, call.firstTokenTimeout)
+	resp, err := doHTTPWithFirstTokenDeadline(reqCtx, abortReq, client, req, start, call.firstTokenTimeout)
 	if err != nil {
 		return streamAttemptResult{Err: err}
 	}
@@ -173,7 +173,7 @@ func (rt *Runtime) forwardStreamPlan(ctx context.Context, c *gin.Context, call u
 		return s.result
 	}
 	// 响应头已到：若整体首字预算已耗尽，直接按首字超时断开
-	if _, timedOut := rt.remainingFirstTokenWait(start, call.firstTokenTimeout); timedOut {
+	if _, timedOut := remainingFirstTokenWait(start, call.firstTokenTimeout); timedOut {
 		return s.firstTokenTimedOut()
 	}
 	if !protocol.SupportsIncrementalStream(plan.Inbound, plan.Upstream, plan.Converted) {

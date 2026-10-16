@@ -13,7 +13,7 @@ import (
 // remainingFirstTokenWait 计算从 start 起算，首字超时还剩多少时间。
 // configured<=0 表示关闭：left=0 且 timedOut=false（调用方按「无超时」处理）。
 // 已耗尽：timedOut=true。
-func (rt *Runtime) remainingFirstTokenWait(start time.Time, configured time.Duration) (left time.Duration, timedOut bool) {
+func remainingFirstTokenWait(start time.Time, configured time.Duration) (left time.Duration, timedOut bool) {
 	if configured <= 0 {
 		return 0, false
 	}
@@ -27,7 +27,7 @@ func (rt *Runtime) remainingFirstTokenWait(start time.Time, configured time.Dura
 // doHTTPWithFirstTokenDeadline 执行 client.Do；首字超时从 start 起算。
 // 等响应头超过预算时 cancel 请求并返回 errFirstTokenTimeout（与 body 首字节同一预算）。
 // abort 在超时路径调用以打断卡住的连接；成功拿到响应后不得 abort（否则 body 被取消）。
-func (rt *Runtime) doHTTPWithFirstTokenDeadline(
+func doHTTPWithFirstTokenDeadline(
 	parent context.Context,
 	abort context.CancelFunc,
 	client *http.Client,
@@ -41,7 +41,7 @@ func (rt *Runtime) doHTTPWithFirstTokenDeadline(
 	if firstTokenTimeout <= 0 {
 		return client.Do(req)
 	}
-	left, timedOut := rt.remainingFirstTokenWait(start, firstTokenTimeout)
+	left, timedOut := remainingFirstTokenWait(start, firstTokenTimeout)
 	if timedOut {
 		if abort != nil {
 			abort()
@@ -66,11 +66,11 @@ func (rt *Runtime) doHTTPWithFirstTokenDeadline(
 	case r := <-ch:
 		if r.err != nil {
 			// 若 parent 已取消且接近首字截止，归为首字超时更易理解
-			if parent != nil && parent.Err() != nil && rt.isFirstTokenTimeout(r.err) {
+			if parent != nil && parent.Err() != nil && isFirstTokenTimeout(r.err) {
 				return nil, r.err
 			}
 			if r.err != nil && (errors.Is(r.err, context.Canceled) || errors.Is(r.err, context.DeadlineExceeded)) {
-				if _, to := rt.remainingFirstTokenWait(start, firstTokenTimeout); to {
+				if _, to := remainingFirstTokenWait(start, firstTokenTimeout); to {
 					return nil, fmt.Errorf("%w after %s", errFirstTokenTimeout, firstTokenTimeout)
 				}
 			}
@@ -96,7 +96,7 @@ func (rt *Runtime) doHTTPWithFirstTokenDeadline(
 			_ = r.resp.Body.Close()
 		}
 		// parent 取消：若首字预算也耗尽，优先报首字超时
-		if _, to := rt.remainingFirstTokenWait(start, firstTokenTimeout); to {
+		if _, to := remainingFirstTokenWait(start, firstTokenTimeout); to {
 			return nil, fmt.Errorf("%w after %s", errFirstTokenTimeout, firstTokenTimeout)
 		}
 		if parent.Err() != nil {
@@ -108,7 +108,7 @@ func (rt *Runtime) doHTTPWithFirstTokenDeadline(
 
 // readFirstChunk 读取响应体首块；timeout<=0 时无超时限制。
 // timeout>0 时为「剩余」等待时间（调用方应已扣掉等响应头耗时）。
-func (rt *Runtime) readFirstChunk(r io.Reader, timeout time.Duration) ([]byte, error) {
+func readFirstChunk(r io.Reader, timeout time.Duration) ([]byte, error) {
 	if timeout <= 0 {
 		// timeout==0：可能是「关闭首字超时」或「剩余时间用尽」。
 		// 用尽应由 remainingFirstTokenWait 在调用前拦截；此处 0 按无限制读。
@@ -153,7 +153,7 @@ func (rt *Runtime) readFirstChunk(r io.Reader, timeout time.Duration) ([]byte, e
 	}
 }
 
-func (rt *Runtime) copyResponseHeaders(dst, src http.Header) {
+func copyResponseHeaders(dst, src http.Header) {
 	// hop-by-hop 与网关自有 request id 不从上游抄写；后者由 setGatewayRequestIDHeaders 单独写入
 	skip := map[string]struct{}{
 		"Content-Length": {}, "Content-Encoding": {}, "Transfer-Encoding": {},

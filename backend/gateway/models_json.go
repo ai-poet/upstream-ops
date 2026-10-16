@@ -34,17 +34,17 @@ func (svc *core) ParseModelsJSON(raw string) []ModelListItem {
 			ID:         id,
 			Source:     src,
 			ChannelIDs: it.ChannelIDs,
-			Sources:    svc.normalizeModelSources(it.Sources, it.ChannelIDs),
+			Sources:    normalizeModelSources(it.Sources, it.ChannelIDs),
 		}
 		if len(item.ChannelIDs) == 0 && len(item.Sources) > 0 {
-			item.ChannelIDs = svc.channelIDsFromSources(item.Sources)
+			item.ChannelIDs = channelIDsFromSources(item.Sources)
 		}
 		out = append(out, item)
 	}
 	return out
 }
 
-func (svc *core) normalizeModelSources(sources []ModelSource, channelIDs []uint) []ModelSource {
+func normalizeModelSources(sources []ModelSource, channelIDs []uint) []ModelSource {
 	if len(sources) > 0 {
 		out := make([]ModelSource, 0, len(sources))
 		seen := map[string]struct{}{}
@@ -72,7 +72,7 @@ func (svc *core) normalizeModelSources(sources []ModelSource, channelIDs []uint)
 	return out
 }
 
-func (svc *core) channelIDsFromSources(sources []ModelSource) []uint {
+func channelIDsFromSources(sources []ModelSource) []uint {
 	seen := map[uint]struct{}{}
 	out := make([]uint, 0, len(sources))
 	for _, s := range sources {
@@ -100,21 +100,21 @@ func (a *AdminService) ModelsJSONString(list []ModelListItem) string {
 	return string(raw)
 }
 
-func (a *AdminService) formatChannelGroupLabel(channelName, groupName string, channelID uint) string {
+func formatChannelGroupLabel(channelName, groupName string, channelID uint) string {
 	ch := strings.TrimSpace(channelName)
 	if ch == "" {
 		ch = fmt.Sprintf("#%d", channelID)
 	}
 	g := strings.TrimSpace(groupName)
 	// 仅有 id:N 占位时不拼进标签（与前端 channelGroupLabel 一致）
-	if g == "" || a.isSourceGroupIDPlaceholder(g) {
+	if g == "" || isSourceGroupIDPlaceholder(g) {
 		return ch
 	}
 	return ch + "-" + g
 }
 
 // isSourceGroupIDPlaceholder 识别「id:31」「源 ID: 31」这类无真实分组名的占位。
-func (svc *core) isSourceGroupIDPlaceholder(s string) bool {
+func isSourceGroupIDPlaceholder(s string) bool {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return false
@@ -124,16 +124,16 @@ func (svc *core) isSourceGroupIDPlaceholder(s string) bool {
 	lower = strings.ReplaceAll(lower, "：", ":")
 	if strings.HasPrefix(lower, "id:") {
 		rest := strings.TrimPrefix(lower, "id:")
-		return rest != "" && svc.isAllASCIIDigits(rest)
+		return rest != "" && isAllASCIIDigits(rest)
 	}
 	if strings.HasPrefix(lower, "源id:") {
 		rest := strings.TrimPrefix(lower, "源id:")
-		return rest != "" && svc.isAllASCIIDigits(rest)
+		return rest != "" && isAllASCIIDigits(rest)
 	}
 	return false
 }
 
-func (svc *core) isAllASCIIDigits(s string) bool {
+func isAllASCIIDigits(s string) bool {
 	if s == "" {
 		return false
 	}
@@ -147,12 +147,12 @@ func (svc *core) isAllASCIIDigits(s string) bool {
 
 // enrichRouteSourceGroupName 用上游分组列表补全路由上的源分组显示名。
 // 历史前端在有 remote_group_id 时会清空 name，导致 sub2api 只剩 id。
-func (svc *core) enrichRouteSourceGroupName(route *storage.GatewayRoute, groups []connector.APIKeyGroup) {
+func enrichRouteSourceGroupName(route *storage.GatewayRoute, groups []connector.APIKeyGroup) {
 	if route == nil {
 		return
 	}
 	name := strings.TrimSpace(route.SourceGroupName)
-	if name != "" && !svc.isSourceGroupIDPlaceholder(name) {
+	if name != "" && !isSourceGroupIDPlaceholder(name) {
 		return
 	}
 	if route.SourceGroupID == nil || *route.SourceGroupID <= 0 {
@@ -170,7 +170,7 @@ func (svc *core) enrichRouteSourceGroupName(route *storage.GatewayRoute, groups 
 	}
 }
 
-func (a *AdminService) truncateProbeError(body []byte, max int) string {
+func truncateProbeError(body []byte, max int) string {
 	if len(body) == 0 {
 		return ""
 	}

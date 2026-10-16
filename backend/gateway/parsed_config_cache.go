@@ -68,9 +68,9 @@ func cachedSystemPromptRules(raw string) []SystemPromptRule {
 }
 
 // cachedStringList 运行时用的字符串名单（IP 黑白名单，只读）。
-func (rt *Runtime) cachedStringList(raw string) []string {
+func cachedStringList(raw string) []string {
 	if t := strings.TrimSpace(raw); t == "" || t == "[]" || t == "null" {
 		return nil
 	}
-	return stringListCache.get(raw, rt.parseStringListJSON)
+	return stringListCache.get(raw, parseStringListJSON)
 }

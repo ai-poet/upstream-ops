@@ -12,16 +12,18 @@ import (
 	"time"
 
 	"github.com/bejix/upstream-ops/backend/gateway/protocol"
-	"github.com/bejix/upstream-ops/backend/storage"
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
 )
+
+// wsResponsesPath Responses WebSocket 的入站与上游端点。
+const wsResponsesPath = "/v1/responses"
 
 // HandleResponsesWebSocket forwards native Responses WebSocket sessions. A
 // WebSocket session cannot safely change protocol mid-flight, so only routes
 // whose resolved upstream protocol is Responses are eligible.
 func (rt *Runtime) HandleResponsesWebSocket(c *gin.Context) {
-	reqID := rt.ensureGatewayRequestID(c)
+	reqID := ensureGatewayRequestID(c)
 	if !strings.EqualFold(c.GetHeader("Upgrade"), "websocket") {
 		// 对齐 sub2api：GET 只用于 WebSocket 升级
 		c.JSON(http.StatusUpgradeRequired, gin.H{
@@ -34,11 +36,11 @@ func (rt *Runtime) HandleResponsesWebSocket(c *gin.Context) {
 
 	auth, err := rt.Authenticate(c)
 	if err != nil {
-		rt.writeAuthError(c, protocolOpenAI, err.Error())
+		writeAuthError(c, protocolOpenAI, err.Error())
 		return
 	}
 	if rt.Routes == nil {
-		rt.writeGatewayError(c, protocolOpenAI, http.StatusServiceUnavailable, "api_error", "routes not configured")
+		writeGatewayError(c, protocolOpenAI, http.StatusServiceUnavailable, "api_error", "routes not configured")
 		return
 	}
 
@@ -55,112 +57,125 @@ func (rt *Runtime) HandleResponsesWebSocket(c *gin.Context) {
 		return
 	}
 	if msgType != websocket.MessageText {
-		rt.writeWSResponsesFailed(ctx, client, "invalid_request_error", "first WebSocket message must be response.create")
+		writeWSResponsesFailed(ctx, client, "invalid_request_error", "first WebSocket message must be response.create")
 		return
 	}
 	requestedModel, err := wsResponsesCreateModel(first)
 	if err != nil {
-		rt.writeWSResponsesFailed(ctx, client, "invalid_request_error", err.Error())
+		writeWSResponsesFailed(ctx, client, "invalid_request_error", err.Error())
 		return
 	}
 
-	key, group := auth.Key, auth.Group
-	first, err = rt.applyResponsesWebSocketSystemPrompt(group, key, first)
+	req := &relayRequest{
+		c:      c,
+		in:     forwardRequest{Path: wsResponsesPath, Kind: protocol.KindOpenAIResponses},
+		id:     reqID,
+		key:    auth.Key,
+		group:  auth.Group,
+		model:  requestedModel,
+		stream: true,
+	}
+	first, err = rt.applyResponsesWebSocketSystemPrompt(req.group, req.key, first)
 	if err != nil {
-		rt.writeWSResponsesFailed(ctx, client, "invalid_request_error", "system prompt injection failed: "+err.Error())
+		writeWSResponsesFailed(ctx, client, "invalid_request_error", "system prompt injection failed: "+err.Error())
 		return
 	}
-	rt.touchKey(key.ID, time.Now())
-	routes, err := rt.cachedRoutes(group.ID)
-	if err != nil || len(routes) == 0 {
-		rt.writeWSResponsesFailed(ctx, client, "api_error", "no routes configured")
-		return
-	}
-	groupMapping := cachedModelMapping(group.ModelMappingJSON)
-	groupMappedModel, _ := ResolveModel(requestedModel, groupMapping)
-	// 转发模型：只留下接这个模型的路由
-	if routes = filterRoutesForModel(routes, requestedModel, groupMappedModel); len(routes) == 0 {
-		rt.writeWSResponsesFailed(ctx, client, "invalid_request_error", fmt.Sprintf("model %q is not available: no route in this group forwards it", requestedModel))
-		return
-	}
-	groupsByChannel := rt.loadGroupsByChannel(c.Request.Context(), routes)
-	candidates := SortRoutes(routes, groupsByChannel, group.RateSortDirection, time.Now(), nil)
-
-	var selected *wsResponsesRoute
-	for _, cand := range candidates {
-		route := cand.Route
-		upstreamModel, chain := ResolveModel(requestedModel, cachedModelMapping(route.ModelMappingJSON), groupMapping)
-		if upstreamModel == "" {
-			upstreamModel = requestedModel
-		}
-		routeProto := rt.normalizeUpstreamProtocol(route.UpstreamProtocol)
-		target, resolveErr := rt.resolveUpstreamTarget(&route)
-		if resolveErr != nil {
-			continue
-		}
-		if route.NormalizeSourceKind() == "provider" && routeProto == "auto" && target.Provider != nil {
-			routeProto = rt.normalizeProviderProtocol(target.Provider.UpstreamProtocol)
-		}
-		if protocol.ResolveUpstream(routeProto, protocol.KindOpenAIResponses, upstreamModel) != protocol.KindOpenAIResponses {
-			continue
-		}
-		rt.applyRouteUserAgent(target, group, &route)
-		selected = &wsResponsesRoute{
-			route: route, target: target, upstreamModel: upstreamModel, chain: chain,
-			rate: cand.EffectiveRate, billingRate: cand.BillingRate,
-		}
-		break
-	}
-	if selected == nil {
-		rt.writeWSResponsesFailed(ctx, client, "api_error", "no native Responses WebSocket route configured")
+	rt.touchKey(req.key.ID, time.Now())
+	at, errCode, errMsg := rt.selectWSResponsesRoute(req)
+	if at == nil {
+		writeWSResponsesFailed(ctx, client, errCode, errMsg)
 		return
 	}
 
-	upURL, err := responsesWebSocketURL(selected.target.BaseURL)
+	upURL, err := responsesWebSocketURL(at.target.BaseURL)
 	if err != nil {
-		rt.writeWSResponsesFailed(ctx, client, "api_error", err.Error())
+		writeWSResponsesFailed(ctx, client, "api_error", err.Error())
 		return
 	}
 	handshake, err := rt.buildUpstreamHTTPRequest(ctx, upstreamCall{
-		target: selected.target, path: "/v1/responses", method: http.MethodGet,
+		target: at.target, path: wsResponsesPath, method: http.MethodGet,
 		header: c.Request.Header, kind: protocol.KindOpenAIResponses,
 	})
 	if err != nil {
-		rt.writeWSResponsesFailed(ctx, client, "api_error", err.Error())
+		writeWSResponsesFailed(ctx, client, "api_error", err.Error())
 		return
 	}
-	upHTTP := rt.httpClientForTarget(selected.target.Channel, selected.target.Provider)
+	upHTTP := rt.httpClientForTarget(at.target.Channel, at.target.Provider)
 	upHTTP.Timeout = 0
 	upstream, _, err := websocket.Dial(ctx, upURL, &websocket.DialOptions{HTTPClient: upHTTP, HTTPHeader: handshake.Header})
 	if err != nil {
-		rt.writeWSResponsesFailed(ctx, client, "upstream_error", "failed to connect upstream: "+err.Error())
+		writeWSResponsesFailed(ctx, client, "upstream_error", "failed to connect upstream: "+err.Error())
 		return
 	}
 	defer upstream.CloseNow()
 
-	first = RewriteModelInBody(first, selected.upstreamModel)
+	first = RewriteModelInBody(first, at.upstreamModel)
 	if err := upstream.Write(ctx, websocket.MessageText, first); err != nil {
-		rt.writeWSResponsesFailed(ctx, client, "upstream_error", "failed to send response.create: "+err.Error())
+		writeWSResponsesFailed(ctx, client, "upstream_error", "failed to send response.create: "+err.Error())
 		return
 	}
 
-	serviceTier, reasoningEffort := ExtractMetaFromBody(first)
-	meta := usageRecordMeta{
-		InboundEndpoint: "/v1/responses", UpstreamEndpoint: "/v1/responses",
+	facts := scanRequestFacts(wsResponsesPath, first)
+	req.serviceTier, req.reasoningEffort, req.billing = facts.serviceTier, facts.reasoningEffort, facts.billing
+	at.meta = usageRecordMeta{
+		InboundEndpoint: wsResponsesPath, UpstreamEndpoint: wsResponsesPath,
 		InboundProtocol: string(protocol.KindOpenAIResponses), UpstreamProtocol: string(protocol.KindOpenAIResponses),
-		ServiceTier: serviceTier, ReasoningEffort: reasoningEffort, UpstreamURL: upURL,
-		Attempt: 1, AttemptKind: attemptKindPrimary, BillingInput: billingInputFromRequest("/v1/responses", first),
+		ServiceTier: req.serviceTier, ReasoningEffort: req.reasoningEffort, UpstreamURL: upURL,
+		Attempt: 1, AttemptKind: attemptKindPrimary, BillingInput: req.billing,
 	}
-	rt.forwardResponsesWebSocket(ctx, client, upstream, c, key, group, selected, reqID, requestedModel, meta)
+	rt.relayResponsesWebSocket(ctx, &wsRelay{req: req, at: at, client: client, upstream: upstream})
 }
 
-type wsResponsesRoute struct {
-	route         storage.GatewayRoute
-	target        *upstreamTarget
-	upstreamModel string
-	chain         string
-	rate          float64
-	billingRate   float64
+// selectWSResponsesRoute 按倍率顺序取第一条上游协议为 Responses 的路由（会话中途不能换协议，也不顺延）。
+// 没有可用路由时返回 nil 与回给客户端的错误码、说明。
+func (rt *Runtime) selectWSResponsesRoute(req *relayRequest) (at *relayAttempt, errCode, errMsg string) {
+	routes, err := rt.cachedRoutes(req.group.ID)
+	if err != nil || len(routes) == 0 {
+		return nil, "api_error", "no routes configured"
+	}
+	req.groupMapping = cachedModelMapping(req.group.ModelMappingJSON)
+	groupMappedModel, _ := ResolveModel(req.model, req.groupMapping)
+	// 转发模型：只留下接这个模型的路由
+	if routes = filterRoutesForModel(routes, req.model, groupMappedModel); len(routes) == 0 {
+		return nil, "invalid_request_error", fmt.Sprintf("model %q is not available: no route in this group forwards it", req.model)
+	}
+	groupsByChannel := rt.loadGroupsByChannel(req.c.Request.Context(), routes)
+	for _, cand := range SortRoutes(routes, groupsByChannel, req.group.RateSortDirection, time.Now(), nil) {
+		choice := newRouteChoice(req, cand)
+		routeProto := normalizeUpstreamProtocol(choice.route.UpstreamProtocol)
+		target, resolveErr := rt.resolveUpstreamTarget(&choice.route)
+		if resolveErr != nil {
+			continue
+		}
+		if choice.route.NormalizeSourceKind() == "provider" && routeProto == "auto" && target.Provider != nil {
+			routeProto = normalizeProviderProtocol(target.Provider.UpstreamProtocol)
+		}
+		if protocol.ResolveUpstream(routeProto, protocol.KindOpenAIResponses, choice.upstreamModel) != protocol.KindOpenAIResponses {
+			continue
+		}
+		applyRouteUserAgent(target, req.group, &choice.route)
+		return &relayAttempt{
+			routeChoice:  choice,
+			no:           1,
+			kind:         attemptKindPrimary,
+			target:       target,
+			upstreamKind: protocol.KindOpenAIResponses,
+		}, "", ""
+	}
+	return nil, "api_error", "no native Responses WebSocket route configured"
+}
+
+// wsRelay 一次 Responses WebSocket 会话：客户端 ↔ 选中的上游，会话结束时记一条用量。
+type wsRelay struct {
+	req      *relayRequest
+	at       *relayAttempt
+	client   *websocket.Conn
+	upstream *websocket.Conn
+
+	started            time.Time
+	body               bytes.Buffer // 上游原始事件（计费与补算用量）
+	tokens             UsageTokens
+	clientDisconnected bool
 }
 
 type wsMessage struct {
@@ -169,53 +184,36 @@ type wsMessage struct {
 	err  error
 }
 
-func (rt *Runtime) forwardResponsesWebSocket(
-	ctx context.Context,
-	client, upstream *websocket.Conn,
-	c *gin.Context,
-	key *storage.GatewayKey,
-	group *storage.GatewayGroup,
-	selected *wsResponsesRoute,
-	reqID, requestedModel string,
-	meta usageRecordMeta,
-) {
+// relayResponsesWebSocket 双向转发：客户端消息注入系统提示词、改写模型后发上游；上游事件原样回给客户端，
+// 遇到终态事件记账结束。客户端断开后继续读上游到终态，用量不丢。
+func (rt *Runtime) relayResponsesWebSocket(ctx context.Context, ws *wsRelay) {
 	upMessages := make(chan wsMessage, 32)
 	clientMessages := make(chan wsMessage, 1)
-	go wsReadLoop(ctx, upstream, upMessages)
-	go wsReadLoop(ctx, client, clientMessages)
+	go wsReadLoop(ctx, ws.upstream, upMessages)
+	go wsReadLoop(ctx, ws.client, clientMessages)
 
-	started := time.Now()
-	var (
-		body               bytes.Buffer
-		tokens             UsageTokens
-		clientDisconnected bool
-		clientCh           = clientMessages
-	)
+	ws.started = time.Now()
+	clientCh := clientMessages
 	for {
 		select {
 		case msg, ok := <-clientCh:
 			if !ok || msg.err != nil {
-				clientDisconnected = true
+				ws.clientDisconnected = true
 				clientCh = nil
 				continue
 			}
 			if msg.typ != websocket.MessageText {
 				continue
 			}
-			payload, injectErr := rt.applyResponsesWebSocketSystemPrompt(group, key, msg.body)
+			payload, injectErr := rt.applyResponsesWebSocketSystemPrompt(ws.req.group, ws.req.key, msg.body)
 			if injectErr != nil {
-				rt.recordWSResponsesUsage(key, group, selected, reqID, requestedModel, tokens, false, "invalid_request_error", injectErr.Error(), body.Bytes(), time.Since(started), c, meta)
-				if !clientDisconnected {
-					rt.writeWSResponsesFailed(ctx, client, "invalid_request_error", "system prompt injection failed: "+injectErr.Error())
-				}
+				rt.endResponsesWebSocket(ctx, ws, ws.tokens, false, "invalid_request_error", injectErr.Error(),
+					"system prompt injection failed: "+injectErr.Error())
 				return
 			}
-			payload = RewriteModelInBody(payload, selected.upstreamModel)
-			if err := upstream.Write(ctx, websocket.MessageText, payload); err != nil {
-				rt.recordWSResponsesUsage(key, group, selected, reqID, requestedModel, tokens, false, "upstream_error", err.Error(), body.Bytes(), time.Since(started), c, meta)
-				if !clientDisconnected {
-					rt.writeWSResponsesFailed(ctx, client, "upstream_error", err.Error())
-				}
+			payload = RewriteModelInBody(payload, ws.at.upstreamModel)
+			if err := ws.upstream.Write(ctx, websocket.MessageText, payload); err != nil {
+				rt.endResponsesWebSocket(ctx, ws, ws.tokens, false, "upstream_error", err.Error(), err.Error())
 				return
 			}
 
@@ -225,38 +223,65 @@ func (rt *Runtime) forwardResponsesWebSocket(
 				if msg.err != nil && !errors.Is(msg.err, context.Canceled) {
 					errText = msg.err.Error()
 				}
-				rt.recordWSResponsesUsage(key, group, selected, reqID, requestedModel, tokens, false, "transport", errText, body.Bytes(), time.Since(started), c, meta)
-				if !clientDisconnected {
-					rt.writeWSResponsesFailed(ctx, client, "stream_incomplete", errText)
+				rt.recordResponsesWebSocket(ws, ws.tokens, false, "transport", errText)
+				if !ws.clientDisconnected {
+					writeWSResponsesFailed(ctx, ws.client, "stream_incomplete", errText)
 				}
 				return
 			}
 			if msg.typ != websocket.MessageText {
-				if !clientDisconnected {
-					_ = client.Write(ctx, msg.typ, msg.body)
+				if !ws.clientDisconnected {
+					_ = ws.client.Write(ctx, msg.typ, msg.body)
 				}
 				continue
 			}
-			body.Write(msg.body)
-			body.WriteByte('\n')
-			rt.mergeStreamUsage(&tokens, string(msg.body), protocol.KindOpenAIResponses)
+			ws.body.Write(msg.body)
+			ws.body.WriteByte('\n')
+			mergeStreamUsage(&ws.tokens, string(msg.body), protocol.KindOpenAIResponses)
 			terminal, success, errType, errText := wsResponsesTerminal(msg.body)
-			if !clientDisconnected {
-				if err := client.Write(ctx, websocket.MessageText, msg.body); err != nil {
-					clientDisconnected = true
+			if !ws.clientDisconnected {
+				if err := ws.client.Write(ctx, websocket.MessageText, msg.body); err != nil {
+					ws.clientDisconnected = true
 				}
 			}
 			if !terminal {
 				continue
 			}
-			meta.BillingInput = billingInputWithResponse(meta.BillingInput, body.Bytes())
-			rt.recordWSResponsesUsage(key, group, selected, reqID, requestedModel, rt.finalizeStreamTokens(tokens, body.Bytes(), protocol.KindOpenAIResponses), success, errType, errText, body.Bytes(), time.Since(started), c, meta)
+			tokens := finalizeStreamTokens(ws.tokens, ws.body.Bytes(), protocol.KindOpenAIResponses)
+			rt.recordResponsesWebSocket(ws, tokens, success, errType, errText)
 			if success {
-				rt.noteRouteSuccess(&selected.route)
+				rt.noteRouteSuccess(&ws.at.route)
 			}
 			return
 		}
 	}
+}
+
+// endResponsesWebSocket 客户端一侧出错结束会话：记账，客户端还在时回一个 response.failed。
+func (rt *Runtime) endResponsesWebSocket(ctx context.Context, ws *wsRelay, tokens UsageTokens, success bool, errType, errText, clientMsg string) {
+	rt.recordResponsesWebSocket(ws, tokens, success, errType, errText)
+	if !ws.clientDisconnected {
+		writeWSResponsesFailed(ctx, ws.client, errType, clientMsg)
+	}
+}
+
+// recordResponsesWebSocket 记一条会话用量（会话结束时调用一次）。
+func (rt *Runtime) recordResponsesWebSocket(ws *wsRelay, tokens UsageTokens, success bool, errType, errText string) {
+	if rt.Usage == nil {
+		return
+	}
+	ws.at.meta.BillingInput = billingInputWithResponse(ws.at.meta.BillingInput, ws.body.Bytes())
+	status := http.StatusOK
+	if !success {
+		status = http.StatusBadGateway
+	}
+	rt.recordAttempt(ws.req, ws.at, usageOutcome{
+		tokens:     tokens,
+		status:     status,
+		success:    success,
+		errInfo:    usageErrorInfo{Type: errType, Summary: errText},
+		durationMS: time.Since(ws.started).Milliseconds(),
+	})
 }
 
 func wsReadLoop(ctx context.Context, conn *websocket.Conn, out chan<- wsMessage) {
@@ -323,40 +348,7 @@ func wsResponsesTerminal(body []byte) (terminal, success bool, errType, errText 
 	}
 }
 
-func (rt *Runtime) recordWSResponsesUsage(
-	key *storage.GatewayKey,
-	group *storage.GatewayGroup,
-	selected *wsResponsesRoute,
-	reqID, requestedModel string,
-	tokens UsageTokens,
-	success bool,
-	errType, errText string,
-	body []byte,
-	duration time.Duration,
-	c *gin.Context,
-	meta usageRecordMeta,
-) {
-	if rt.Usage == nil || selected == nil {
-		return
-	}
-	meta.BillingInput = billingInputWithResponse(meta.BillingInput, body)
-	status := http.StatusOK
-	if !success {
-		status = http.StatusBadGateway
-	}
-	rt.recordUsage(c, usageRecord{
-		key: key, group: group, route: &selected.route, target: selected.target,
-		requestID: reqID, requestedModel: requestedModel, upstreamModel: selected.upstreamModel, chain: selected.chain,
-		rate: selected.rate, billingRate: selected.billingRate, stream: true, meta: meta,
-		usageOutcome: usageOutcome{
-			tokens: tokens, status: status, success: success,
-			errInfo:    usageErrorInfo{Type: errType, Summary: errText},
-			durationMS: duration.Milliseconds(),
-		},
-	})
-}
-
-func (rt *Runtime) writeWSResponsesFailed(ctx context.Context, conn *websocket.Conn, code, message string) {
+func writeWSResponsesFailed(ctx context.Context, conn *websocket.Conn, code, message string) {
 	payload, _ := json.Marshal(map[string]any{
 		"type": "response.failed",
 		"response": map[string]any{

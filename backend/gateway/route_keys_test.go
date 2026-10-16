@@ -97,7 +97,7 @@ func TestEnsureMissingRouteKeys(t *testing.T) {
 		t.Fatalf("first ensure: res=%+v err=%v creates=%d", res, err, api.creates)
 	}
 	route, _ := svc.Routes.FindByID(saved[0].ID)
-	if route.SourceAPIKeyName != svc.Admin.stableUpstreamKeyName(1, &vip, "vip") || route.SourceAPIKeyCipher == "" {
+	if route.SourceAPIKeyName != stableUpstreamKeyName(1, &vip, "vip") || route.SourceAPIKeyCipher == "" {
 		t.Fatalf("key not stored on route: %+v", route)
 	}
 
@@ -120,7 +120,7 @@ func TestEnsureMissingRouteKeys(t *testing.T) {
 		t.Fatalf("ensure after source group change: res=%+v err=%v", res, err)
 	}
 	route, _ = svc.Routes.FindByID(route.ID)
-	if route.SourceAPIKeyName != svc.Admin.stableUpstreamKeyName(1, &plus, "plus") {
+	if route.SourceAPIKeyName != stableUpstreamKeyName(1, &plus, "plus") {
 		t.Fatalf("key not re-aligned to new source group: %q", route.SourceAPIKeyName)
 	}
 }

@@ -23,9 +23,9 @@ func (a *AdminService) ListRoutes(groupID uint) ([]storage.GatewayRoute, error) 
 	var dirty []storage.GatewayRoute
 	for i := range list {
 		before := strings.TrimSpace(list[i].SourceGroupName)
-		a.enrichRouteSourceGroupName(&list[i], groupsByChannel[list[i].SourceChannelID])
+		enrichRouteSourceGroupName(&list[i], groupsByChannel[list[i].SourceChannelID])
 		after := strings.TrimSpace(list[i].SourceGroupName)
-		if after != "" && after != before && !a.isSourceGroupIDPlaceholder(after) {
+		if after != "" && after != before && !isSourceGroupIDPlaceholder(after) {
 			dirty = append(dirty, list[i])
 		}
 	}
@@ -127,7 +127,7 @@ func (a *AdminService) SaveRoutes(groupID uint, inputs []RouteInput) ([]storage.
 				kind = storage.GatewayRouteSourceMonitor
 			}
 		}
-		up := a.normalizeUpstreamProtocol(in.UpstreamProtocol)
+		up := normalizeUpstreamProtocol(in.UpstreamProtocol)
 		uaMode := NormalizeUserAgentMode(in.UserAgentMode)
 		uaCustom := strings.TrimSpace(in.UserAgentCustom)
 		if uaMode != storage.GatewayUserAgentModeCustom {
@@ -162,7 +162,7 @@ func (a *AdminService) SaveRoutes(groupID uint, inputs []RouteInput) ([]storage.
 					return nil, fmt.Errorf("route[%d]: provider %d not found", i, in.GatewayProviderID)
 				}
 				// 非 custom：账号计费倍率用 provider.default_billing_rate，避免 raw 落库 1 导致调度错位
-				a.applyProviderRouteBilling(&route, p)
+				applyProviderRouteBilling(&route, p)
 			}
 			route.SourceChannelID = 0
 			route.SourceGroupID = nil
@@ -183,7 +183,7 @@ func (a *AdminService) SaveRoutes(groupID uint, inputs []RouteInput) ([]storage.
 	groupsByChannel := a.loadGroupsByChannel(context.Background(), list)
 	// sub2api 等有 group id 的渠道：补全空/占位的源分组名称，避免 UI 只显示「源 ID: N」
 	for i := range list {
-		a.enrichRouteSourceGroupName(&list[i], groupsByChannel[list[i].SourceChannelID])
+		enrichRouteSourceGroupName(&list[i], groupsByChannel[list[i].SourceChannelID])
 	}
 	list = OrderRoutesByRate(list, groupsByChannel, dir)
 	if err := a.Routes.SaveForGroup(groupID, list); err != nil {
@@ -203,19 +203,19 @@ func (a *AdminService) EnsureRouteKeys(ctx context.Context, groupID uint) (*Ensu
 // EnsureMissingRouteKeys 只处理需要上游密钥的监控渠道路由（见 routeNeedsUpstreamKey），保存路由后自动调用。
 // 结果的 Routes 只含实际处理过的路由。
 func (a *AdminService) EnsureMissingRouteKeys(ctx context.Context, groupID uint) (*EnsureKeysResult, error) {
-	return a.ensureRouteKeys(ctx, groupID, a.routeNeedsUpstreamKey)
+	return a.ensureRouteKeys(ctx, groupID, routeNeedsUpstreamKey)
 }
 
 // routeNeedsUpstreamKey 监控渠道路由还没有上游密钥，或已存的密钥名与当前「渠道 + 源分组」的统一名对不上
 // （换过源分组、或是旧版按路由命名的 Key）。直连渠道的密钥在直连配置里，不需要。
-func (a *AdminService) routeNeedsUpstreamKey(r *storage.GatewayRoute) bool {
+func routeNeedsUpstreamKey(r *storage.GatewayRoute) bool {
 	if r.NormalizeSourceKind() == storage.GatewayRouteSourceProvider {
 		return false
 	}
 	if strings.TrimSpace(r.SourceAPIKeyCipher) == "" {
 		return true
 	}
-	return strings.TrimSpace(r.SourceAPIKeyName) != a.stableUpstreamKeyName(r.SourceChannelID, r.SourceGroupID, r.SourceGroupName)
+	return strings.TrimSpace(r.SourceAPIKeyName) != stableUpstreamKeyName(r.SourceChannelID, r.SourceGroupID, r.SourceGroupName)
 }
 
 // ensureRouteKeys only 为 nil 时处理全部路由，否则只处理 only 返回 true 的路由。
@@ -327,8 +327,8 @@ func (a *AdminService) ensureRouteKeyResult(
 		chName = ch.Name
 		rr.ChannelName = ch.Name
 	}
-	rr.Label = a.formatChannelGroupLabel(chName, r.SourceGroupName, r.SourceChannelID)
-	rr.KeyName = a.stableUpstreamKeyName(r.SourceChannelID, r.SourceGroupID, r.SourceGroupName)
+	rr.Label = formatChannelGroupLabel(chName, r.SourceGroupName, r.SourceChannelID)
+	rr.KeyName = stableUpstreamKeyName(r.SourceChannelID, r.SourceGroupID, r.SourceGroupName)
 
 	if unlock := lockKeyName(rr.KeyName); unlock != nil {
 		defer unlock()
@@ -428,7 +428,7 @@ func (a *AdminService) FetchRouteModels(ctx context.Context, groupID uint, in Ro
 // monitorRouteSecret 监控渠道路由会用的上游 Key 明文：本路由已存的、或别的路由存过的同名统一 Key，
 // 都没有时在上游找到或新建。
 func (a *AdminService) monitorRouteSecret(ctx context.Context, route *storage.GatewayRoute) (string, error) {
-	name := a.stableUpstreamKeyName(route.SourceChannelID, route.SourceGroupID, route.SourceGroupName)
+	name := stableUpstreamKeyName(route.SourceChannelID, route.SourceGroupID, route.SourceGroupName)
 	decrypt := func(r *storage.GatewayRoute) string {
 		if r == nil || strings.TrimSpace(r.SourceAPIKeyCipher) == "" || r.SourceAPIKeyName != name {
 			return ""
@@ -463,7 +463,7 @@ func (a *AdminService) ensureUpstreamKey(ctx context.Context, route *storage.Gat
 		return 0, "", "", err
 	}
 	// 统一名：渠道 + 源分组；跨网关组共用
-	keyName = a.stableUpstreamKeyName(route.SourceChannelID, route.SourceGroupID, route.SourceGroupName)
+	keyName = stableUpstreamKeyName(route.SourceChannelID, route.SourceGroupID, route.SourceGroupName)
 	legacyName := strings.TrimSpace(route.SourceAPIKeyName) // 旧版 g{组}-r{路由} 等，用于迁移复用
 
 	unlimitedQuota := boolPtr(sourceChannel.Type == storage.ChannelTypeNewAPI)
@@ -477,7 +477,7 @@ func (a *AdminService) ensureUpstreamKey(ctx context.Context, route *storage.Gat
 		return 0, "", "", err
 	}
 	var key *connector.APIKey
-	key = a.findAPIKeyByName(page.Items, keyName)
+	key = findAPIKeyByName(page.Items, keyName)
 
 	// 全量页再找：统一名 / 路由上已记的 key id / 旧名
 	if key == nil {
@@ -485,12 +485,12 @@ func (a *AdminService) ensureUpstreamKey(ctx context.Context, route *storage.Gat
 		if err != nil {
 			return 0, "", "", err
 		}
-		key = a.findAPIKeyByName(page.Items, keyName)
+		key = findAPIKeyByName(page.Items, keyName)
 		if key == nil && route.SourceAPIKeyID > 0 {
-			key = a.findAPIKeyByID(page.Items, route.SourceAPIKeyID)
+			key = findAPIKeyByID(page.Items, route.SourceAPIKeyID)
 		}
 		if key == nil && legacyName != "" && legacyName != keyName {
-			key = a.findAPIKeyByName(page.Items, legacyName)
+			key = findAPIKeyByName(page.Items, legacyName)
 		}
 	}
 

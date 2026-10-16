@@ -16,16 +16,16 @@ import (
 
 // HandleModels 返回 OpenAI 风格模型列表（GET /v1/models、/models）。
 func (rt *Runtime) HandleModels(c *gin.Context) {
-	_ = rt.ensureGatewayRequestID(c)
+	_ = ensureGatewayRequestID(c)
 	auth, err := rt.Authenticate(c)
 	if err != nil {
-		rt.writeAuthError(c, protocolOpenAI, err.Error())
+		writeAuthError(c, protocolOpenAI, err.Error())
 		return
 	}
 	rt.touchKey(auth.Key.ID, time.Now())
 	payload, err := rt.groupModelsPayload(c, auth.Group)
 	if err != nil {
-		rt.writeGatewayError(c, protocolOpenAI, http.StatusInternalServerError, "api_error", err.Error())
+		writeGatewayError(c, protocolOpenAI, http.StatusInternalServerError, "api_error", err.Error())
 		return
 	}
 	c.Data(http.StatusOK, "application/json", payload)
@@ -33,16 +33,16 @@ func (rt *Runtime) HandleModels(c *gin.Context) {
 
 // HandleModel 返回单个模型（GET /v1/models/:model）。
 func (rt *Runtime) HandleModel(c *gin.Context) {
-	_ = rt.ensureGatewayRequestID(c)
+	_ = ensureGatewayRequestID(c)
 	auth, err := rt.Authenticate(c)
 	if err != nil {
-		rt.writeAuthError(c, protocolOpenAI, err.Error())
+		writeAuthError(c, protocolOpenAI, err.Error())
 		return
 	}
 	id := strings.TrimPrefix(strings.TrimSpace(c.Param("model")), "/")
 	ids, err := rt.groupModelIDs(c, auth.Group)
 	if err != nil {
-		rt.writeGatewayError(c, protocolOpenAI, http.StatusInternalServerError, "api_error", err.Error())
+		writeGatewayError(c, protocolOpenAI, http.StatusInternalServerError, "api_error", err.Error())
 		return
 	}
 	for _, m := range ids {
@@ -51,7 +51,7 @@ func (rt *Runtime) HandleModel(c *gin.Context) {
 			return
 		}
 	}
-	rt.writeGatewayError(c, protocolOpenAI, http.StatusNotFound, "invalid_request_error", fmt.Sprintf("model %q not found", id))
+	writeGatewayError(c, protocolOpenAI, http.StatusNotFound, "invalid_request_error", fmt.Sprintf("model %q not found", id))
 }
 
 // groupModelIDs 组对外的模型 id 列表（与 /v1/models 同源、同缓存）。
@@ -200,20 +200,20 @@ func (rt *Runtime) groupModelsPayload(c *gin.Context, group *storage.GatewayGrou
 // 对齐 sub2api：优先透传上游；失败则本地粗估。
 
 func (rt *Runtime) HandleCountTokens(c *gin.Context) {
-	_ = rt.ensureGatewayRequestID(c)
+	_ = ensureGatewayRequestID(c)
 	auth, err := rt.Authenticate(c)
 	if err != nil {
-		rt.writeAuthError(c, protocolAnthropic, err.Error())
+		writeAuthError(c, protocolAnthropic, err.Error())
 		return
 	}
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		rt.writeGatewayError(c, protocolAnthropic, http.StatusBadRequest, "invalid_request_error", "failed to read body")
+		writeGatewayError(c, protocolAnthropic, http.StatusBadRequest, "invalid_request_error", "failed to read body")
 		return
 	}
 	body, err = rt.applySystemPrompt(auth.Group, auth.Key, "/v1/messages/count_tokens", protocol.KindAnthropic, body)
 	if err != nil {
-		rt.writeGatewayError(c, protocolAnthropic, http.StatusBadRequest, "invalid_request_error", "system prompt injection failed: "+err.Error())
+		writeGatewayError(c, protocolAnthropic, http.StatusBadRequest, "invalid_request_error", "system prompt injection failed: "+err.Error())
 		return
 	}
 	// 尝试转发到第一条可用路由的 /v1/messages/count_tokens（只看转发模型接这个模型的路由）
@@ -230,7 +230,7 @@ func (rt *Runtime) HandleCountTokens(c *gin.Context) {
 		if rerr != nil {
 			continue
 		}
-		rt.applyRouteUserAgent(target, auth.Group, &route)
+		applyRouteUserAgent(target, auth.Group, &route)
 		status, _, respBody, _, ferr := rt.forwardOnce(c.Request.Context(), upstreamCall{
 			target: target, path: "/v1/messages/count_tokens", method: http.MethodPost,
 			header: c.Request.Header, body: body, kind: protocol.KindAnthropic,
@@ -241,7 +241,7 @@ func (rt *Runtime) HandleCountTokens(c *gin.Context) {
 		}
 	}
 	// 本地粗估（字符/4）
-	inputTokens := rt.estimateTokenCount(body)
+	inputTokens := estimateTokenCount(body)
 	c.JSON(http.StatusOK, gin.H{
 		"input_tokens": inputTokens,
 		"type":         "message_count_tokens_result",
@@ -250,10 +250,10 @@ func (rt *Runtime) HandleCountTokens(c *gin.Context) {
 
 // HandleUsage 用量相关端点。
 func (rt *Runtime) HandleUsage(c *gin.Context) {
-	_ = rt.ensureGatewayRequestID(c)
+	_ = ensureGatewayRequestID(c)
 	auth, err := rt.Authenticate(c)
 	if err != nil {
-		rt.writeAuthError(c, protocolOpenAI, err.Error())
+		writeAuthError(c, protocolOpenAI, err.Error())
 		return
 	}
 	if rt.Usage == nil {
@@ -266,7 +266,7 @@ func (rt *Runtime) HandleUsage(c *gin.Context) {
 		PageSize:     50,
 	})
 	if err != nil {
-		rt.writeGatewayError(c, protocolOpenAI, http.StatusInternalServerError, "api_error", err.Error())
+		writeGatewayError(c, protocolOpenAI, http.StatusInternalServerError, "api_error", err.Error())
 		return
 	}
 	stats, _ := rt.Usage.Stats(storage.GatewayUsageQuery{GatewayKeyID: auth.Key.ID})

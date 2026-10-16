@@ -13,7 +13,7 @@ func TestApplyProviderRouteBilling_RawUsesDefault(t *testing.T) {
 		RateConvertValue:      1,
 		BillingRateMultiplier: 1, // 旧前端错误落库
 	}
-	(&AdminService{core: &core{}}).applyProviderRouteBilling(route, p)
+	applyProviderRouteBilling(route, p)
 	if route.BillingRateMultiplier != 0.01 {
 		t.Fatalf("billing=%v want 0.01", route.BillingRateMultiplier)
 	}
@@ -29,7 +29,7 @@ func TestApplyProviderRouteBilling_CustomKeepsValue(t *testing.T) {
 		RateConvertValue:      0.2,
 		BillingRateMultiplier: 1,
 	}
-	(&AdminService{core: &core{}}).applyProviderRouteBilling(route, p)
+	applyProviderRouteBilling(route, p)
 	if route.BillingRateMultiplier != 0.2 || route.RateConvertValue != 0.2 {
 		t.Fatalf("custom: convert=%v billing=%v", route.RateConvertValue, route.BillingRateMultiplier)
 	}
@@ -42,7 +42,7 @@ func TestApplyProviderRouteBilling_CustomEmptyFallsBack(t *testing.T) {
 		RateConvertValue:      0,
 		BillingRateMultiplier: 0,
 	}
-	(&AdminService{core: &core{}}).applyProviderRouteBilling(route, p)
+	applyProviderRouteBilling(route, p)
 	if route.RateConvertValue != 0.05 || route.BillingRateMultiplier != 0.05 {
 		t.Fatalf("got convert=%v billing=%v", route.RateConvertValue, route.BillingRateMultiplier)
 	}

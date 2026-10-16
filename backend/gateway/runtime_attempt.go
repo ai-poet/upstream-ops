@@ -56,10 +56,10 @@ func (rt *Runtime) prepareAttempt(req *relayRequest, at *relayAttempt, st *failo
 	}
 	at.target = target
 	// 转发：组+路由 UA 三选一（透传 / 组 / 自定义）
-	rt.applyRouteUserAgent(target, req.group, &at.route)
+	applyRouteUserAgent(target, req.group, &at.route)
 
 	// 协议：路由显式优先；route=auto 且为 provider 时用 provider 默认
-	at.upstreamKind = rt.routeUpstreamKind(&at.route, target, kind, at.upstreamModel)
+	at.upstreamKind = routeUpstreamKind(&at.route, target, kind, at.upstreamModel)
 	// 透传端点不跨协议：上游协议跟随入站（Gemini 透传的路由已在选路时过滤）
 	if protocol.IsPassthroughEndpoint(path) {
 		at.upstreamKind = protocol.NormalizeKind(kind)
@@ -67,7 +67,7 @@ func (rt *Runtime) prepareAttempt(req *relayRequest, at *relayAttempt, st *failo
 	// legacy completions 不跨协议
 	if protocol.IsOpenAIFamily(kind) && strings.Contains(path, "/completions") && !strings.Contains(path, "/chat/") {
 		if at.upstreamKind == protocolAnthropic || at.upstreamKind == protocol.KindOpenAIResponses || at.upstreamKind == protocol.KindGemini {
-			rt.writeGatewayError(c, kind, http.StatusBadRequest, "invalid_request_error",
+			writeGatewayError(c, kind, http.StatusBadRequest, "invalid_request_error",
 				"protocol conversion for /v1/completions is not supported; use /v1/chat/completions")
 			return attemptDone
 		}
@@ -78,7 +78,7 @@ func (rt *Runtime) prepareAttempt(req *relayRequest, at *relayAttempt, st *failo
 	if at.upstreamModel != req.model && isMultipartContentType(req.contentType) {
 		body = rewriteMultipartModel(req.contentType, req.body, at.upstreamModel)
 	}
-	fwdBody, upstreamPath, plan, convErr := rt.planUpstreamRequest(req.convCtx, body, kind, at.upstreamKind, req.model, at.upstreamModel, req.stream, path)
+	fwdBody, upstreamPath, plan, convErr := planUpstreamRequest(req.convCtx, body, kind, at.upstreamKind, req.model, at.upstreamModel, req.stream, path)
 	if convErr != nil {
 		// 这条路由的上游协议接不住该请求：记一条配置错误，换下一条路由
 		st.lastErr = convErr
@@ -92,7 +92,7 @@ func (rt *Runtime) prepareAttempt(req *relayRequest, at *relayAttempt, st *failo
 		}})
 		// 请求里的图片 / 文件下载失败：换哪条路由都一样，直接回 400
 		if mediaErr := mediaFetchFailure(req.convCtx); mediaErr != nil {
-			rt.writeGatewayError(c, kind, http.StatusBadRequest, "invalid_request_error", "failed to load media from the request: "+mediaErr.Error())
+			writeGatewayError(c, kind, http.StatusBadRequest, "invalid_request_error", "failed to load media from the request: "+mediaErr.Error())
 			return attemptDone
 		}
 		return attemptNextRoute
@@ -139,7 +139,7 @@ func (rt *Runtime) sendAttempt(req *relayRequest, at *relayAttempt) attemptOutco
 // writeAttemptSuccess 非流式成功：整包转换后写出，恢复路由调度并记账。
 func (rt *Runtime) writeAttemptSuccess(req *relayRequest, at *relayAttempt, out attemptOutcome) {
 	c := req.c
-	tokens := rt.parseUsageByKind(out.Body, false, at.upstreamKind)
+	tokens := parseUsageByKind(out.Body, false, at.upstreamKind)
 	at.meta.BillingInput = billingInputWithResponse(req.billing, out.Body)
 	clientBody := rt.convertResponseWithPlan(c.Request.Context(), out.Body, at.plan)
 	if at.plan.Converted && rt.Log != nil && len(clientBody) == 0 && len(out.Body) > 0 {
@@ -148,7 +148,7 @@ func (rt *Runtime) writeAttemptSuccess(req *relayRequest, at *relayAttempt, out 
 	if protocol.IsPassthroughEndpoint(req.in.Path) && c.Request.Method != http.MethodGet {
 		rt.tasks.remember(req.group.ID, at.route.ID, taskIDsFromResponse(out.Body))
 	}
-	rt.copyResponseHeaders(c.Writer.Header(), out.Headers)
+	copyResponseHeaders(c.Writer.Header(), out.Headers)
 	if at.plan.Converted {
 		c.Writer.Header().Del("Content-Length")
 		c.Header("Content-Type", "application/json")
@@ -168,7 +168,7 @@ func (rt *Runtime) writeAttemptSuccess(req *relayRequest, at *relayAttempt, out 
 // 若已写出 [DONE]/message_stop 后客户端才关连接，forwardStream 会清掉 client 标记，记普通成功。
 func (rt *Runtime) finishCommittedStream(req *relayRequest, at *relayAttempt, out attemptOutcome) {
 	at.meta.BillingInput = billingInputWithResponse(req.billing, out.Body)
-	onlyClientDisconnect := rt.isClientDisconnectAfterCommit(out.ClientDisconnected, out.StreamErr)
+	onlyClientDisconnect := isClientDisconnectAfterCommit(out.ClientDisconnected, out.StreamErr)
 	// 仅客户端断开仍算业务成功；真实 stream 错误才算失败。
 	success := out.StreamErr == nil || onlyClientDisconnect
 	errInfo := rt.committedStreamErrorInfo(req, at, out, onlyClientDisconnect)
@@ -204,15 +204,15 @@ func (rt *Runtime) committedStreamErrorInfo(req *relayRequest, at *relayAttempt,
 	}
 	method, upstreamURL := req.c.Request.Method, at.meta.UpstreamURL
 	gwCfg := rt.gatewayRuntime()
-	headerJSON := rt.formatDebugHeaders(out.Headers, gwCfg.UsageErrorHeadersJSONBytes, gwCfg.UsageErrorHeaderValueRunes)
-	headerPlain := rt.formatHeadersPlain(out.Headers, gwCfg.UsageErrorHeaderValueRunes)
+	headerJSON := formatDebugHeaders(out.Headers, gwCfg.UsageErrorHeadersJSONBytes, gwCfg.UsageErrorHeaderValueRunes)
+	headerPlain := formatHeadersPlain(out.Headers, gwCfg.UsageErrorHeaderValueRunes)
 	var detail strings.Builder
 	if !onlyClientDisconnect {
 		fmt.Fprintf(&detail,
 			"stream error after commit\nmethod: %s\nurl: %s\nerror: %s\nclient_disconnected: %v\n",
 			method, upstreamURL, out.StreamErr.Error(), out.ClientDisconnected,
 		)
-		rt.appendUpstreamHeadersToDetail(&detail, headerPlain)
+		appendUpstreamHeadersToDetail(&detail, headerPlain)
 		return usageErrorInfo{
 			Type:            "transport",
 			Summary:         out.StreamErr.Error(),
@@ -233,7 +233,7 @@ func (rt *Runtime) committedStreamErrorInfo(req *relayRequest, at *relayAttempt,
 		"tokens: input=%d output=%d cache_read=%d cache_creation=%d\n",
 		tokens.InputTokens, tokens.OutputTokens, tokens.CacheReadTokens, tokens.CacheCreationTokens,
 	)
-	rt.appendUpstreamHeadersToDetail(&detail, headerPlain)
+	appendUpstreamHeadersToDetail(&detail, headerPlain)
 	if rt.Log != nil {
 		rt.Log.Info("gateway stream client disconnected after commit",
 			"request_id", req.id,
@@ -260,9 +260,9 @@ func (rt *Runtime) handleAttemptFailure(req *relayRequest, at *relayAttempt, st 
 	errInfo := rt.attemptErrorInfo(req, at, out)
 	// 客户端断开 / 请求 context 已取消：父 context 污染会导致后续重试/顺延全部变成
 	// "context canceled"，且误伤路由冷却。此类错误应立刻停止，不再重试/顺延/冷却。
-	clientCanceled := rt.isClientContextError(out.Err, c) || out.ClientDisconnected
+	clientCanceled := isClientContextError(out.Err, c) || out.ClientDisconnected
 	if clientCanceled {
-		rt.annotateClientContextError(&errInfo, c, at.meta.UpstreamURL, c.Request.Method, out.Err)
+		annotateClientContextError(&errInfo, c, at.meta.UpstreamURL, c.Request.Method, out.Err)
 	}
 	decision := rt.classifyFailure(req.group, out.Status, out.Headers, out.Body, out.Err, req.in.TaskID != "", req.model, at.upstreamModel)
 	if decision.Reason != "" && !clientCanceled {
@@ -272,18 +272,18 @@ func (rt *Runtime) handleAttemptFailure(req *relayRequest, at *relayAttempt, st 
 		st.lastErr = out.Err
 	} else {
 		st.lastStatus = out.Status
-		st.lastBody = rt.convertErrorBody(out.Body, req.in.Kind, at.upstreamKind, at.plan.Converted)
+		st.lastBody = convertErrorBody(out.Body, req.in.Kind, at.upstreamKind, at.plan.Converted)
 		st.lastErr = fmt.Errorf("upstream status %d: %s", out.Status, errInfo.Summary)
 	}
 	failed := usageOutcome{status: out.Status, errInfo: errInfo, durationMS: out.durationMS, firstTokenMS: out.FirstTokenMS}
 
 	// 不可重试的错误（默认 4xx、上下文超长等）：直接回显给客户端
 	if decision.Action == failStop && !clientCanceled && out.Err == nil {
-		clientBody := rt.injectUpstreamOpsRequestID(st.lastBody, req.id)
-		rt.copyResponseHeaders(c.Writer.Header(), out.Headers)
+		clientBody := injectUpstreamOpsRequestID(st.lastBody, req.id)
+		copyResponseHeaders(c.Writer.Header(), out.Headers)
 		c.Writer.Header().Del("Content-Length")
 		c.Header("Content-Type", "application/json")
-		rt.setGatewayRequestIDHeaders(c, req.id)
+		setGatewayRequestIDHeaders(c, req.id)
 		c.Status(out.Status)
 		_, _ = c.Writer.Write(clientBody)
 		rt.recordAttempt(req, at, failed)
@@ -323,7 +323,7 @@ func (rt *Runtime) attemptErrorInfo(req *relayRequest, at *relayAttempt, out att
 	method, upstreamURL := req.c.Request.Method, at.meta.UpstreamURL
 	gwCfg := rt.gatewayRuntime()
 	errInfo := rt.buildUpstreamErrorInfoCfg(gwCfg, out.Err, out.Status, out.Headers, out.Body, upstreamURL, method)
-	if !rt.isFirstTokenTimeout(out.Err) {
+	if !isFirstTokenTimeout(out.Err) {
 		return errInfo
 	}
 	errInfo.Type = "transport"
@@ -338,9 +338,9 @@ func (rt *Runtime) attemptErrorInfo(req *relayRequest, at *relayAttempt, out att
 		method, upstreamURL, appliedSec, out.durationMS,
 	)
 	// 保留已拿到的上游响应头（若有）
-	rt.appendUpstreamHeadersToDetail(&detail, rt.formatHeadersPlain(out.Headers, gwCfg.UsageErrorHeaderValueRunes))
+	appendUpstreamHeadersToDetail(&detail, formatHeadersPlain(out.Headers, gwCfg.UsageErrorHeaderValueRunes))
 	if errInfo.UpstreamHeaders == "" {
-		errInfo.UpstreamHeaders = rt.formatDebugHeaders(out.Headers, gwCfg.UsageErrorHeadersJSONBytes, gwCfg.UsageErrorHeaderValueRunes)
+		errInfo.UpstreamHeaders = formatDebugHeaders(out.Headers, gwCfg.UsageErrorHeadersJSONBytes, gwCfg.UsageErrorHeaderValueRunes)
 	}
 	errInfo.Detail = detail.String()
 	return errInfo
@@ -350,7 +350,7 @@ func (rt *Runtime) attemptErrorInfo(req *relayRequest, at *relayAttempt, out att
 func (rt *Runtime) pauseRouteAfterFailure(req *relayRequest, at *relayAttempt, decision failureDecision, errInfo usageErrorInfo, status int, lastTry bool) *time.Time {
 	reason := errInfo.Summary
 	if strings.TrimSpace(errInfo.Detail) != "" {
-		reason = rt.truncateRunes(errInfo.Detail, 4000)
+		reason = truncateRunes(errInfo.Detail, 4000)
 	}
 	switch {
 	case decision.Action == failDisableRoute:

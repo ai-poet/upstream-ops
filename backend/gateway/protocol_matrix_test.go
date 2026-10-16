@@ -246,7 +246,7 @@ func TestProtocolMatrix_RequestConversion(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			fwd, path, converted, err := (&AdminService{core: &core{}}).prepareUpstreamRequest(
+			fwd, path, converted, err := prepareUpstreamRequest(
 				[]byte(tc.body), tc.in, tc.up, "m", true, tc.inPath,
 			)
 			if err != nil {
@@ -421,7 +421,7 @@ func TestProtocolMatrix_TrueStreamAllDirections(t *testing.T) {
 			c.Request = httptest.NewRequest(http.MethodPost, "/test", nil)
 
 			// 请求先做协议转换（与线上一致）
-			fwd, upPath, converted, err := (&AdminService{core: &core{}}).prepareUpstreamRequest(
+			fwd, upPath, converted, err := prepareUpstreamRequest(
 				[]byte(tc.clientReq), tc.inbound, tc.upstream, "m", true, protocol.PathFor(tc.inbound, ""),
 			)
 			if err != nil {

@@ -28,7 +28,7 @@ func TestCommitSSEHeaders(t *testing.T) {
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 
-	if err := (&Runtime{core: &core{}}).commitSSEHeaders(c, http.Header{"X-Request-Id": []string{"u1"}}); err != nil {
+	if err := commitSSEHeaders(c, http.Header{"X-Request-Id": []string{"u1"}}); err != nil {
 		t.Fatal(err)
 	}
 	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
@@ -42,7 +42,7 @@ func TestCommitSSEHeaders(t *testing.T) {
 		t.Fatalf("X-Request-Id=%q, want upstream u1", got)
 	}
 	opsID := rec.Header().Get("X-Upstream-Ops-Request-Id")
-	if !(&Runtime{core: &core{}}).isGatewayGeneratedRequestID(opsID) {
+	if !isGatewayGeneratedRequestID(opsID) {
 		t.Fatalf("want gateway ops request id, got %q", opsID)
 	}
 	if rec.Code != http.StatusOK {
@@ -55,8 +55,8 @@ func TestWriteStreamTerminalError_OpenAI(t *testing.T) {
 	rec := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
-	_ = (&Runtime{core: &core{}}).commitSSEHeaders(c, nil)
-	if err := (&Runtime{core: &core{}}).writeStreamTerminalError(c, protocol.KindOpenAIChat, "api_error", "boom"); err != nil {
+	_ = commitSSEHeaders(c, nil)
+	if err := writeStreamTerminalError(c, protocol.KindOpenAIChat, "api_error", "boom"); err != nil {
 		t.Fatal(err)
 	}
 	body := rec.Body.String()
@@ -73,8 +73,8 @@ func TestWriteStreamTerminalError_Anthropic(t *testing.T) {
 	rec := &flushRecorder{ResponseRecorder: httptest.NewRecorder()}
 	c, _ := gin.CreateTestContext(rec)
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
-	_ = (&Runtime{core: &core{}}).commitSSEHeaders(c, nil)
-	if err := (&Runtime{core: &core{}}).writeStreamTerminalError(c, protocol.KindAnthropic, "stream_timeout", "idle"); err != nil {
+	_ = commitSSEHeaders(c, nil)
+	if err := writeStreamTerminalError(c, protocol.KindAnthropic, "stream_timeout", "idle"); err != nil {
 		t.Fatal(err)
 	}
 	body := rec.Body.String()
@@ -397,8 +397,8 @@ func TestSSEFrameIsTerminal(t *testing.T) {
 		{"", false},
 	}
 	for _, tc := range cases {
-		if got := (&Runtime{core: &core{}}).sseFrameIsTerminal([]byte(tc.in)); got != tc.want {
-			t.Fatalf("(&Runtime{core: &core{}}).sseFrameIsTerminal(%q)=%v want %v", tc.in, got, tc.want)
+		if got := sseFrameIsTerminal([]byte(tc.in)); got != tc.want {
+			t.Fatalf("sseFrameIsTerminal(%q)=%v want %v", tc.in, got, tc.want)
 		}
 	}
 }
@@ -406,7 +406,7 @@ func TestSSEFrameIsTerminal(t *testing.T) {
 func TestFinalizeStreamClientDisconnect(t *testing.T) {
 	// 中途断开：保留 client 标记并补 StreamErr
 	mid := streamAttemptResult{ClientDisconnected: true}
-	(&Runtime{core: &core{}}).finalizeStreamClientDisconnect(&mid)
+	finalizeStreamClientDisconnect(&mid)
 	if !mid.ClientDisconnected || !errors.Is(mid.StreamErr, errClientDisconnected) {
 		t.Fatalf("mid=%+v", mid)
 	}
@@ -417,14 +417,14 @@ func TestFinalizeStreamClientDisconnect(t *testing.T) {
 		DownstreamComplete: true,
 		StreamErr:          errClientDisconnected,
 	}
-	(&Runtime{core: &core{}}).finalizeStreamClientDisconnect(&done)
+	finalizeStreamClientDisconnect(&done)
 	if done.ClientDisconnected || done.StreamErr != nil {
 		t.Fatalf("done=%+v", done)
 	}
 
 	// 无断开：不动
 	ok := streamAttemptResult{DownstreamComplete: true}
-	(&Runtime{core: &core{}}).finalizeStreamClientDisconnect(&ok)
+	finalizeStreamClientDisconnect(&ok)
 	if ok.ClientDisconnected || ok.StreamErr != nil {
 		t.Fatalf("ok=%+v", ok)
 	}
@@ -468,22 +468,22 @@ func TestForwardStream_AnthropicToOpenAIConvert(t *testing.T) {
 }
 
 func TestStreamKeepaliveFrame(t *testing.T) {
-	if got := string((&Runtime{core: &core{}}).streamKeepaliveFrame(protocol.KindOpenAIChat)); got != ":\n\n" {
+	if got := string(streamKeepaliveFrame(protocol.KindOpenAIChat)); got != ":\n\n" {
 		t.Fatalf("openai keepalive=%q", got)
 	}
-	if got := string((&Runtime{core: &core{}}).streamKeepaliveFrame(protocol.KindAnthropic)); !strings.Contains(got, "ping") {
+	if got := string(streamKeepaliveFrame(protocol.KindAnthropic)); !strings.Contains(got, "ping") {
 		t.Fatalf("anthropic keepalive=%q", got)
 	}
 }
 
 func TestSSEEventHasPayload(t *testing.T) {
-	if (&Runtime{core: &core{}}).sseEventHasPayload(nil) || (&Runtime{core: &core{}}).sseEventHasPayload([]string{": PING", ":"}) {
+	if sseEventHasPayload(nil) || sseEventHasPayload([]string{": PING", ":"}) {
 		t.Fatal("comment-only events must not count as payload")
 	}
-	if !(&Runtime{core: &core{}}).sseEventHasPayload([]string{"data: {\"x\":1}"}) {
+	if !sseEventHasPayload([]string{"data: {\"x\":1}"}) {
 		t.Fatal("data line should count as payload")
 	}
-	if !(&Runtime{core: &core{}}).sseEventHasPayload([]string{"event: response.created", "data: {}"}) {
+	if !sseEventHasPayload([]string{"event: response.created", "data: {}"}) {
 		t.Fatal("event+data should count as payload")
 	}
 }

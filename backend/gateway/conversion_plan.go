@@ -43,7 +43,7 @@ func isProtocolConvertError(err error) bool {
 }
 
 // planUpstreamRequest 按入站 / 上游协议准备转发 body 与 path，并给出后续响应转换方案。
-func (svc *core) planUpstreamRequest(
+func planUpstreamRequest(
 	ctx context.Context,
 	body []byte,
 	inbound, upstream protocolKind,
@@ -97,7 +97,7 @@ func (svc *core) planUpstreamRequest(
 		plan.Engine = protocol.EngineRelayKit
 		fwd = out
 	} else {
-		out, bridge, err := svc.prepareLegacyUpstreamRequest(RewriteModelInBody(body, upstreamModel), in, up, upstreamModel, stream)
+		out, bridge, err := prepareLegacyUpstreamRequest(RewriteModelInBody(body, upstreamModel), in, up, upstreamModel, stream)
 		if err != nil {
 			return nil, "", nil, &errProtocolConvert{err: err}
 		}
@@ -217,9 +217,9 @@ func (rt *Runtime) convertResponseWithPlan(ctx context.Context, respBody []byte,
 		if plan.Inbound == protocol.KindGemini || plan.Upstream == protocol.KindGemini {
 			return respBody
 		}
-		return rt.convertUpstreamResponse(respBody, plan.Inbound, plan.Upstream, plan.Model, false, true)
+		return convertUpstreamResponse(respBody, plan.Inbound, plan.Upstream, plan.Model, false, true)
 	}
-	return rt.convertUpstreamResponseWithToolBridge(respBody, plan.Inbound, plan.Upstream, plan.Model, false, true, plan.Bridge)
+	return convertUpstreamResponseWithToolBridge(respBody, plan.Inbound, plan.Upstream, plan.Model, false, true, plan.Bridge)
 }
 
 // newStreamConverter 创建上游 SSE → 客户端 SSE 的增量转换器；未转换时返回 nil（原样透传）。

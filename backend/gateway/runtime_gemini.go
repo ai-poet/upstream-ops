@@ -35,10 +35,10 @@ func parseGeminiModelAction(raw string) (model, action string) {
 
 // HandleGeminiGenerate POST /v1beta/models/{model}:{action}
 func (rt *Runtime) HandleGeminiGenerate(c *gin.Context) {
-	_ = rt.ensureGatewayRequestID(c)
+	_ = ensureGatewayRequestID(c)
 	model, action := parseGeminiModelAction(c.Param("modelAction"))
 	if !geminiModelSegment.MatchString(model) {
-		rt.writeGatewayError(c, protocol.KindGemini, http.StatusBadRequest, "invalid_request_error", "invalid model name")
+		writeGatewayError(c, protocol.KindGemini, http.StatusBadRequest, "invalid_request_error", "invalid model name")
 		return
 	}
 	path := "/v1beta/models/" + model + ":" + action
@@ -57,7 +57,7 @@ func (rt *Runtime) HandleGeminiGenerate(c *gin.Context) {
 	case "embedcontent", "batchembedcontents":
 		rt.handleForward(c, forwardRequest{Path: path, Kind: protocol.KindGemini, Model: model})
 	default:
-		rt.writeGatewayError(c, protocol.KindGemini, http.StatusNotFound, "not_found_error", fmt.Sprintf("unsupported action %q", action))
+		writeGatewayError(c, protocol.KindGemini, http.StatusNotFound, "not_found_error", fmt.Sprintf("unsupported action %q", action))
 	}
 }
 
@@ -67,7 +67,7 @@ func (rt *Runtime) HandleGeminiCachedContents(c *gin.Context) {
 	path := "/v1beta/cachedContents"
 	if id != "" {
 		if !geminiModelSegment.MatchString(id) {
-			rt.writeGatewayError(c, protocol.KindGemini, http.StatusBadRequest, "invalid_request_error", "invalid cached content id")
+			writeGatewayError(c, protocol.KindGemini, http.StatusBadRequest, "invalid_request_error", "invalid cached content id")
 			return
 		}
 		path += "/" + id
@@ -79,12 +79,12 @@ func (rt *Runtime) HandleGeminiCachedContents(c *gin.Context) {
 func (rt *Runtime) handleGeminiCountTokens(c *gin.Context, model string) {
 	auth, err := rt.Authenticate(c)
 	if err != nil {
-		rt.writeAuthError(c, protocol.KindGemini, err.Error())
+		writeAuthError(c, protocol.KindGemini, err.Error())
 		return
 	}
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		rt.writeGatewayError(c, protocol.KindGemini, http.StatusBadRequest, "invalid_request_error", "failed to read body")
+		writeGatewayError(c, protocol.KindGemini, http.StatusBadRequest, "invalid_request_error", "failed to read body")
 		return
 	}
 	routes, _ := rt.cachedRoutes(auth.Group.ID)
@@ -105,10 +105,10 @@ func (rt *Runtime) handleGeminiCountTokens(c *gin.Context, model string) {
 		if rerr != nil {
 			continue
 		}
-		if rt.routeUpstreamKind(&route, target, protocol.KindGemini, upstreamModel) != protocol.KindGemini {
+		if routeUpstreamKind(&route, target, protocol.KindGemini, upstreamModel) != protocol.KindGemini {
 			continue
 		}
-		rt.applyRouteUserAgent(target, auth.Group, &route)
+		applyRouteUserAgent(target, auth.Group, &route)
 		status, _, respBody, _, ferr := rt.forwardOnce(c.Request.Context(), upstreamCall{
 			target: target, path: "/v1beta/models/" + upstreamModel + ":countTokens", method: http.MethodPost,
 			header: c.Request.Header, body: body, kind: protocol.KindGemini,
@@ -118,15 +118,15 @@ func (rt *Runtime) handleGeminiCountTokens(c *gin.Context, model string) {
 			return
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"totalTokens": rt.estimateTokenCount(body)})
+	c.JSON(http.StatusOK, gin.H{"totalTokens": estimateTokenCount(body)})
 }
 
 // routeUpstreamKind 路由（含直连 provider 默认）解析出的上游协议。
-func (rt *Runtime) routeUpstreamKind(route *storage.GatewayRoute, target *upstreamTarget, inbound protocolKind, upstreamModel string) protocolKind {
-	routeProto := rt.normalizeUpstreamProtocol(route.UpstreamProtocol)
+func routeUpstreamKind(route *storage.GatewayRoute, target *upstreamTarget, inbound protocolKind, upstreamModel string) protocolKind {
+	routeProto := normalizeUpstreamProtocol(route.UpstreamProtocol)
 	if route.NormalizeSourceKind() == storage.GatewayRouteSourceProvider &&
 		routeProto == storage.GatewayUpstreamProtocolAuto && target != nil && target.Provider != nil {
-		if p := rt.normalizeProviderProtocol(target.Provider.UpstreamProtocol); p != storage.GatewayUpstreamProtocolAuto {
+		if p := normalizeProviderProtocol(target.Provider.UpstreamProtocol); p != storage.GatewayUpstreamProtocolAuto {
 			routeProto = p
 		}
 	}
@@ -137,12 +137,12 @@ func (rt *Runtime) routeUpstreamKind(route *storage.GatewayRoute, target *upstre
 // 协议显式为 gemini（含直连渠道的默认协议），或为 auto 且模型像 Gemini 系。
 // 不带模型的透传（如 GET cachedContents）交给 auto 路由碰运气。
 func (rt *Runtime) geminiPassthroughCapable(route *storage.GatewayRoute, upstreamModel string) bool {
-	proto := rt.normalizeUpstreamProtocol(route.UpstreamProtocol)
+	proto := normalizeUpstreamProtocol(route.UpstreamProtocol)
 	if proto == storage.GatewayUpstreamProtocolAuto &&
 		route.NormalizeSourceKind() == storage.GatewayRouteSourceProvider &&
 		rt.Providers != nil && route.GatewayProviderID > 0 {
 		if p, err := rt.cachedProvider(route.GatewayProviderID); err == nil && p != nil {
-			if pp := rt.normalizeProviderProtocol(p.UpstreamProtocol); pp != storage.GatewayUpstreamProtocolAuto {
+			if pp := normalizeProviderProtocol(p.UpstreamProtocol); pp != storage.GatewayUpstreamProtocolAuto {
 				proto = pp
 			}
 		}
@@ -158,15 +158,15 @@ func (rt *Runtime) geminiPassthroughCapable(route *storage.GatewayRoute, upstrea
 
 // HandleGeminiModels GET /v1beta/models 与 /v1beta/models/{model}
 func (rt *Runtime) HandleGeminiModels(c *gin.Context) {
-	_ = rt.ensureGatewayRequestID(c)
+	_ = ensureGatewayRequestID(c)
 	auth, err := rt.Authenticate(c)
 	if err != nil {
-		rt.writeAuthError(c, protocol.KindGemini, err.Error())
+		writeAuthError(c, protocol.KindGemini, err.Error())
 		return
 	}
 	ids, err := rt.groupModelIDs(c, auth.Group)
 	if err != nil {
-		rt.writeGatewayError(c, protocol.KindGemini, http.StatusInternalServerError, "api_error", err.Error())
+		writeGatewayError(c, protocol.KindGemini, http.StatusInternalServerError, "api_error", err.Error())
 		return
 	}
 	describe := func(id string) gin.H {
@@ -185,7 +185,7 @@ func (rt *Runtime) HandleGeminiModels(c *gin.Context) {
 				return
 			}
 		}
-		rt.writeGatewayError(c, protocol.KindGemini, http.StatusNotFound, "not_found_error", fmt.Sprintf("model %q not found", want))
+		writeGatewayError(c, protocol.KindGemini, http.StatusNotFound, "not_found_error", fmt.Sprintf("model %q not found", want))
 		return
 	}
 	models := make([]gin.H, 0, len(ids))
