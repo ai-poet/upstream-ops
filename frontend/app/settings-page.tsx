@@ -70,6 +70,8 @@ const defaultGatewayConfig: SystemGatewayConfig = {
   streamKeepaliveSeconds: 15,
   streamIdleTimeoutSeconds: 120,
   streamMaxLineBytes: 8 * 1024 * 1024,
+  maxRequestBodyBytes: 64 * 1024 * 1024,
+  metricsToken: "",
   protocolEngine: "relaykit",
   autoDisableStatusCodes: "401",
   autoRecoverMinutes: 10,
@@ -1047,6 +1049,34 @@ export default function SettingsPage() {
                     setForm((prev) =>
                       patchGateway(prev, "streamMaxLineBytes", num(e.target.value)),
                     )
+                  }
+                />
+              </Field>
+              <Field
+                label="请求体上限（字节）"
+                description={`客户端请求体超过此大小直接回 413，默认 ${defaultGatewayConfig.maxRequestBodyBytes}（64 MB）。`}
+              >
+                <Input
+                  type="number"
+                  min={1048576}
+                  value={String(form.gateway?.maxRequestBodyBytes ?? defaultGatewayConfig.maxRequestBodyBytes)}
+                  onChange={(e) =>
+                    setForm((prev) =>
+                      patchGateway(prev, "maxRequestBodyBytes", num(e.target.value)),
+                    )
+                  }
+                />
+              </Field>
+              <Field
+                label="指标令牌"
+                description="填写后开放 GET /metrics（Prometheus 文本格式），请求需带 Authorization: Bearer 令牌；留空则不开放。"
+              >
+                <Input
+                  type="password"
+                  autoComplete="off"
+                  value={form.gateway?.metricsToken ?? ""}
+                  onChange={(e) =>
+                    setForm((prev) => patchGateway(prev, "metricsToken", e.target.value))
                   }
                 />
               </Field>

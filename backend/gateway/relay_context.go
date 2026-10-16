@@ -205,6 +205,8 @@ type usageOutcome struct {
 	errInfo      usageErrorInfo
 	durationMS   int64
 	firstTokenMS *int64
+	// err 本次尝试的传输错误（只用来给指标分类，不落库）
+	err error
 }
 
 // usageRecord 一条用量记录的全部输入（见 recordUsage）。
@@ -226,8 +228,9 @@ type usageRecord struct {
 	usageOutcome
 }
 
-// recordAttempt 为一次转发尝试记一条用量。
+// recordAttempt 为一次转发尝试记一条用量，并计入上游尝试指标。
 func (rt *Runtime) recordAttempt(req *relayRequest, at *relayAttempt, out usageOutcome) {
+	rt.metrics.observeAttempt(out.success, out.errInfo.Type, out.status, isFirstTokenTimeout(out.err))
 	rt.recordUsage(req.c, usageRecord{
 		key:            req.key,
 		group:          req.group,

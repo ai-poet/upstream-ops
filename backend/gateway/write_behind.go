@@ -29,9 +29,10 @@ const (
 )
 
 type writeBehind struct {
-	usage *storage.GatewayUsageLogs
-	keys  *storage.GatewayKeys
-	log   *slog.Logger
+	usage   *storage.GatewayUsageLogs
+	keys    *storage.GatewayKeys
+	log     *slog.Logger
+	metrics *Metrics // 可为 nil
 
 	usageCh chan *storage.GatewayUsageLog
 	stopped atomic.Bool
@@ -154,8 +155,11 @@ func (w *writeBehind) writeUsage(batch []*storage.GatewayUsageLog) {
 		w.log.Warn("batch write usage logs failed, retrying one by one", "rows", len(batch), "err", err)
 	}
 	for _, item := range batch {
-		if err := w.usage.Create(item); err != nil && w.log != nil {
-			w.log.Error("write usage log failed", "request_id", item.RequestID, "err", err)
+		if err := w.usage.Create(item); err != nil {
+			w.metrics.usageWriteFailed()
+			if w.log != nil {
+				w.log.Error("write usage log failed", "request_id", item.RequestID, "err", err)
+			}
 		}
 	}
 }
@@ -218,8 +222,11 @@ func (w *writeBehind) flushCounters() {
 		}
 	}
 	w.mu.Unlock()
-	if err != nil && w.log != nil {
-		w.log.Warn("write back key usage failed, will retry", "keys", len(deltas), "err", err)
+	if err != nil {
+		w.metrics.counterFlushFailed()
+		if w.log != nil {
+			w.log.Warn("write back key usage failed, will retry", "keys", len(deltas), "err", err)
+		}
 	}
 }
 
@@ -231,6 +238,7 @@ func (s *Service) StartWriteBehind() {
 		return
 	}
 	w := newWriteBehind(s.Usage, s.Keys, s.Log)
+	w.metrics = &s.metrics
 	if s.writer.CompareAndSwap(nil, w) {
 		w.start()
 	}
@@ -245,11 +253,18 @@ func (s *Service) stopWriteBehind() {
 
 // saveUsageLog 写一条用量日志：后台队列可用时异步，否则同步。
 func (rt *Runtime) saveUsageLog(item *storage.GatewayUsageLog) {
-	if w := rt.writer.Load(); w != nil && w.enqueueUsage(item) {
+	w := rt.writer.Load()
+	if w != nil && w.enqueueUsage(item) {
 		return
 	}
-	if err := rt.Usage.Create(item); err != nil && rt.Log != nil {
-		rt.Log.Error("write usage log failed", "err", err)
+	if w != nil {
+		rt.metrics.syncFallback() // 队列满，退回同步写
+	}
+	if err := rt.Usage.Create(item); err != nil {
+		rt.metrics.usageWriteFailed()
+		if rt.Log != nil {
+			rt.Log.Error("write usage log failed", "err", err)
+		}
 	}
 }
 
@@ -285,6 +300,7 @@ func (rt *Runtime) noteRouteSuccess(route *storage.GatewayRoute) {
 	if route == nil || route.ID == 0 {
 		return
 	}
+	rt.routeHealth.noteSuccess(route.ID)
 	// 请求开始时的快照可能已过时（期间别的请求把它暂停了）：用缓存里的最新状态判断，不查库
 	current := route
 	if list, err := rt.cachedRoutes(route.GatewayGroupID); err == nil {

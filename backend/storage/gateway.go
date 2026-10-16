@@ -648,6 +648,17 @@ func (r *GatewayRoutes) SetTempUnschedulable(id uint, until time.Time, reason st
 	}).Error
 }
 
+// CountUnschedulable 当前在冷却中（temp_unschedulable_until 未到期）与自动禁用中的路由数（指标用）。
+func (r *GatewayRoutes) CountUnschedulable(now time.Time) (paused, autoDisabled int64, err error) {
+	if err = r.db.Model(&GatewayRoute{}).Where("temp_unschedulable_until > ?", now).Count(&paused).Error; err != nil {
+		return 0, 0, err
+	}
+	if err = r.db.Model(&GatewayRoute{}).Where("auto_disabled = ?", true).Count(&autoDisabled).Error; err != nil {
+		return 0, 0, err
+	}
+	return paused, autoDisabled, nil
+}
+
 // ClearTempUnschedulable 手动清除暂停时间与错误信息（含自动禁用）。
 func (r *GatewayRoutes) ClearTempUnschedulable(id uint) (err error) {
 	defer bumpGatewayConfig(&err)

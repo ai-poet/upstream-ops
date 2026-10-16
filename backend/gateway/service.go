@@ -91,6 +91,11 @@ type core struct {
 
 	// 找不到价格的模型告警限频（见 warnUnpricedModel）
 	unpricedWarn unpricedWarner
+
+	// 路由连续传输失败计数（见 route_health.go）
+	routeHealth routeHealth
+	// 运行指标（见 metrics.go）
+	metrics Metrics
 }
 
 // Service 网关组装根：构造 core / Admin / Runtime，管理后台任务与配置下发。

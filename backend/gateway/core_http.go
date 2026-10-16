@@ -82,6 +82,11 @@ func (svc *core) httpClientForTarget(ch *storage.Channel, provider *storage.Gate
 	return c
 }
 
+const (
+	upstreamHTTP2PingInterval = 15 * time.Second
+	upstreamHTTP2PingTimeout  = 15 * time.Second
+)
+
 func newUpstreamClient(proxy string, timeout time.Duration) *http.Client {
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
@@ -96,6 +101,13 @@ func newUpstreamClient(proxy string, timeout time.Duration) *http.Client {
 		TLSHandshakeTimeout:   15 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
+	}
+	// HTTP/2 连接健康探测（sub2api http_upstream.go enableHTTP2KeepAlive）：连接空闲 15 秒发 PING，
+	// 15 秒没回就关掉。被代理 / NAT 静默掐断的死连接不再被新请求复用，请求不会挂到 TCP 重传超时。
+	// 用 sub2api 给 OpenAI 中转站的 15s/15s，而不是长流的 10s/5s：中转站回 PING 慢，太短会误判。
+	transport.HTTP2 = &http.HTTP2Config{
+		SendPingTimeout: upstreamHTTP2PingInterval,
+		PingTimeout:     upstreamHTTP2PingTimeout,
 	}
 	if proxy != "" {
 		if u, err := url.Parse(proxy); err == nil {

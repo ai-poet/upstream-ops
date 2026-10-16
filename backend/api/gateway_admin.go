@@ -24,6 +24,9 @@ func registerGatewayAdmin(g *gin.RouterGroup, d *Deps) {
 	}
 	gp := g.Group("/gateway")
 	{
+		// 运行指标快照（与 GET /metrics 同源，JSON 格式，走管理端鉴权）
+		gp.GET("/metrics", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"data": d.Gateway.Snapshot()}) })
+
 		// groups（reorder 须在 :id 之前注册，避免被当成 id）
 		gp.GET("/groups", func(c *gin.Context) { listGatewayGroups(c, d) })
 		gp.POST("/groups", func(c *gin.Context) { createGatewayGroup(c, d) })

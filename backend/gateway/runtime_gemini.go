@@ -7,7 +7,6 @@ package gateway
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -82,9 +81,9 @@ func (rt *Runtime) handleGeminiCountTokens(c *gin.Context, model string) {
 		writeError(c, protocol.KindGemini, authError(err.Error()))
 		return
 	}
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		writeError(c, protocol.KindGemini, newGatewayError(http.StatusBadRequest, "invalid_request_error", "failed to read body"))
+	body, gerr := rt.readRequestBody(c)
+	if gerr != nil {
+		writeError(c, protocol.KindGemini, gerr)
 		return
 	}
 	routes, _ := rt.cachedRoutes(auth.Group.ID)

@@ -155,6 +155,7 @@ const (
 	DefaultGatewayStreamKeepaliveSeconds     = 15
 	DefaultGatewayStreamIdleTimeoutSeconds   = 120
 	DefaultGatewayStreamMaxLineBytes         = 8 << 20
+	DefaultGatewayMaxRequestBodyBytes        = 64 << 20
 	DefaultGatewayProtocolEngine             = "relaykit"
 	DefaultGatewayAutoDisableStatusCodes     = "401"
 	// GatewayAutoDisableStatusCodesNone 自动禁用不看状态码（只按关键词）
@@ -269,6 +270,10 @@ type GatewayConfig struct {
 	StreamIdleTimeoutSeconds int `mapstructure:"streamIdleTimeoutSeconds" yaml:"streamIdleTimeoutSeconds" json:"streamIdleTimeoutSeconds"`
 	// StreamMaxLineBytes 上游单条 SSE 行最大字节数。
 	StreamMaxLineBytes int `mapstructure:"streamMaxLineBytes" yaml:"streamMaxLineBytes" json:"streamMaxLineBytes"`
+	// MaxRequestBodyBytes 客户端请求体上限（字节），超过回 413。
+	MaxRequestBodyBytes int `mapstructure:"maxRequestBodyBytes" yaml:"maxRequestBodyBytes" json:"maxRequestBodyBytes"`
+	// MetricsToken 访问 GET /metrics（Prometheus 文本格式）的 Bearer 令牌；留空则不开放该端点。
+	MetricsToken string `mapstructure:"metricsToken" yaml:"metricsToken" json:"metricsToken"`
 	// ProtocolEngine 协议转换引擎：relaykit（默认，new-api RelayKit，含 Gemini）| legacy（内置旧转换器）。
 	// 选 legacy 时涉及 Gemini 的转换仍走 relaykit。
 	ProtocolEngine string `mapstructure:"protocolEngine" yaml:"protocolEngine" json:"protocolEngine"`
@@ -322,6 +327,10 @@ func (g GatewayConfig) WithDefaults() GatewayConfig {
 	if g.StreamMaxLineBytes <= 0 {
 		g.StreamMaxLineBytes = DefaultGatewayStreamMaxLineBytes
 	}
+	if g.MaxRequestBodyBytes <= 0 {
+		g.MaxRequestBodyBytes = DefaultGatewayMaxRequestBodyBytes
+	}
+	g.MetricsToken = strings.TrimSpace(g.MetricsToken)
 	switch strings.ToLower(strings.TrimSpace(g.ProtocolEngine)) {
 	case "legacy":
 		g.ProtocolEngine = "legacy"
@@ -408,6 +417,12 @@ func (g GatewayConfig) StreamKeepalive() time.Duration {
 func (g GatewayConfig) StreamIdleTimeout() time.Duration {
 	g = g.WithDefaults()
 	return time.Duration(g.StreamIdleTimeoutSeconds) * time.Second
+}
+
+// MaxRequestBody 客户端请求体上限（字节）。
+func (g GatewayConfig) MaxRequestBody() int64 {
+	g = g.WithDefaults()
+	return int64(g.MaxRequestBodyBytes)
 }
 
 func (g GatewayConfig) StreamMaxLineSize() int {
@@ -621,6 +636,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("gateway.streamKeepaliveSeconds", DefaultGatewayStreamKeepaliveSeconds)
 	v.SetDefault("gateway.streamIdleTimeoutSeconds", DefaultGatewayStreamIdleTimeoutSeconds)
 	v.SetDefault("gateway.streamMaxLineBytes", DefaultGatewayStreamMaxLineBytes)
+	v.SetDefault("gateway.maxRequestBodyBytes", DefaultGatewayMaxRequestBodyBytes)
 
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.format", "text")

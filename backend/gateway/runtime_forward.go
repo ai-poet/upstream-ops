@@ -42,6 +42,8 @@ func (rt *Runtime) HandleTaskForward(c *gin.Context, path string, kind protocolK
 
 // handleForward 准备请求、按路由尝试；任何一步失败都返回错误，在这里统一回给客户端。
 func (rt *Runtime) handleForward(c *gin.Context, in forwardRequest) {
+	start := time.Now()
+	defer func() { rt.metrics.observeRequest(c.Writer.Status(), time.Since(start)) }()
 	req, gerr := rt.prepareRelay(c, in)
 	if gerr == nil {
 		gerr = rt.relayWithFailover(req)
@@ -73,11 +75,11 @@ func (rt *Runtime) prepareRelay(c *gin.Context, in forwardRequest) (*relayReques
 // readRelayBody 读 body、注入系统提示词、扫一遍字段、应用服务等级规则。
 func (rt *Runtime) readRelayBody(req *relayRequest) *gatewayError {
 	c, kind, path := req.c, req.in.Kind, req.in.Path
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		return newGatewayError(http.StatusBadRequest, "invalid_request_error", "failed to read body")
+	body, gerr := rt.readRequestBody(c)
+	if gerr != nil {
+		return gerr
 	}
-	body, err = rt.applySystemPrompt(req.group, req.key, path, kind, body)
+	body, err := rt.applySystemPrompt(req.group, req.key, path, kind, body)
 	if err != nil {
 		return newGatewayError(http.StatusBadRequest, "invalid_request_error", "system prompt injection failed: "+err.Error())
 	}
@@ -150,6 +152,14 @@ func (rt *Runtime) relayWithFailover(req *relayRequest) *gatewayError {
 	st := &failoverState{exclude: map[uint]struct{}{}}
 	for {
 		candidates := orderCandidates(req.routes, req.groupsByChannel, req.group, time.Now(), st.exclude, req.prefs)
+		// 能用的路由全在冷却：一条都不试就回 502 会让单路由的模型整段冷却期全黑，
+		// 所以这个请求还没试过任何路由时，借最早到期的那条试一次（成功即解除它的冷却）。
+		if len(candidates) == 0 && st.routesTried == 0 {
+			if cand, ok := earliestCooledRoute(req.routes, req.groupsByChannel, time.Now(), st.exclude); ok {
+				rt.metrics.cooldownBorrowed()
+				candidates = []ScoredRoute{cand}
+			}
+		}
 		if len(candidates) == 0 {
 			break
 		}
@@ -203,10 +213,11 @@ func (rt *Runtime) routeFirstTokenTimeout(req *relayRequest, st *failoverState) 
 	)
 }
 
-// tryRoute 在一条路由上尝试：1 次首次 + sameRouteRetries 次重试。
+// tryRoute 在一条路由上尝试：1 次首次 + 组配置的 sameRouteRetries 次重试；
+// 传输层瞬时错误（连接被拒 / 重置 / 半途 EOF）另外补试一次，补试前短暂退避（见 routeTryBudget）。
 func (rt *Runtime) tryRoute(req *relayRequest, choice *routeChoice, st *failoverState) attemptNext {
-	maxTries := 1 + req.policy.sameRouteRetries
-	for try := 0; try < maxTries; try++ {
+	budget := newRouteTryBudget(req.policy)
+	for try := 0; ; try++ {
 		st.attemptNo++
 		at := &relayAttempt{routeChoice: choice, no: st.attemptNo, kind: attemptKindPrimary}
 		if try > 0 {
@@ -214,11 +225,13 @@ func (rt *Runtime) tryRoute(req *relayRequest, choice *routeChoice, st *failover
 		} else if st.routesTried > 1 {
 			at.kind = attemptKindFailover
 		}
-		if next := rt.runAttempt(req, at, st, try == maxTries-1); next != attemptRetry {
+		if next := rt.runAttempt(req, at, st, &budget); next != attemptRetry {
 			return next
 		}
+		if !sleepCtx(req.c.Request.Context(), budget.backoff) {
+			return attemptGiveUp // 等待期间客户端走了
+		}
 	}
-	return attemptNextRoute
 }
 
 // forwardOnce 非流式转发一次（流式请求在 stream=true 时整包读完，供探测等场景）。

@@ -319,6 +319,10 @@ export interface SystemGatewayConfig {
   streamKeepaliveSeconds: number
   streamIdleTimeoutSeconds: number
   streamMaxLineBytes: number
+  /** 客户端请求体上限（字节），超过回 413 */
+  maxRequestBodyBytes?: number
+  /** GET /metrics（Prometheus）的 Bearer 令牌；留空则不开放 */
+  metricsToken?: string
   /** 协议转换引擎：relaykit（默认，含 Gemini）| legacy（内置旧转换器） */
   protocolEngine?: "relaykit" | "legacy"
   /** 组开启自动禁用后，命中即禁用路由的上游状态码，如 "401" */

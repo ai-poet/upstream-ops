@@ -4,7 +4,6 @@ package gateway
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -206,9 +205,9 @@ func (rt *Runtime) HandleCountTokens(c *gin.Context) {
 		writeError(c, protocolAnthropic, authError(err.Error()))
 		return
 	}
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		writeError(c, protocolAnthropic, newGatewayError(http.StatusBadRequest, "invalid_request_error", "failed to read body"))
+	body, gerr := rt.readRequestBody(c)
+	if gerr != nil {
+		writeError(c, protocolAnthropic, gerr)
 		return
 	}
 	body, err = rt.applySystemPrompt(auth.Group, auth.Key, "/v1/messages/count_tokens", protocol.KindAnthropic, body)

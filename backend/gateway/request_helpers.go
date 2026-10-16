@@ -3,9 +3,12 @@ package gateway
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -124,4 +127,23 @@ func appendQuery(path, query string) string {
 		return base + "?" + merged.Encode()
 	}
 	return path + "?" + query
+}
+
+// readRequestBody 读客户端请求体；超过网关设置的上限（gateway.maxRequestBodyBytes）回 413，
+// 不再整包读进内存——以前不限长，一个超大请求就能把进程内存打满。
+func (svc *core) readRequestBody(c *gin.Context) ([]byte, *gatewayError) {
+	if c.Request.Body == nil {
+		return nil, nil
+	}
+	limit := svc.gatewayRuntime().MaxRequestBody()
+	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, limit))
+	if err == nil {
+		return body, nil
+	}
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		return nil, newGatewayError(http.StatusRequestEntityTooLarge, "request_too_large",
+			fmt.Sprintf("request body exceeds the gateway limit of %d bytes", limit))
+	}
+	return nil, newGatewayError(http.StatusBadRequest, "invalid_request_error", "failed to read body")
 }

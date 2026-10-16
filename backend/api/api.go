@@ -90,6 +90,11 @@ func Register(r *gin.Engine, d *Deps) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
+	// Prometheus 指标：网关设置里填了 metricsToken 才开放，需 Bearer 令牌
+	if d.Gateway != nil {
+		r.GET("/metrics", d.Gateway.MetricsHandler())
+	}
+
 	// 公开网关：/v1/*（不走管理端鉴权）。管理页 SPA 使用 /gateway，勿占用。
 	if d.Gateway != nil {
 		if d.Frontend != nil {

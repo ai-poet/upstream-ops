@@ -6,7 +6,6 @@ package gateway
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -39,15 +38,17 @@ type streamRelay struct {
 	geminiArray        *geminiArrayEncoder      // Gemini 客户端未带 alt=sse 时按 JSON 数组逐元素写出
 
 	// 上游侧
-	lastReadAt             atomic.Int64 // 最近一次读到上游数据（UnixNano，读协程写）
-	pendingLines           []string     // 当前 SSE event 已读到的行
-	sawUpstreamData        bool         // 收到过有效载荷（ping / 注释不算）
-	geminiUpstreamFinished bool         // Gemini 上游没有 [DONE]：见过 finishReason 后 EOF 才算正常结束
-	usageBuf               bytes.Buffer // 旁路累积上游原始 data，结束时补算用量
+	lastReadAt             atomic.Int64      // 最近一次读到上游数据（UnixNano，读协程写）
+	pendingLines           []string          // 当前 SSE event 已读到的行
+	sawUpstreamData        bool              // 收到过有效载荷（ping / 注释不算）
+	geminiUpstreamFinished bool              // Gemini 上游没有 [DONE]：见过 finishReason 后 EOF 才算正常结束
+	usageBuf               boundedLineBuffer // 旁路保留上游原始 data 的头尾，结束时补算用量（见 stream_usage_buffer.go）
 	tokens                 pricing.UsageTokens
 
 	// 客户端侧
 	geminiFinishSent bool // 数组模式下已写出带 finishReason 的元素（数组本身可能还没闭合）
+	// held 首个可见输出之前攒着的客户端帧（上游 Responses 的 response.created 等，见 stream_preoutput.go）
+	held             [][]byte
 	errorEventSent   bool
 	lastDownstreamAt time.Time
 	firstTimer       *time.Timer
@@ -173,7 +174,8 @@ func (s *streamRelay) relayIncremental(upCtx, clientCtx context.Context, body io
 
 	for {
 		var keepCh, idleCh <-chan time.Time
-		if keepTicker != nil && s.result.Committed && !s.result.ClientDisconnected {
+		// 已提交：按客户端协议发保活帧；未提交（还没有可见输出）：发 SSE 注释保活，不影响重试
+		if keepTicker != nil && !s.result.ClientDisconnected && (s.result.Committed || s.geminiArray == nil) {
 			keepCh = keepTicker.C
 		}
 		if idleTicker != nil {
@@ -352,6 +354,9 @@ func (s *streamRelay) onReadError(err error) streamAttemptResult {
 		return *r
 	}
 	msg := "upstream stream disconnected"
+	if cause := streamDisconnectCause(err); cause != "" {
+		msg += ": " + cause
+	}
 	if tooLong {
 		msg = fmt.Sprintf("upstream SSE line exceeded %d bytes", s.maxLineSize)
 	}
@@ -421,7 +426,14 @@ func (s *streamRelay) onUpstreamIdle() streamAttemptResult {
 
 // sendKeepalive 已提交且一段时间没写出时，给客户端发保活帧。
 func (s *streamRelay) sendKeepalive() {
-	if s.result.ClientDisconnected || !s.result.Committed || time.Since(s.lastDownstreamAt) < s.keepalive {
+	if s.result.ClientDisconnected || time.Since(s.lastDownstreamAt) < s.keepalive {
+		return
+	}
+	if !s.result.Committed {
+		// 还没有可见输出：只写 SSE 注释（Gemini 数组模式不能写），不算提交，失败仍可重试
+		if s.geminiArray == nil && writeStreamPrelude(s.c, s.result.Headers) == nil {
+			s.lastDownstreamAt = time.Now()
+		}
 		return
 	}
 	ping := streamKeepaliveFrame(s.clientKind)
@@ -446,15 +458,14 @@ func (s *streamRelay) processEvent(lines []string, eventName, data string) error
 	}
 	// 旁路 usage：累积原始 data
 	if data != "" && data != "[DONE]" {
-		s.usageBuf.WriteString(data)
-		s.usageBuf.WriteByte('\n')
+		s.usageBuf.WriteLine(data)
 		mergeStreamUsage(&s.tokens, data, s.upKind)
 	}
 	if s.upKind == protocol.KindGemini && geminiChunkFinished(data) {
 		s.geminiUpstreamFinished = true
 	}
 	if s.conv != nil {
-		return s.writeFrames(s.conv.Feed(eventName, data))
+		return s.emit(s.conv.Feed(eventName, data), eventName, data)
 	}
 	// 网关替客户端要的 usage 帧：上面已记下用量，不转给客户端
 	if s.plan.HideUsageChunks && usageOnlyChunk(data) {
@@ -471,7 +482,17 @@ func (s *streamRelay) processEvent(lines []string, eventName, data string) error
 		b.WriteByte('\n')
 	}
 	b.WriteByte('\n')
-	return s.writeFrames([][]byte{[]byte(b.String())})
+	return s.emit([][]byte{[]byte(b.String())}, eventName, data)
+}
+
+// emit 写出一个上游事件对应的客户端帧。上游是 Responses 且还没有可见输出时先攒着（见 stream_preoutput.go），
+// 这段时间里上游断开仍可重试 / 换路由。
+func (s *streamRelay) emit(frames [][]byte, eventName, data string) error {
+	if !s.result.Committed && s.upKind == protocol.KindOpenAIResponses && !responsesEventStartsOutput(eventName, data) {
+		s.held = append(s.held, frames...)
+		return nil
+	}
+	return s.writeFrames(frames)
 }
 
 // writeFrames 写给客户端；第一次写出时提交响应头（之后不能再重试 / 顺延）并记首字。
@@ -480,6 +501,10 @@ func (s *streamRelay) writeFrames(frames [][]byte) error {
 		return nil
 	}
 	r, c := &s.result, s.c
+	if !r.Committed && len(s.held) > 0 {
+		frames = append(s.held, frames...)
+		s.held = nil
+	}
 	if !r.Committed {
 		if err := commitSSEHeaders(c, r.Headers); err != nil {
 			return err

@@ -11,6 +11,7 @@ package gateway
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -52,6 +53,19 @@ func upstreamError(status int, body []byte, header http.Header) *gatewayError {
 // writeError 向客户端写错误响应：数据面所有非流式错误都从这里出去。
 func writeError(c *gin.Context, kind protocolKind, e *gatewayError) {
 	reqID := ensureGatewayRequestID(c)
+	// 流式请求在首个可见输出之前已写过保活（SSE 响应头已发出，状态码改不了）：在流里补一个错误终态
+	if streamPreludeSent(c) {
+		typ, msg := e.typ, e.msg
+		if e.upstream {
+			if t, m, _ := extractUpstreamError(e.body); m != "" {
+				typ, msg = t, m
+			} else {
+				msg = fmt.Sprintf("upstream returned status %d", e.status)
+			}
+		}
+		_ = writeStreamTerminalError(c, kind, typ, msg)
+		return
+	}
 	if e.upstream {
 		if e.header != nil {
 			copyResponseHeaders(c.Writer.Header(), e.header)

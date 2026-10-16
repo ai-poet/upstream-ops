@@ -13,8 +13,8 @@ import (
 	"github.com/bejix/upstream-ops/backend/gateway/protocol"
 )
 
-// runAttempt 一次上游尝试；lastTry 表示这是本路由的最后一次（失败后才进冷却）。
-func (rt *Runtime) runAttempt(req *relayRequest, at *relayAttempt, st *failoverState, lastTry bool) attemptNext {
+// runAttempt 一次上游尝试；budget 是本路由剩下的重试次数（失败后由它决定重试还是收尾、冷却）。
+func (rt *Runtime) runAttempt(req *relayRequest, at *relayAttempt, st *failoverState, budget *routeTryBudget) attemptNext {
 	at.meta = usageRecordMeta{
 		InboundEndpoint: req.in.Path,
 		InboundProtocol: string(req.in.Kind),
@@ -33,7 +33,7 @@ func (rt *Runtime) runAttempt(req *relayRequest, at *relayAttempt, st *failoverS
 		return attemptDone
 	}
 	if out.failed() {
-		return rt.handleAttemptFailure(req, at, st, out, lastTry)
+		return rt.handleAttemptFailure(req, at, st, out, budget)
 	}
 	rt.writeAttemptSuccess(req, at, out)
 	return attemptDone
@@ -127,7 +127,9 @@ func (rt *Runtime) sendAttempt(req *relayRequest, at *relayAttempt) attemptOutco
 	start := time.Now()
 	var out attemptOutcome
 	if req.stream {
+		rt.metrics.streamStarted()
 		out.streamAttemptResult = rt.forwardStreamPlan(ctx, req.c, at.call, at.plan)
+		rt.metrics.streamEnded()
 	} else {
 		r := &out.streamAttemptResult
 		r.Status, r.Headers, r.Body, r.FirstTokenMS, r.Err = rt.forwardOnce(ctx, at.call)
@@ -174,7 +176,10 @@ func (rt *Runtime) finishCommittedStream(req *relayRequest, at *relayAttempt, ou
 	errInfo := rt.committedStreamErrorInfo(req, at, out, onlyClientDisconnect)
 	if success {
 		rt.noteRouteSuccess(&at.route)
-	} else if rt.Log != nil {
+	} else {
+		rt.metrics.streamFailed()
+	}
+	if !success && rt.Log != nil {
 		rt.Log.Warn("gateway stream ended with error after commit",
 			"request_id", req.id,
 			"attempt", at.no,
@@ -255,7 +260,7 @@ func (rt *Runtime) committedStreamErrorInfo(req *relayRequest, at *relayAttempt,
 
 // handleAttemptFailure 上游失败（未提交给客户端）：分类后决定回显、同路由重试、顺延或放弃，
 // 必要时暂停 / 停用路由，并记一条用量。
-func (rt *Runtime) handleAttemptFailure(req *relayRequest, at *relayAttempt, st *failoverState, out attemptOutcome, lastTry bool) attemptNext {
+func (rt *Runtime) handleAttemptFailure(req *relayRequest, at *relayAttempt, st *failoverState, out attemptOutcome, budget *routeTryBudget) attemptNext {
 	c := req.c
 	errInfo := rt.attemptErrorInfo(req, at, out)
 	// 客户端断开 / 请求 context 已取消：父 context 污染会导致后续重试/顺延全部变成
@@ -275,7 +280,7 @@ func (rt *Runtime) handleAttemptFailure(req *relayRequest, at *relayAttempt, st 
 		st.lastBody = convertErrorBody(out.Body, req.in.Kind, at.upstreamKind, at.plan.Converted)
 		st.lastErr = fmt.Errorf("upstream status %d: %s", out.Status, errInfo.Summary)
 	}
-	failed := usageOutcome{status: out.Status, errInfo: errInfo, durationMS: out.durationMS, firstTokenMS: out.FirstTokenMS}
+	failed := usageOutcome{status: out.Status, errInfo: errInfo, durationMS: out.durationMS, firstTokenMS: out.FirstTokenMS, err: out.Err}
 
 	// 不可重试的错误（默认 4xx、上下文超长等）：直接回显给客户端
 	if decision.Action == failStop && !clientCanceled && out.Err == nil {
@@ -283,8 +288,11 @@ func (rt *Runtime) handleAttemptFailure(req *relayRequest, at *relayAttempt, st 
 		return st.fail(upstreamError(out.Status, st.lastBody, out.Headers))
 	}
 
+	// 还能不能在本路由重试：组配置的次数用完后，传输层瞬时错误还可补试一次
+	transient := isTransientTransportError(out.Err)
+	willRetry := !clientCanceled && req.policy.enabled && decision.Action == failRetry && budget.take(transient)
 	if !clientCanceled { // 客户端取消不冷却
-		at.meta.CooldownUntil = rt.pauseRouteAfterFailure(req, at, decision, errInfo, out.Status, lastTry)
+		at.meta.CooldownUntil = rt.pauseRouteAfterFailure(req, at, decision, errInfo, out.Status, !willRetry, transient)
 	}
 	rt.recordAttempt(req, at, failed)
 	if rt.Log != nil {
@@ -305,7 +313,7 @@ func (rt *Runtime) handleAttemptFailure(req *relayRequest, at *relayAttempt, st 
 		return attemptGiveUp
 	}
 	// 只有可重试错误才在同路由重试；其余直接顺延
-	if decision.Action == failRetry && !lastTry {
+	if willRetry {
 		return attemptRetry
 	}
 	return attemptNextRoute
@@ -340,18 +348,32 @@ func (rt *Runtime) attemptErrorInfo(req *relayRequest, at *relayAttempt, out att
 }
 
 // pauseRouteAfterFailure 按失败分类停用路由，或在本路由最后一次尝试失败后进冷却；返回冷却截止时间（没冷却为 nil）。
-func (rt *Runtime) pauseRouteAfterFailure(req *relayRequest, at *relayAttempt, decision failureDecision, errInfo usageErrorInfo, status int, lastTry bool) *time.Time {
+// 传输层瞬时错误（transient）不立刻冷却：连续 transportFailuresBeforeCooldown 个请求都失败才冷却，
+// 一次网络抖动不该让整条路由停摆。
+func (rt *Runtime) pauseRouteAfterFailure(req *relayRequest, at *relayAttempt, decision failureDecision, errInfo usageErrorInfo, status int, lastTry, transient bool) *time.Time {
 	reason := errInfo.Summary
 	if strings.TrimSpace(errInfo.Detail) != "" {
 		reason = truncateRunes(errInfo.Detail, 4000)
 	}
 	switch {
 	case decision.Action == failDisableRoute:
+		rt.metrics.routeAutoDisabled()
 		_ = rt.Routes.SetAutoDisabled(at.route.ID, reason, time.Now(), req.id)
 		if rt.Log != nil {
 			rt.Log.Warn("gateway route auto-disabled", "request_id", req.id, "route_id", at.route.ID, "status", status, "err", errInfo.Summary)
 		}
 	case decision.Action == failRetry && req.policy.enabled && lastTry && req.policy.cooldownSec > 0:
+		cause := cooldownReasonHTTP
+		switch {
+		case transient:
+			if !rt.routeHealth.noteTransportFailure(at.route.ID) {
+				return nil
+			}
+			cause = cooldownReasonTransport
+		case decision.Reason == "transport":
+			cause = cooldownReasonFirstTokenTimeout
+		}
+		rt.metrics.routeCooledDown(cause)
 		// 最后一次同路由尝试失败才进入冷却；Retry-After 更长时以它为准
 		cool := time.Duration(req.policy.cooldownSec) * time.Second
 		if decision.Cooldown > cool {
