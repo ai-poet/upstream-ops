@@ -96,7 +96,9 @@ func (rt *Runtime) prepareAttempt(req *relayRequest, at *relayAttempt, st *failo
 		return attemptNextRoute
 	}
 	plan.GeminiArray = req.in.GeminiArray
-	if req.query != "" && protocol.IsPassthroughEndpoint(path) {
+	// 查询串：没做协议转换（同协议、透传端点）时原样带给上游，如 Anthropic 的 ?beta=true、Azure 的 ?api-version=；
+	// 跨协议时上游端点换了，原查询串对它没有意义，不带。网关自己的 ?key= / ?api_key= 已在 forwardQuery 去掉
+	if req.query != "" && (!plan.Converted || protocol.IsPassthroughEndpoint(path)) {
 		upstreamPath = appendQuery(upstreamPath, req.query)
 	}
 

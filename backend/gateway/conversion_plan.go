@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/bejix/upstream-ops/backend/gateway/protocol"
+	"github.com/tidwall/gjson"
 )
 
 // conversionPlan 一次上游尝试的转换方案。请求转换时建立，响应 / 流式转换沿用同一份状态
@@ -28,6 +29,9 @@ type conversionPlan struct {
 	RK     *protocol.Conversion
 	// GeminiArray 客户端是 Gemini 且未带 alt=sse：流式响应按 JSON 数组逐元素写出
 	GeminiArray bool
+	// HideUsageChunks 同协议 Chat 流式、客户端没要 usage：网关为计费注入了 include_usage，
+	// 上游因此多回的「choices 为空、只带 usage」那一帧只用来记用量，不写给客户端
+	HideUsageChunks bool
 }
 
 // errProtocolConvert 请求转换失败（如 relaykit 拒绝把有状态的 Responses 请求降级到 Chat）。
@@ -80,6 +84,7 @@ func planUpstreamRequest(
 			fwd = RewriteModelInBody(body, upstreamModel)
 		}
 		if stream && up == protocol.KindOpenAIChat {
+			plan.HideUsageChunks = !streamUsageRequested(body)
 			fwd = EnsureStreamUsageOption(fwd, stream)
 		}
 		return fwd, upstreamPath, plan, nil
@@ -109,6 +114,21 @@ func planUpstreamRequest(
 		fwd = EnsureStreamUsageOption(fwd, stream)
 	}
 	return fwd, upstreamPath, plan, nil
+}
+
+// streamUsageRequested 客户端自己要了流式 usage（stream_options.include_usage=true）。
+func streamUsageRequested(body []byte) bool {
+	return gjson.GetBytes(body, "stream_options.include_usage").Type == gjson.True
+}
+
+// usageOnlyChunk Chat 流式里「choices 为空、只带 usage」的那一帧（include_usage 的结果）。
+func usageOnlyChunk(data string) bool {
+	if !strings.Contains(data, `"usage"`) {
+		return false
+	}
+	r := gjson.Parse(data)
+	choices := r.Get("choices")
+	return r.Get("usage").IsObject() && choices.IsArray() && len(choices.Array()) == 0
 }
 
 // rewriteGeminiEmbedModels 把 Gemini embedding 请求体里已有的 model 与 requests[].model 改成 model；

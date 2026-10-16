@@ -81,15 +81,24 @@ func rewriteMultipartModel(contentType string, body []byte, model string) []byte
 	return out.Bytes()
 }
 
-// forwardQuery 入站查询串去掉网关自己的鉴权参数（Gemini ?key= / ?api_key=）。
+// forwardQuery 入站查询串去掉网关自己的鉴权参数（Gemini ?key= / ?api_key=），其余参数的顺序与编码原样保留。
 func forwardQuery(c *gin.Context) string {
 	if c == nil || c.Request == nil || c.Request.URL == nil || c.Request.URL.RawQuery == "" {
 		return ""
 	}
-	q := c.Request.URL.Query()
-	q.Del("key")
-	q.Del("api_key")
-	return q.Encode()
+	parts := strings.Split(c.Request.URL.RawQuery, "&")
+	kept := make([]string, 0, len(parts))
+	for _, part := range parts {
+		name, _, _ := strings.Cut(part, "=")
+		if decoded, err := url.QueryUnescape(name); err == nil {
+			name = decoded
+		}
+		if part == "" || name == "key" || name == "api_key" {
+			continue
+		}
+		kept = append(kept, part)
+	}
+	return strings.Join(kept, "&")
 }
 
 func appendQuery(path, query string) string {

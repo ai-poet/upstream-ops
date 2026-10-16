@@ -456,6 +456,10 @@ func (s *streamRelay) processEvent(lines []string, eventName, data string) error
 	if s.conv != nil {
 		return s.writeFrames(s.conv.Feed(eventName, data))
 	}
+	// 网关替客户端要的 usage 帧：上面已记下用量，不转给客户端
+	if s.plan.HideUsageChunks && usageOnlyChunk(data) {
+		return nil
+	}
 	// 透传完整 event。commit 前丢弃纯注释/空事件，避免上游 :PING 过早
 	// 提交响应头后无法再 retry/failover，并污染 first_token 统计。
 	if !s.result.Committed && !sseEventHasPayload(lines) {
