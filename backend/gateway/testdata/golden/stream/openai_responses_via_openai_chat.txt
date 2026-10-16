@@ -1,0 +1,36 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_<generated>","object":"response","created_at":<now>,"status":"in_progress","instructions":null,"max_output_tokens":0,"model":"m-up","output":[],"parallel_tool_calls":false,"previous_response_id":null,"reasoning":null,"store":false,"temperature":0,"tool_choice":null,"tools":null,"top_p":0,"truncation":null,"usage":null,"user":null,"metadata":null},"sequence_number":0}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"type":"message","id":"resp_<generated>","status":"in_progress","role":"assistant","content":[],"quality":"","size":""},"sequence_number":1,"output_index":0}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"Let me ","sequence_number":2,"output_index":0,"content_index":0,"item_id":"resp_<generated>"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"check.","sequence_number":3,"output_index":0,"content_index":0,"item_id":"resp_<generated>"}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"type":"function_call","id":"call_9","status":"in_progress","role":"","content":null,"quality":"","size":"","call_id":"call_9","name":"get_weather","arguments":""},"sequence_number":4,"output_index":1,"item_id":"call_9"}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"{\"city\":","sequence_number":5,"output_index":1,"item_id":"call_9"}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\"Rome\"}","sequence_number":6,"output_index":1,"item_id":"call_9"}
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","text":"Let me check.","sequence_number":7,"output_index":0,"content_index":0,"item_id":"resp_<generated>"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"message","id":"resp_<generated>","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Let me check.","annotations":[]}],"quality":"","size":""},"sequence_number":8,"output_index":0}
+
+event: response.function_call_arguments.done
+data: {"type":"response.function_call_arguments.done","arguments":"{\"city\":\"Rome\"}","name":"get_weather","sequence_number":9,"output_index":1,"item_id":"call_9"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"type":"function_call","id":"call_9","status":"completed","role":"","content":null,"quality":"","size":"","call_id":"call_9","name":"get_weather","arguments":"{\"city\":\"Rome\"}"},"sequence_number":10,"output_index":1}
+
+event: response.completed
+data: {"response":{"created_at":<now>,"id":"resp_<generated>","instructions":null,"max_output_tokens":0,"metadata":null,"model":"m-up","object":"response","output":[{"type":"message","id":"resp_<generated>","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Let me check.","annotations":[]}],"quality":"","size":""},{"type":"function_call","id":"call_9","status":"completed","role":"","content":null,"quality":"","size":"","call_id":"call_9","name":"get_weather","arguments":"{\"city\":\"Rome\"}"}],"parallel_tool_calls":false,"previous_response_id":null,"reasoning":null,"status":"completed","store":false,"temperature":0,"tool_choice":null,"tools":null,"top_p":0,"truncation":null,"usage":{"completion_tokens":10,"completion_tokens_details":{"text_tokens":0,"audio_tokens":0,"image_tokens":0,"reasoning_tokens":0},"input_tokens":20,"input_tokens_details":null,"output_tokens":10,"prompt_tokens":20,"prompt_tokens_details":{"cached_tokens":0,"text_tokens":0,"audio_tokens":0,"image_tokens":0},"total_tokens":30},"user":null},"sequence_number":11,"type":"response.completed"}
+

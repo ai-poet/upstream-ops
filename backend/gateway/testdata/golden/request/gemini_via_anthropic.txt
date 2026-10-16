@@ -1,0 +1,129 @@
+== stream=false
+path: /v1/messages
+engine: relaykit
+{
+  "max_tokens": 256,
+  "messages": [
+    {
+      "role": "user",
+      "content": "weather in Paris?"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "..."
+        },
+        {
+          "type": "tool_use",
+          "id": "call_1",
+          "name": "get_weather",
+          "input": {
+            "city": "Paris"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "content": "{\"result\":\"18C sunny\"}",
+          "tool_use_id": "call_1"
+        }
+      ]
+    }
+  ],
+  "model": "m-up",
+  "system": [
+    {
+      "type": "text",
+      "text": "be brief"
+    }
+  ],
+  "temperature": 0.2,
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Get weather",
+      "input_schema": {
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "type": "object"
+      }
+    }
+  ]
+}
+== stream=true
+path: /v1/messages
+engine: relaykit
+{
+  "max_tokens": 256,
+  "messages": [
+    {
+      "role": "user",
+      "content": "weather in Paris?"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "..."
+        },
+        {
+          "type": "tool_use",
+          "id": "call_1",
+          "name": "get_weather",
+          "input": {
+            "city": "Paris"
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "content": "{\"result\":\"18C sunny\"}",
+          "tool_use_id": "call_1"
+        }
+      ]
+    }
+  ],
+  "model": "m-up",
+  "stream": true,
+  "system": [
+    {
+      "type": "text",
+      "text": "be brief"
+    }
+  ],
+  "temperature": 0.2,
+  "tools": [
+    {
+      "name": "get_weather",
+      "description": "Get weather",
+      "input_schema": {
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "type": "object"
+      }
+    }
+  ]
+}

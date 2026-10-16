@@ -1,0 +1,119 @@
+== stream=false
+path: /v1/chat/completions
+engine: relaykit
+{
+  "max_completion_tokens": 256,
+  "messages": [
+    {
+      "role": "system",
+      "content": "be brief"
+    },
+    {
+      "role": "user",
+      "content": "weather in Paris?"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_1",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"Paris\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": "18C sunny",
+      "tool_call_id": "call_1"
+    }
+  ],
+  "model": "m-up",
+  "stream": false,
+  "temperature": 0.2,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "description": "Get weather",
+        "name": "get_weather",
+        "parameters": {
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "city"
+          ],
+          "type": "object"
+        }
+      }
+    }
+  ]
+}
+== stream=true
+path: /v1/chat/completions
+engine: relaykit
+{
+  "max_completion_tokens": 256,
+  "messages": [
+    {
+      "role": "system",
+      "content": "be brief"
+    },
+    {
+      "role": "user",
+      "content": "weather in Paris?"
+    },
+    {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [
+        {
+          "id": "call_1",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"Paris\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": "18C sunny",
+      "tool_call_id": "call_1"
+    }
+  ],
+  "model": "m-up",
+  "stream": true,
+  "temperature": 0.2,
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "description": "Get weather",
+        "name": "get_weather",
+        "parameters": {
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "city"
+          ],
+          "type": "object"
+        }
+      }
+    }
+  ],
+  "stream_options": {
+    "include_usage": true
+  }
+}

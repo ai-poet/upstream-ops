@@ -1,0 +1,37 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {
+            "text": "Let me check."
+          },
+          {
+            "functionCall": {
+              "id": "call_9",
+              "name": "get_weather",
+              "args": {
+                "city": "Rome"
+              }
+            }
+          }
+        ]
+      },
+      "finishReason": "STOP",
+      "index": 0,
+      "safetyRatings": []
+    }
+  ],
+  "usageMetadata": {
+    "cachedContentTokenCount": 0,
+    "candidatesTokenCount": 10,
+    "candidatesTokensDetails": null,
+    "promptTokenCount": 20,
+    "promptTokensDetails": null,
+    "thoughtsTokenCount": 0,
+    "toolUsePromptTokenCount": 0,
+    "toolUsePromptTokensDetails": null,
+    "totalTokenCount": 30
+  }
+}

@@ -1,0 +1,150 @@
+== stream=false
+path: /v1beta/models/m-up:generateContent
+engine: relaykit
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "weather in Paris?"
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [
+        {
+          "functionCall": {
+            "id": "call_1",
+            "name": "get_weather",
+            "args": {
+              "city": "Paris"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "name": "get_weather",
+            "response": {
+              "content": "18C sunny"
+            },
+            "id": "call_1"
+          }
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "temperature": 0.2,
+    "maxOutputTokens": 256
+  },
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "description": "Get weather",
+          "name": "get_weather",
+          "parameters": {
+            "properties": {
+              "city": {
+                "type": "STRING"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "type": "OBJECT"
+          }
+        }
+      ]
+    }
+  ],
+  "systemInstruction": {
+    "parts": [
+      {
+        "text": "be brief"
+      }
+    ]
+  }
+}
+== stream=true
+path: /v1beta/models/m-up:streamGenerateContent?alt=sse
+engine: relaykit
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        {
+          "text": "weather in Paris?"
+        }
+      ]
+    },
+    {
+      "role": "model",
+      "parts": [
+        {
+          "functionCall": {
+            "id": "call_1",
+            "name": "get_weather",
+            "args": {
+              "city": "Paris"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "name": "get_weather",
+            "response": {
+              "content": "18C sunny"
+            },
+            "id": "call_1"
+          }
+        }
+      ]
+    }
+  ],
+  "generationConfig": {
+    "temperature": 0.2,
+    "maxOutputTokens": 256
+  },
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "description": "Get weather",
+          "name": "get_weather",
+          "parameters": {
+            "properties": {
+              "city": {
+                "type": "STRING"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "type": "OBJECT"
+          }
+        }
+      ]
+    }
+  ],
+  "systemInstruction": {
+    "parts": [
+      {
+        "text": "be brief"
+      }
+    ]
+  }
+}

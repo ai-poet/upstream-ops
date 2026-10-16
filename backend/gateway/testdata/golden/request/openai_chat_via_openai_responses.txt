@@ -1,0 +1,98 @@
+== stream=false
+path: /v1/responses
+engine: relaykit
+{
+  "input": [
+    {
+      "content": "weather in Paris?",
+      "role": "user"
+    },
+    {
+      "content": "",
+      "role": "assistant"
+    },
+    {
+      "arguments": "{\"city\":\"Paris\"}",
+      "call_id": "call_1",
+      "name": "get_weather",
+      "type": "function_call"
+    },
+    {
+      "call_id": "call_1",
+      "output": "18C sunny",
+      "type": "function_call_output"
+    }
+  ],
+  "instructions": "be brief",
+  "max_output_tokens": 256,
+  "model": "m-up",
+  "stream": false,
+  "temperature": 0.2,
+  "tools": [
+    {
+      "description": "Get weather",
+      "name": "get_weather",
+      "parameters": {
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "type": "object"
+      },
+      "type": "function"
+    }
+  ]
+}
+== stream=true
+path: /v1/responses
+engine: relaykit
+{
+  "input": [
+    {
+      "content": "weather in Paris?",
+      "role": "user"
+    },
+    {
+      "content": "",
+      "role": "assistant"
+    },
+    {
+      "arguments": "{\"city\":\"Paris\"}",
+      "call_id": "call_1",
+      "name": "get_weather",
+      "type": "function_call"
+    },
+    {
+      "call_id": "call_1",
+      "output": "18C sunny",
+      "type": "function_call_output"
+    }
+  ],
+  "instructions": "be brief",
+  "max_output_tokens": 256,
+  "model": "m-up",
+  "stream": true,
+  "temperature": 0.2,
+  "tools": [
+    {
+      "description": "Get weather",
+      "name": "get_weather",
+      "parameters": {
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "type": "object"
+      },
+      "type": "function"
+    }
+  ]
+}

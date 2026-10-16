@@ -1,0 +1,1 @@
+{"id":"msg_up","type":"message","role":"assistant","model":"m-up","content":[{"type":"text","text":"Let me check."},{"type":"tool_use","id":"toolu_9","name":"get_weather","input":{"city":"Rome"}}],"stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":20,"output_tokens":10}}

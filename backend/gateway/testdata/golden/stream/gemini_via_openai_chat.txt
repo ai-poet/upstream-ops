@@ -1,0 +1,8 @@
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Let me "}]},"finishReason":null,"index":0,"safetyRatings":[]}],"usageMetadata":{"promptTokenCount":0,"toolUsePromptTokenCount":0,"candidatesTokenCount":0,"totalTokenCount":0,"thoughtsTokenCount":0,"cachedContentTokenCount":0,"promptTokensDetails":null,"toolUsePromptTokensDetails":null,"candidatesTokensDetails":null}}
+
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":"check."}]},"finishReason":null,"index":0,"safetyRatings":[]}],"usageMetadata":{"promptTokenCount":0,"toolUsePromptTokenCount":0,"candidatesTokenCount":0,"totalTokenCount":0,"thoughtsTokenCount":0,"cachedContentTokenCount":0,"promptTokensDetails":null,"toolUsePromptTokensDetails":null,"candidatesTokensDetails":null}}
+
+data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_9","name":"get_weather","args":{"city":"Rome"}}}]},"finishReason":"STOP","index":0,"safetyRatings":[]}],"usageMetadata":{"promptTokenCount":0,"toolUsePromptTokenCount":0,"candidatesTokenCount":0,"totalTokenCount":0,"thoughtsTokenCount":0,"cachedContentTokenCount":0,"promptTokensDetails":null,"toolUsePromptTokensDetails":null,"candidatesTokensDetails":null}}
+
+data: {"candidates":[],"usageMetadata":{"cachedContentTokenCount":0,"candidatesTokenCount":10,"candidatesTokensDetails":null,"promptTokenCount":20,"promptTokensDetails":null,"thoughtsTokenCount":0,"toolUsePromptTokenCount":0,"toolUsePromptTokensDetails":null,"totalTokenCount":30}}
+
