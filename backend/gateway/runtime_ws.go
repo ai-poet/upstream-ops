@@ -101,8 +101,7 @@ func (rt *Runtime) HandleResponsesWebSocket(c *gin.Context) {
 		writeWSResponsesFailed(ctx, client, "api_error", err.Error())
 		return
 	}
-	upHTTP := rt.httpClientForTarget(at.target.Channel, at.target.Provider)
-	upHTTP.Timeout = 0
+	upHTTP := websocketHTTPClient(rt.httpClientForTarget(at.target.Channel, at.target.Provider))
 	upstream, _, err := websocket.Dial(ctx, upURL, &websocket.DialOptions{HTTPClient: upHTTP, HTTPHeader: handshake.Header})
 	if err != nil {
 		writeWSResponsesFailed(ctx, client, "upstream_error", "failed to connect upstream: "+err.Error())

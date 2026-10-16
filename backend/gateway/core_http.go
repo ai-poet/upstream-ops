@@ -105,6 +105,14 @@ func newUpstreamClient(proxy string, timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout, Transport: transport}
 }
 
+// websocketHTTPClient 给 WebSocket 拨号用的 client：coder/websocket 要求 Timeout 为 0（由 context 控制），
+// 返回共享 client 的副本（同一个 Transport，连接池照旧复用），不改共享 client 本身。
+func websocketHTTPClient(base *http.Client) *http.Client {
+	c := *base
+	c.Timeout = 0
+	return &c
+}
+
 // resetUpstreamClients 代理或转发超时变了：丢掉缓存的客户端并关掉它们的空闲连接。
 func (svc *core) resetUpstreamClients() {
 	svc.upstreamClientsMu.Lock()
@@ -118,11 +126,18 @@ func (svc *core) resetUpstreamClients() {
 
 // ---------- key helpers ----------
 
+// upstreamModelsTimeout 拉上游 /v1/models 的超时（只作用于这一次请求的 context）。
+var upstreamModelsTimeout = 30 * time.Second
+
 // fetchUpstreamModels 拉取上游 /v1/models。
 // userAgent 为组+路由解析结果；空则回落默认 UA（无客户端可透传）。
+//
+// 用的是和转发共享的 client（连接池复用），所以超时只能加在本次请求的 context 上，
+// 绝不能改 client.Timeout：那会让之后所有经它转发的流在 30 秒处被掐断。
 func (svc *core) fetchUpstreamModels(ctx context.Context, ch *storage.Channel, apiKey, userAgent string) ([]string, error) {
 	client := svc.httpClientForChannel(ch)
-	client.Timeout = 30 * time.Second
+	ctx, cancel := context.WithTimeout(ctx, upstreamModelsTimeout)
+	defer cancel()
 	url := strings.TrimRight(ch.SiteURL, "/") + "/v1/models"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
