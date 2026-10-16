@@ -120,6 +120,11 @@ func (s *Service) EnsureRouteKeys(ctx context.Context, groupID uint) (*EnsureKey
 	return s.admin().EnsureRouteKeys(ctx, groupID)
 }
 
+// EnsureMissingRouteKeys 只给缺上游密钥的监控渠道路由生成密钥（保存路由后自动调用）。
+func (s *Service) EnsureMissingRouteKeys(ctx context.Context, groupID uint) (*EnsureKeysResult, error) {
+	return s.admin().EnsureMissingRouteKeys(ctx, groupID)
+}
+
 func (s *Service) ensureRouteKeyResult(ctx context.Context, groupID uint, r *storage.GatewayRoute, lockKeyName func(string) func()) EnsureKeyRouteResult {
 	return s.admin().ensureRouteKeyResult(ctx, groupID, r, lockKeyName)
 }

@@ -3,6 +3,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -328,7 +329,18 @@ func saveGatewayGroupRoutes(c *gin.Context, d *Deps) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"items": list})
+	// 新加的、或换了源分组的监控渠道路由，保存后自动在上游生成 / 对齐密钥；
+	// 单条失败不影响保存，结果放在 ensure_keys 里由前端提示
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 90*time.Second)
+	defer cancel()
+	resp := gin.H{"items": list}
+	if ensured, err := d.Gateway.EnsureMissingRouteKeys(ctx, id); err != nil {
+		resp["ensure_keys_error"] = err.Error()
+	} else {
+		resp["items"] = ensured.Items
+		resp["ensure_keys"] = ensured
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func ensureGatewayGroupRouteKeys(c *gin.Context, d *Deps) {

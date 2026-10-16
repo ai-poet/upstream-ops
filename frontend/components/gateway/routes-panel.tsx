@@ -79,6 +79,33 @@ const UA_MODE_OPTIONS: {
 ]
 
 /**
+ * 路由优先级输入：编辑中允许清空重输，只有不小于 1 的整数才写回；
+ * 失焦时若为空或非法，回到上一个有效值（最小 1）。
+ */
+function PriorityInput({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+  // null = 未在编辑，直接显示已提交的值
+  const [draft, setDraft] = useState<string | null>(null)
+  return (
+    <Input
+      className="w-16"
+      type="number"
+      inputMode="numeric"
+      min={1}
+      step={1}
+      title="优先级：数字越大越先调用，最小 1"
+      value={draft ?? String(value)}
+      onChange={(e) => {
+        const text = e.target.value
+        setDraft(text)
+        const n = Number(text)
+        if (text.trim() !== "" && Number.isInteger(n) && n >= 1) onChange(n)
+      }}
+      onBlur={() => setDraft(null)}
+    />
+  )
+}
+
+/**
  * 路由 User-Agent：外观像 Select；用 Popover 承载选项，
  * 选「自定义」后在选项下方展开输入框（Radix Select 内嵌 input 无法可靠聚焦输入）。
  */
@@ -281,8 +308,9 @@ export function RoutesPanel({
         className="h-9"
         onClick={() => void onEnsureKeys()}
         disabled={busy}
+        title="保存路由时会自动生成缺少的上游密钥；上游那把 Key 被删除或禁用后，点这里重新对齐全部路由"
       >
-        <Play className="size-3.5" /> 确保上游密钥
+        <Play className="size-3.5" /> 修复上游密钥
       </Button>
     </div>
     <p className="text-[11px] leading-5 text-muted-foreground">
@@ -594,20 +622,12 @@ export function RoutesPanel({
                   />
                 </TableCell>
                 <TableCell>
-                  <Input
-                    className="w-16"
-                    type="number"
-                    min={1}
-                    step={1}
-                    title="优先级：数字越大越先调用"
+                  <PriorityInput
                     value={r.weight ?? 1}
-                    onChange={(e) => {
+                    onChange={(weight) => {
                       setRouteDrafts((prev) => {
                         const next = [...prev]
-                        next[idx] = {
-                          ...next[idx],
-                          weight: Math.max(1, Math.floor(Number(e.target.value) || 1)),
-                        }
+                        next[idx] = { ...next[idx], weight }
                         return next
                       })
                     }}
@@ -691,7 +711,7 @@ export function RoutesPanel({
                       )
                     ) : (
                       r.source_api_key_name || (
-                        <span className="text-muted-foreground">未确保</span>
+                        <span className="text-muted-foreground">保存后生成</span>
                       )
                     )}
                   </div>
@@ -760,7 +780,7 @@ export function RoutesPanel({
           {routeDrafts.length === 0 && (
             <TableRow>
               <TableCell colSpan={11} className="text-center text-muted-foreground">
-                添加路由后保存。监控渠道需「确保上游密钥」；直连渠道使用已配置的 Key
+                添加路由后保存。监控渠道保存时自动在上游生成密钥；直连渠道使用已配置的 Key
               </TableCell>
             </TableRow>
           )}

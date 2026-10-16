@@ -1087,17 +1087,30 @@ export function GatewayPage() {
             uaMode === "custom" ? (r.user_agent_custom ?? "").trim() : "",
         }
       })
-      const res = await apiFetch<{ items: GatewayRoute[] }>(
+      // 保存后后端会自动给缺上游密钥的监控渠道路由生成密钥，结果在 ensure_keys 里
+      const res = await apiFetch<{
+        items: GatewayRoute[]
+        ensure_keys?: GatewayEnsureKeysResult
+        ensure_keys_error?: string
+      }>(
         `/gateway/groups/${selectedGroup.id}/routes`,
         { method: "PUT", body: JSON.stringify({ routes }) },
       )
       setRouteDrafts((res.items ?? []).map((r) => ({ ...r })))
-      toast.success("路由已保存")
-      const missing = (res.items ?? []).some(
-        (r) => routeSourceKind(r) === "monitor" && !r.source_api_key_name,
-      )
-      if (missing) {
-        toast.message("部分路由尚未确保上游密钥，可点击「确保上游密钥」")
+      const generated = res.ensure_keys?.ok_count ?? 0
+      const failed = res.ensure_keys?.fail_count ?? 0
+      if (res.ensure_keys_error) {
+        toast.message("路由已保存，但上游密钥生成失败", { description: res.ensure_keys_error })
+      } else if (failed > 0 && res.ensure_keys) {
+        toast.message(`路由已保存；${failed} 条路由的上游密钥生成失败`, {
+          description: "失败原因见弹窗；修好渠道后再保存一次，或点「修复上游密钥」",
+        })
+        setEnsureKeysResult(res.ensure_keys)
+        setEnsureKeysOpen(true)
+      } else if (generated > 0) {
+        toast.success(`路由已保存，已为 ${generated} 条路由生成上游密钥`)
+      } else {
+        toast.success("路由已保存")
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "保存失败")
@@ -1121,14 +1134,14 @@ export function GatewayPage() {
       if ((res.fail_count ?? 0) > 0) parts.push(`失败 ${res.fail_count}`)
       if ((res.skip_count ?? 0) > 0) parts.push(`跳过 ${res.skip_count}`)
       if ((res.fail_count ?? 0) > 0) {
-        toast.message("确保完成（部分失败已跳过）", {
+        toast.message("修复完成（部分失败已跳过）", {
           description: parts.join(" · "),
         })
       } else {
         toast.success(parts.join(" · "))
       }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "确保密钥失败")
+      toast.error(e instanceof Error ? e.message : "修复上游密钥失败")
     } finally {
       setBusy(false)
     }
@@ -1339,7 +1352,7 @@ export function GatewayPage() {
         }
       }
       if (items.length === 0) {
-        toast.message("无可测试路由（请先确保上游密钥并启用路由）")
+        toast.message("无可测试路由（请先保存路由以生成上游密钥，并启用路由）")
       } else if (res.all_ok) {
         toast.success(
           routeID != null

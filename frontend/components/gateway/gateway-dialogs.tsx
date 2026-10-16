@@ -427,9 +427,9 @@ export function EnsureKeysResultDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[min(85dvh,640px)] w-full max-w-lg flex-col gap-3 overflow-hidden sm:max-w-xl">
         <DialogHeader className="shrink-0">
-          <DialogTitle>确保上游密钥</DialogTitle>
+          <DialogTitle>上游密钥</DialogTitle>
           <DialogDescription>
-            单条失败已跳过，不影响其它路由。Key 名按「渠道 + 源分组」统一，跨网关组可复用。
+            监控渠道路由用这把 Key 调用上游。单条失败已跳过，不影响其它路由；Key 名按「渠道 + 源分组」统一，跨网关组复用。
           </DialogDescription>
         </DialogHeader>
         {ensureKeysResult ? (

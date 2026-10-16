@@ -218,7 +218,7 @@ export function GatewayProvidersPanel() {
           <div className="flex flex-wrap items-end justify-between gap-2">
             <div className="min-w-0 flex-1 space-y-1">
               <p className="text-sm leading-6 text-muted-foreground">
-                配置第三方上游的访问地址与密钥，供网关组路由调用；可与监控渠道混用，无需「确保上游密钥」。
+                配置第三方上游的访问地址与密钥，供网关组路由调用；可与监控渠道混用，不需要在上游生成密钥。
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">

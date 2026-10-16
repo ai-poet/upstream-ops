@@ -193,10 +193,43 @@ func (a *AdminService) SaveRoutes(groupID uint, inputs []RouteInput) ([]storage.
 
 // EnsureKeyRouteResult 单条路由 ensure 结果（失败跳过，不中断其它路由）。
 
+// EnsureRouteKeys 组内全部路由逐条 ensure（「修复上游密钥」：上游那把 Key 被删 / 禁用后重新对齐）。
 func (a *AdminService) EnsureRouteKeys(ctx context.Context, groupID uint) (*EnsureKeysResult, error) {
-	routes, err := a.Routes.ListByGroupID(groupID)
+	return a.ensureRouteKeys(ctx, groupID, nil)
+}
+
+// EnsureMissingRouteKeys 只处理需要上游密钥的监控渠道路由（见 routeNeedsUpstreamKey），保存路由后自动调用。
+// 结果的 Routes 只含实际处理过的路由。
+func (a *AdminService) EnsureMissingRouteKeys(ctx context.Context, groupID uint) (*EnsureKeysResult, error) {
+	return a.ensureRouteKeys(ctx, groupID, a.routeNeedsUpstreamKey)
+}
+
+// routeNeedsUpstreamKey 监控渠道路由还没有上游密钥，或已存的密钥名与当前「渠道 + 源分组」的统一名对不上
+// （换过源分组、或是旧版按路由命名的 Key）。直连渠道的密钥在直连配置里，不需要。
+func (a *AdminService) routeNeedsUpstreamKey(r *storage.GatewayRoute) bool {
+	if r.NormalizeSourceKind() == storage.GatewayRouteSourceProvider {
+		return false
+	}
+	if strings.TrimSpace(r.SourceAPIKeyCipher) == "" {
+		return true
+	}
+	return strings.TrimSpace(r.SourceAPIKeyName) != a.stableUpstreamKeyName(r.SourceChannelID, r.SourceGroupID, r.SourceGroupName)
+}
+
+// ensureRouteKeys only 为 nil 时处理全部路由，否则只处理 only 返回 true 的路由。
+func (a *AdminService) ensureRouteKeys(ctx context.Context, groupID uint, only func(*storage.GatewayRoute) bool) (*EnsureKeysResult, error) {
+	all, err := a.Routes.ListByGroupID(groupID)
 	if err != nil {
 		return nil, err
+	}
+	routes := all
+	if only != nil {
+		routes = make([]storage.GatewayRoute, 0, len(all))
+		for i := range all {
+			if only(&all[i]) {
+				routes = append(routes, all[i])
+			}
+		}
 	}
 	results := make([]EnsureKeyRouteResult, len(routes))
 	if len(routes) == 0 {
