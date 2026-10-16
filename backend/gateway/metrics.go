@@ -33,6 +33,7 @@ type Metrics struct {
 	routeCooldowns      [3]atomic.Int64 // 按原因：http / transport / first_token_timeout
 	routeAutoDisables   atomic.Int64
 	routeCooldownBorrow atomic.Int64 // 所有路由都在冷却时借用最早到期路由的次数
+	upstreamResets      atomic.Int64 // 收到协议终态后，上游在宽限期内没结束、被网关重置（RST）的流
 
 	writeBehindSyncFallbacks   atomic.Int64 // 用量队列满、退回同步写
 	writeBehindUsageFailures   atomic.Int64 // 单条用量最终写入失败
@@ -93,6 +94,12 @@ func (m *Metrics) streamEnded() {
 func (m *Metrics) streamFailed() {
 	if m != nil {
 		m.streamErrors.Add(1)
+	}
+}
+
+func (m *Metrics) upstreamStreamReset() {
+	if m != nil {
+		m.upstreamResets.Add(1)
 	}
 }
 
@@ -171,6 +178,7 @@ type MetricsSnapshot struct {
 	RouteCooldowns       map[string]int64   `json:"route_cooldowns"`
 	RouteAutoDisabled    int64              `json:"route_auto_disabled"`
 	RouteCooldownBorrows int64              `json:"route_cooldown_borrows"`
+	UpstreamStreamResets int64              `json:"upstream_stream_resets"`
 	RoutesPaused         int64              `json:"routes_paused"`        // 当前在冷却中的路由数
 	RoutesAutoDisabled   int64              `json:"routes_auto_disabled"` // 当前自动禁用中的路由数
 	WriteBehind          WriteBehindMetrics `json:"write_behind"`
@@ -213,6 +221,7 @@ func (m *Metrics) snapshot() MetricsSnapshot {
 	}
 	s.RouteAutoDisabled = m.routeAutoDisables.Load()
 	s.RouteCooldownBorrows = m.routeCooldownBorrow.Load()
+	s.UpstreamStreamResets = m.upstreamResets.Load()
 	s.WriteBehind = WriteBehindMetrics{
 		SyncFallbacks:        m.writeBehindSyncFallbacks.Load(),
 		UsageWriteFailures:   m.writeBehindUsageFailures.Load(),
@@ -294,6 +303,7 @@ func (s *Service) WritePrometheus(w io.Writer) {
 	counterByLabel("gateway_route_cooldowns_total", "路由进入冷却的次数，按原因", "reason", snap.RouteCooldowns)
 	counter("gateway_route_auto_disables_total", "路由被自动禁用的次数", snap.RouteAutoDisabled)
 	counter("gateway_route_cooldown_borrows_total", "所有路由都在冷却时借用最早到期路由的次数", snap.RouteCooldownBorrows)
+	counter("gateway_upstream_stream_resets_total", "收到协议终态后上游在宽限期内没结束、被网关重置的流数", snap.UpstreamStreamResets)
 	gauge("gateway_routes_paused", "当前在冷却中的路由数", snap.RoutesPaused)
 	gauge("gateway_routes_auto_disabled", "当前自动禁用中的路由数", snap.RoutesAutoDisabled)
 	wb := snap.WriteBehind

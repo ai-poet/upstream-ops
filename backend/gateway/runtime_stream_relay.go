@@ -38,10 +38,12 @@ type streamRelay struct {
 	geminiArray        *geminiArrayEncoder      // Gemini 客户端未带 alt=sse 时按 JSON 数组逐元素写出
 
 	// 上游侧
-	lastReadAt             atomic.Int64 // 最近一次读到上游数据（UnixNano，读协程写）
-	pendingLines           []string     // 当前 SSE event 已读到的行
-	sawUpstreamData        bool         // 收到过有效载荷（ping / 注释不算）
-	geminiUpstreamFinished bool         // Gemini 上游没有 [DONE]：见过 finishReason 后 EOF 才算正常结束
+	readerExit             chan struct{} // 读协程退出（读到 EOF / 出错）时关闭
+	sawTerminal            bool          // 见过上游协议终态（之后上游很快会结束流，见 forwardStreamPlan）
+	lastReadAt             atomic.Int64  // 最近一次读到上游数据（UnixNano，读协程写）
+	pendingLines           []string      // 当前 SSE event 已读到的行
+	sawUpstreamData        bool          // 收到过有效载荷（ping / 注释不算）
+	geminiUpstreamFinished bool          // Gemini 上游没有 [DONE]：见过 finishReason 后 EOF 才算正常结束
 	// chatUpstreamFinished Chat Completions 上游见过 finish_reason 或 usage 块：之后不带 [DONE] 直接 EOF 也算讲完了
 	// （sub2api openai_raw_stream_truncation.go：只认 [DONE] 会误伤跑完最后一帧就关连接的兼容上游）
 	chatUpstreamFinished bool
@@ -145,6 +147,7 @@ func (s *streamRelay) relayIncremental(upCtx, clientCtx context.Context, body io
 
 	events := make(chan sseLine, 32)
 	done := make(chan struct{})
+	s.readerExit = make(chan struct{})
 	s.lastReadAt.Store(time.Now().UnixNano())
 	go s.readUpstream(body, events, done)
 	defer close(done)
@@ -228,6 +231,7 @@ func (s *streamRelay) relayIncremental(upCtx, clientCtx context.Context, body io
 
 // readUpstream 读协程：按行读上游 SSE 交给主循环；主循环结束（done 关闭）后退出。
 func (s *streamRelay) readUpstream(body io.Reader, events chan<- sseLine, done <-chan struct{}) {
+	defer close(s.readerExit)
 	defer close(events)
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), s.maxLineSize)
@@ -237,6 +241,8 @@ func (s *streamRelay) readUpstream(body io.Reader, events chan<- sseLine, done <
 		select {
 		case events <- sseLine{line: line}:
 		case <-done:
+			// 主循环已结束：剩下的读完丢掉，让上游按 END_STREAM 正常结束这条流（body 由调用方限时关闭）
+			_, _ = io.Copy(io.Discard, body)
 			return
 		}
 	}
@@ -274,6 +280,7 @@ func (s *streamRelay) onLine(line string) (finished bool) {
 	// 首个可见输出之前上游在流里报错：可重试的记为本次尝试失败（走重试 / 换路由），客户端什么都没收到
 	if !s.result.Committed {
 		if status, body, ok := preOutputStreamFailure(eventName, eventData, s.upKind); ok {
+			s.sawTerminal = true
 			s.usageBuf.WriteLine(eventData)
 			mergeStreamUsage(&s.tokens, eventData, s.upKind)
 			s.pendingLines, s.held = s.pendingLines[:0], nil
@@ -283,6 +290,9 @@ func (s *streamRelay) onLine(line string) (finished bool) {
 		}
 	}
 	terminal, success, terminalMessage := upstreamSSETerminal(eventName, eventData, s.upKind)
+	if terminal {
+		s.sawTerminal = true
+	}
 	// 写出失败已标记客户端断开，这里不用再处理
 	_ = s.processEvent(s.pendingLines, eventName, eventData)
 	s.pendingLines = s.pendingLines[:0]

@@ -134,11 +134,42 @@ func (rt *Runtime) forwardStreamPlan(ctx context.Context, c *gin.Context, call u
 	}
 	gwCfg := rt.gatewayRuntime()
 	upCtx, upCancel := context.WithTimeout(upBase, gwCfg.ForwardTimeout())
-	defer upCancel()
 
 	// 可取消：仅首字超时 / 未 commit 的客户端断开时 abort
 	reqCtx, abortReq := context.WithCancel(upCtx)
-	defer abortReq()
+
+	// 结束时关掉上游响应体、取消上游请求。收到协议终态后不立刻关：HTTP/2 上在上游的 END_STREAM 到达前
+	// 关 body / 取消请求，Go 会给上游发 RST_STREAM，每条流都被我们重置，上游的防滥用规则会回
+	// GOAWAY ENHANCE_YOUR_CALM 把整条连接（连同复用它的所有流）断掉（线上 2026-10-16 实测）。
+	// 所以终态之后让读协程在后台把剩下的读到 EOF，最多等 upstreamDrainGrace，客户端这边照常立刻收尾。
+	var upstreamBody io.Closer
+	var drainUntilEOF <-chan struct{}
+	defer func() {
+		release := func(drained bool) {
+			if upstreamBody != nil {
+				_ = upstreamBody.Close()
+			}
+			abortReq()
+			upCancel()
+			if !drained {
+				rt.metrics.upstreamStreamReset()
+			}
+		}
+		if drainUntilEOF == nil {
+			release(true)
+			return
+		}
+		go func() {
+			timer := time.NewTimer(upstreamDrainGrace)
+			defer timer.Stop()
+			select {
+			case <-drainUntilEOF:
+				release(true)
+			case <-timer.C:
+				release(false)
+			}
+		}()
+	}()
 
 	req, err := rt.buildUpstreamHTTPRequest(reqCtx, call)
 	if err != nil {
@@ -151,7 +182,7 @@ func (rt *Runtime) forwardStreamPlan(ctx context.Context, c *gin.Context, call u
 	if err != nil {
 		return streamAttemptResult{Err: err}
 	}
-	defer func() { _ = resp.Body.Close() }()
+	upstreamBody = resp.Body
 
 	s := &streamRelay{
 		rt:                rt,
@@ -179,8 +210,15 @@ func (rt *Runtime) forwardStreamPlan(ctx context.Context, c *gin.Context, call u
 	if !protocol.SupportsIncrementalStream(plan.Inbound, plan.Upstream, plan.Converted) {
 		return s.relayBuffered(resp.Body)
 	}
-	return s.relayIncremental(upCtx, clientCtx, resp.Body)
+	result := s.relayIncremental(upCtx, clientCtx, resp.Body)
+	if s.sawTerminal {
+		drainUntilEOF = s.readerExit
+	}
+	return result
 }
+
+// upstreamDrainGrace 收到协议终态后，最多等上游这么久把流正常结束（见 forwardStreamPlan）。
+var upstreamDrainGrace = 3 * time.Second
 
 // joinUpstreamURL 拼上游 URL。方舟（Seedance）的 /api/v3/... 路径在 base 已以 /api/v3 或 /v3 结尾时
 // 去掉重复的版本段，避免 /api/v3/api/v3/...。
