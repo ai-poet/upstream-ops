@@ -284,10 +284,10 @@ func (rt *Runtime) HandleCountTokens(c *gin.Context) {
 			continue
 		}
 		rt.applyRouteUserAgent(target, auth.Group, &route)
-		status, _, respBody, _, ferr := rt.forwardOnce(
-			c.Request.Context(), c, target, "/v1/messages/count_tokens",
-			http.MethodPost, c.Request.Header, body, false, protocol.KindAnthropic, 0,
-		)
+		status, _, respBody, _, ferr := rt.forwardOnce(c.Request.Context(), upstreamCall{
+			target: target, path: "/v1/messages/count_tokens", method: http.MethodPost,
+			header: c.Request.Header, body: body, kind: protocol.KindAnthropic,
+		})
 		if ferr == nil && status >= 200 && status < 300 && len(respBody) > 0 {
 			c.Data(status, "application/json", respBody)
 			return

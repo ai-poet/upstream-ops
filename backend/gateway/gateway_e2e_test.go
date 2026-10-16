@@ -23,8 +23,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// upstreamCall 记录 mock 上游收到的请求。
-type upstreamCall struct {
+// recordedCall 记录 mock 上游收到的请求。
+type recordedCall struct {
 	Method string
 	Path   string // 含查询串
 	Header http.Header
@@ -34,7 +34,7 @@ type upstreamCall struct {
 type mockUpstream struct {
 	*httptest.Server
 	mu    sync.Mutex
-	calls []upstreamCall
+	calls []recordedCall
 }
 
 func newMockUpstream(t *testing.T, handler func(w http.ResponseWriter, r *http.Request, body []byte)) *mockUpstream {
@@ -43,7 +43,7 @@ func newMockUpstream(t *testing.T, handler func(w http.ResponseWriter, r *http.R
 	m.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		m.mu.Lock()
-		m.calls = append(m.calls, upstreamCall{Method: r.Method, Path: r.URL.RequestURI(), Header: r.Header.Clone(), Body: body})
+		m.calls = append(m.calls, recordedCall{Method: r.Method, Path: r.URL.RequestURI(), Header: r.Header.Clone(), Body: body})
 		m.mu.Unlock()
 		handler(w, r, body)
 	}))
@@ -51,10 +51,10 @@ func newMockUpstream(t *testing.T, handler func(w http.ResponseWriter, r *http.R
 	return m
 }
 
-func (m *mockUpstream) Calls() []upstreamCall {
+func (m *mockUpstream) Calls() []recordedCall {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return append([]upstreamCall(nil), m.calls...)
+	return append([]recordedCall(nil), m.calls...)
 }
 
 type e2eRouteSpec struct {

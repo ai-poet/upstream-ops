@@ -4,7 +4,6 @@ package gateway
 import (
 	"context"
 	"net/http"
-	"time"
 
 	"github.com/bejix/upstream-ops/backend/config"
 	"github.com/bejix/upstream-ops/backend/connector"
@@ -59,23 +58,8 @@ func (s *Service) resolveUpstreamTarget(route *storage.GatewayRoute) (*upstreamT
 	return s.runtime().resolveUpstreamTarget(route)
 }
 
-func (s *Service) forwardOnce(
-	ctx context.Context,
-	c *gin.Context,
-	target *upstreamTarget,
-	path string,
-	method string,
-	inHeader http.Header,
-	body []byte,
-	stream bool,
-	kind protocolKind,
-	firstTokenTimeout time.Duration, // 0=关闭；从发起请求起算到首字节的总等待
-) (status int, respHeader http.Header, respBody []byte, firstTokenMS *int64, err error) {
-	return s.runtime().forwardOnce(ctx, c, target, path, method, inHeader, body, stream, kind, firstTokenTimeout)
-}
-
-func (s *Service) recordUsage(key *storage.GatewayKey, group *storage.GatewayGroup, route *storage.GatewayRoute, target *upstreamTarget, reqID, requestedModel, upstreamModel, chain string, tokens UsageTokens, rate, billingRate float64, stream bool, status int, success bool, errInfo usageErrorInfo, durationMS int64, firstTokenMS *int64, c *gin.Context, meta usageRecordMeta) {
-	s.runtime().recordUsage(key, group, route, target, reqID, requestedModel, upstreamModel, chain, tokens, rate, billingRate, stream, status, success, errInfo, durationMS, firstTokenMS, c, meta)
+func (s *Service) forwardOnce(ctx context.Context, call upstreamCall) (status int, respHeader http.Header, respBody []byte, firstTokenMS *int64, err error) {
+	return s.runtime().forwardOnce(ctx, call)
 }
 
 // HandleModels 处理 /v1/models 列表。

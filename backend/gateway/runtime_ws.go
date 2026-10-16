@@ -121,7 +121,10 @@ func (rt *Runtime) HandleResponsesWebSocket(c *gin.Context) {
 		rt.writeWSResponsesFailed(ctx, client, "api_error", err.Error())
 		return
 	}
-	handshake, err := rt.buildUpstreamHTTPRequest(ctx, selected.target, "/v1/responses", http.MethodGet, c.Request.Header, nil, protocol.KindOpenAIResponses, false)
+	handshake, err := rt.buildUpstreamHTTPRequest(ctx, upstreamCall{
+		target: selected.target, path: "/v1/responses", method: http.MethodGet,
+		header: c.Request.Header, kind: protocol.KindOpenAIResponses,
+	})
 	if err != nil {
 		rt.writeWSResponsesFailed(ctx, client, "api_error", err.Error())
 		return
@@ -341,7 +344,16 @@ func (rt *Runtime) recordWSResponsesUsage(
 	if !success {
 		status = http.StatusBadGateway
 	}
-	rt.recordUsage(key, group, &selected.route, selected.target, reqID, requestedModel, selected.upstreamModel, selected.chain, tokens, selected.rate, selected.billingRate, true, status, success, usageErrorInfo{Type: errType, Summary: errText}, duration.Milliseconds(), nil, c, meta)
+	rt.recordUsage(c, usageRecord{
+		key: key, group: group, route: &selected.route, target: selected.target,
+		requestID: reqID, requestedModel: requestedModel, upstreamModel: selected.upstreamModel, chain: selected.chain,
+		rate: selected.rate, billingRate: selected.billingRate, stream: true, meta: meta,
+		usageOutcome: usageOutcome{
+			tokens: tokens, status: status, success: success,
+			errInfo:    usageErrorInfo{Type: errType, Summary: errText},
+			durationMS: duration.Milliseconds(),
+		},
+	})
 }
 
 func (rt *Runtime) writeWSResponsesFailed(ctx context.Context, conn *websocket.Conn, code, message string) {

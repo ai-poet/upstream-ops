@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// remainingFirstTokenWait 计算从 start 起算，首字超时还剩多少时间。
+// configured<=0 表示关闭：left=0 且 timedOut=false（调用方按「无超时」处理）。
+// 已耗尽：timedOut=true。
 func (svc *Service) remainingFirstTokenWait(start time.Time, configured time.Duration) (left time.Duration, timedOut bool) {
 	if configured <= 0 {
 		return 0, false

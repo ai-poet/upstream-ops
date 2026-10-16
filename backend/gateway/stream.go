@@ -1,13 +1,7 @@
-// 流式转发结果类型与 Service→Runtime 委托入口。
+// 流式转发结果类型。
 package gateway
 
-import (
-	"context"
-	"net/http"
-	"time"
-
-	"github.com/gin-gonic/gin"
-)
+import "net/http"
 
 // streamAttemptResult 单次流式转发结果。
 // Committed=true 表示已向客户端写出有效 SSE，禁止 retry/failover。
@@ -24,21 +18,4 @@ type streamAttemptResult struct {
 	DownstreamComplete bool
 	StreamErr          error
 	Err                error
-}
-
-// buildUpstreamHTTPRequest 构建上游 HTTP 请求（forwardOnce / forwardStream 共用）。
-func (s *Service) buildUpstreamHTTPRequest(ctx context.Context, target *upstreamTarget, path string, method string, inHeader http.Header, body []byte, kind protocolKind, stream bool) (*http.Request, error) {
-	return s.runtime().buildUpstreamHTTPRequest(ctx, target, path, method, inHeader, body, kind, stream)
-}
-
-func (s *Service) forwardStream(ctx context.Context, c *gin.Context, target *upstreamTarget, path string, method string, inHeader http.Header, body []byte, inboundKind protocolKind, upstreamKind protocolKind, model string, converted bool, firstTokenTimeout time.Duration) streamAttemptResult {
-	return s.runtime().forwardStream(ctx, c, target, path, method, inHeader, body, inboundKind, upstreamKind, model, converted, firstTokenTimeout)
-}
-
-func (s *Service) forwardStreamBuffered(c *gin.Context, resp *http.Response, start time.Time, firstTokenTimeout time.Duration, inbound, upstream protocolKind, model string, converted bool, headers http.Header, status int) streamAttemptResult {
-	return s.runtime().forwardStreamBuffered(c, resp, start, firstTokenTimeout, inbound, upstream, model, converted, headers, status)
-}
-
-func (s *Service) forwardStreamIncremental(upCtx context.Context, clientCtx context.Context, abortReq context.CancelFunc, c *gin.Context, resp *http.Response, start time.Time, firstTokenTimeout time.Duration, inbound, upstream protocolKind, model string, converted bool, headers http.Header, status int) streamAttemptResult {
-	return s.runtime().forwardStreamIncremental(upCtx, clientCtx, abortReq, c, resp, start, firstTokenTimeout, inbound, upstream, model, converted, headers, status)
 }

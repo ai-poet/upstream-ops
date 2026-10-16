@@ -12,7 +12,6 @@ import (
 
 	"github.com/bejix/upstream-ops/backend/gateway/protocol"
 	"github.com/bejix/upstream-ops/backend/storage"
-	"github.com/gin-gonic/gin"
 )
 
 func (a *AdminService) collectGroupModels(
@@ -433,10 +432,10 @@ func (a *AdminService) probeRouteModel(
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 	start := time.Now()
-	// 探测不走 gin 客户端上下文写回，使用空 Header（UA 由 target.UserAgentOverride 注入）
-	status, _, respBody, _, fwdErr := a.forwardOnce(
-		ctx, &gin.Context{}, target, path, http.MethodPost, http.Header{}, body, false, upstreamKind, 0,
-	)
+	// 探测不带客户端请求头（UA 由 target.UserAgentOverride 注入）
+	status, _, respBody, _, fwdErr := a.forwardOnce(ctx, upstreamCall{
+		target: target, path: path, method: http.MethodPost, header: http.Header{}, body: body, kind: upstreamKind,
+	})
 	res.LatencyMS = time.Since(start).Milliseconds()
 	res.StatusCode = status
 	if fwdErr != nil {

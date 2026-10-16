@@ -109,10 +109,10 @@ func (rt *Runtime) handleGeminiCountTokens(c *gin.Context, model string) {
 			continue
 		}
 		rt.applyRouteUserAgent(target, auth.Group, &route)
-		status, _, respBody, _, ferr := rt.forwardOnce(
-			c.Request.Context(), c, target, "/v1beta/models/"+upstreamModel+":countTokens",
-			http.MethodPost, c.Request.Header, body, false, protocol.KindGemini, 0,
-		)
+		status, _, respBody, _, ferr := rt.forwardOnce(c.Request.Context(), upstreamCall{
+			target: target, path: "/v1beta/models/" + upstreamModel + ":countTokens", method: http.MethodPost,
+			header: c.Request.Header, body: body, kind: protocol.KindGemini,
+		})
 		if ferr == nil && status >= 200 && status < 300 && len(respBody) > 0 {
 			c.Data(status, "application/json", respBody)
 			return

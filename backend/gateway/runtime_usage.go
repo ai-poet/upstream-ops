@@ -11,113 +11,98 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func (rt *Runtime) recordUsage(
-	key *storage.GatewayKey,
-	group *storage.GatewayGroup,
-	route *storage.GatewayRoute,
-	target *upstreamTarget,
-	reqID, requestedModel, upstreamModel, chain string,
-	tokens UsageTokens,
-	rate, billingRate float64,
-	stream bool,
-	status int,
-	success bool,
-	errInfo usageErrorInfo,
-	durationMS int64,
-	firstTokenMS *int64,
-	c *gin.Context,
-	meta usageRecordMeta,
-) {
-	priceModel := upstreamModel
+// recordUsage 计费并写一条用量日志；成功时累加密钥已用额度。
+func (rt *Runtime) recordUsage(c *gin.Context, u usageRecord) {
+	priceModel := u.upstreamModel
 	if priceModel == "" {
-		priceModel = requestedModel
+		priceModel = u.requestedModel
 	}
 	// 对齐 sub2api RecordUsage：OpenAI 总输入含 cache 明细 → 拆互斥桶再计费/落库
-	tokens = SplitOpenAIUsageBuckets(tokens)
+	tokens := SplitOpenAIUsageBuckets(u.tokens)
 	pricing := rt.Pricing.Resolve(priceModel)
-	if pricing.BillingMode == BillingModeToken && meta.BillingInput.EndpointMode != "" {
-		pricing.BillingMode = meta.BillingInput.EndpointMode
+	if pricing.BillingMode == BillingModeToken && u.meta.BillingInput.EndpointMode != "" {
+		pricing.BillingMode = u.meta.BillingInput.EndpointMode
 	}
-	cost := CalculateCostWithBillingInput(pricing, tokens, rate, billingRate, meta.ServiceTier, meta.BillingInput)
+	cost := CalculateCostWithBillingInput(pricing, tokens, u.rate, u.billingRate, u.meta.ServiceTier, u.meta.BillingInput)
 	reqType := storage.GatewayRequestTypeSync
-	if stream {
+	if u.stream {
 		reqType = storage.GatewayRequestTypeStream
 	}
 	billingMode := cost.BillingMode
 	if billingMode == "" {
 		billingMode = string(BillingModeToken)
 	}
-	sourceGroupName := strings.TrimSpace(route.SourceGroupName)
+	sourceGroupName := strings.TrimSpace(u.route.SourceGroupName)
 	if sourceGroupName == "" || rt.isSourceGroupIDPlaceholder(sourceGroupName) {
 		// 运行时再解析一次：旧路由可能只有 id、name 为空
-		if route.SourceGroupID != nil && *route.SourceGroupID > 0 && route.SourceChannelID > 0 {
-			if gs := rt.loadGroupsByChannel(context.Background(), []storage.GatewayRoute{*route}); len(gs) > 0 {
-				tmp := *route
-				rt.enrichRouteSourceGroupName(&tmp, gs[route.SourceChannelID])
+		if u.route.SourceGroupID != nil && *u.route.SourceGroupID > 0 && u.route.SourceChannelID > 0 {
+			if gs := rt.loadGroupsByChannel(context.Background(), []storage.GatewayRoute{*u.route}); len(gs) > 0 {
+				tmp := *u.route
+				rt.enrichRouteSourceGroupName(&tmp, gs[u.route.SourceChannelID])
 				if n := strings.TrimSpace(tmp.SourceGroupName); n != "" && !rt.isSourceGroupIDPlaceholder(n) {
 					sourceGroupName = n
 				}
 			}
 		}
 	}
-	if sourceGroupName == "" && route.SourceGroupID != nil {
-		sourceGroupName = fmt.Sprintf("id:%d", *route.SourceGroupID)
+	if sourceGroupName == "" && u.route.SourceGroupID != nil {
+		sourceGroupName = fmt.Sprintf("id:%d", *u.route.SourceGroupID)
 	}
 	var channelID uint
 	var providerID uint
 	providerName := ""
-	sourceKeyName := strings.TrimSpace(route.SourceAPIKeyName)
-	sourceKeyID := route.SourceAPIKeyID
-	if target != nil {
-		if target.Channel != nil {
-			channelID = target.Channel.ID
+	sourceKeyName := strings.TrimSpace(u.route.SourceAPIKeyName)
+	sourceKeyID := u.route.SourceAPIKeyID
+	if u.target != nil {
+		if u.target.Channel != nil {
+			channelID = u.target.Channel.ID
 		}
-		if target.Provider != nil {
-			providerID = target.Provider.ID
-			providerName = target.Provider.Name
+		if u.target.Provider != nil {
+			providerID = u.target.Provider.ID
+			providerName = u.target.Provider.Name
 			if sourceKeyName == "" {
-				sourceKeyName = target.Provider.APIKeyHint
+				sourceKeyName = u.target.Provider.APIKeyHint
 			}
 		}
-	} else if route != nil {
-		channelID = route.SourceChannelID
-		providerID = route.GatewayProviderID
+	} else if u.route != nil {
+		channelID = u.route.SourceChannelID
+		providerID = u.route.GatewayProviderID
 	}
-	attempt := meta.Attempt
+	attempt := u.meta.Attempt
 	if attempt <= 0 {
 		attempt = 1
 	}
-	attemptKind := strings.TrimSpace(meta.AttemptKind)
+	attemptKind := strings.TrimSpace(u.meta.AttemptKind)
 	if attemptKind == "" {
 		attemptKind = attemptKindPrimary
 	}
 	item := &storage.GatewayUsageLog{
-		GatewayGroupID:    group.ID,
-		GatewayKeyID:      key.ID,
-		RouteID:           route.ID,
+		GatewayGroupID:    u.group.ID,
+		GatewayKeyID:      u.key.ID,
+		RouteID:           u.route.ID,
 		ChannelID:         channelID,
 		GatewayProviderID: providerID,
 		ProviderName:      providerName,
 		// 路由快照：保存路由换 id 后历史记录仍可展示
 		SourceAPIKeyID:        sourceKeyID,
 		SourceAPIKeyName:      sourceKeyName,
-		SourceGroupID:         route.SourceGroupID,
+		SourceGroupID:         u.route.SourceGroupID,
 		SourceGroupName:       sourceGroupName,
-		RequestID:             reqID,
+		RequestID:             u.requestID,
 		Attempt:               attempt,
 		AttemptKind:           attemptKind,
-		CooldownUntil:         meta.CooldownUntil,
-		RequestedModel:        requestedModel,
-		UpstreamModel:         upstreamModel,
-		ModelMappingChain:     chain,
-		InboundEndpoint:       meta.InboundEndpoint,
-		UpstreamEndpoint:      meta.UpstreamEndpoint,
-		InboundProtocol:       meta.InboundProtocol,
-		UpstreamProtocol:      meta.UpstreamProtocol,
-		ProtocolConverted:     meta.ProtocolConverted,
+		CooldownUntil:         u.meta.CooldownUntil,
+		RequestedModel:        u.requestedModel,
+		UpstreamModel:         u.upstreamModel,
+		ModelMappingChain:     u.chain,
+		InboundEndpoint:       u.meta.InboundEndpoint,
+		UpstreamEndpoint:      u.meta.UpstreamEndpoint,
+		InboundProtocol:       u.meta.InboundProtocol,
+		UpstreamProtocol:      u.meta.UpstreamProtocol,
+		ProtocolConverted:     u.meta.ProtocolConverted,
 		RequestType:           reqType,
-		ServiceTier:           meta.ServiceTier,
-		ReasoningEffort:       meta.ReasoningEffort,
+		ServiceTier:           u.meta.ServiceTier,
+		ReasoningEffort:       u.meta.ReasoningEffort,
 		BillingMode:           billingMode,
 		InputTokens:           tokens.InputTokens,
 		OutputTokens:          tokens.OutputTokens,
@@ -135,28 +120,28 @@ func (rt *Runtime) recordUsage(
 		TotalCost:             cost.TotalCost,
 		ActualCost:            cost.ActualCost,
 		AccountStatsCost:      cost.TotalCost,
-		RateMultiplier:        rate,
-		BillingRateMultiplier: billingRate,
+		RateMultiplier:        u.rate,
+		BillingRateMultiplier: u.billingRate,
 		// 账户侧统计用换算后的有效倍率（与路由计费倍率一致），而非独立默认 1
-		AccountRateMultiplier: rate,
-		Stream:                stream,
-		StatusCode:            status,
-		Success:               success,
-		ErrorMessage:          rt.truncateRunes(errInfo.Summary, rt.gatewayRuntime().UsageErrorMsgRunes),
-		ErrorType:             errInfo.Type,
-		ErrorDetail:           errInfo.Detail,
-		UpstreamURL:           meta.UpstreamURL,
-		UpstreamErrorBody:     errInfo.UpstreamBody,
-		UpstreamErrorHeaders:  errInfo.UpstreamHeaders,
-		DurationMS:            durationMS,
-		FirstTokenMS:          firstTokenMS,
+		AccountRateMultiplier: u.rate,
+		Stream:                u.stream,
+		StatusCode:            u.status,
+		Success:               u.success,
+		ErrorMessage:          rt.truncateRunes(u.errInfo.Summary, rt.gatewayRuntime().UsageErrorMsgRunes),
+		ErrorType:             u.errInfo.Type,
+		ErrorDetail:           u.errInfo.Detail,
+		UpstreamURL:           u.meta.UpstreamURL,
+		UpstreamErrorBody:     u.errInfo.UpstreamBody,
+		UpstreamErrorHeaders:  u.errInfo.UpstreamHeaders,
+		DurationMS:            u.durationMS,
+		FirstTokenMS:          u.firstTokenMS,
 		IPAddress:             c.ClientIP(),
 		UserAgent:             c.Request.UserAgent(),
 		CreatedAt:             time.Now(),
 	}
 	rt.saveUsageLog(item)
-	if success && cost.ActualCost > 0 {
-		rt.addKeyQuotaUsed(key.ID, cost.ActualCost)
+	if u.success && cost.ActualCost > 0 {
+		rt.addKeyQuotaUsed(u.key.ID, cost.ActualCost)
 	}
 }
 
