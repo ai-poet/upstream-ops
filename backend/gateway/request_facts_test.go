@@ -25,10 +25,10 @@ func TestScanRequestFacts(t *testing.T) {
 	if got := scanRequestFacts("", []byte(`{"resolution":"720p"}`)).billing.SizeTier; got != "720p" {
 		t.Fatalf("resolution fallback %q", got)
 	}
-	// Responses：input 里的 additional_tools 带生图工具也按图片计费
+	// Responses：input 里的 additional_tools 带生图工具也能识别；是否按图片计费要看响应里有没有出图
 	resp := scanRequestFacts("/v1/responses", []byte(`{"model":"gpt-5","input":[{"role":"user","content":"draw"},{"type":"additional_tools","tools":[{"type":"image_generation"}]}]}`))
-	if resp.billing.EndpointMode != pricing.BillingModeImage {
-		t.Fatalf("responses image tool not detected: %+v", resp.billing)
+	if resp.billing.ImageModel != "gpt-image-2" || resp.billing.EndpointMode != "" {
+		t.Fatalf("responses image tool: %+v", resp.billing)
 	}
 	// thinking 开启 + 国产模型：推理档位按 high 记
 	th := scanRequestFacts("", []byte(`{"model":"kimi-k2-thinking","thinking":{"type":"enabled"}}`))

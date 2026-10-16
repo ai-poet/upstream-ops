@@ -80,6 +80,9 @@ type BillingInput struct {
 	SizeTier             string
 	VideoDurationSeconds int
 	EndpointMode         BillingMode
+	// ImageModel Responses 请求带了生图工具时，出图按哪个模型计价（工具里的 model，没写默认 gpt-image-2）。
+	// 只有响应里真的出了图才按图片计费（见 WithResponse），对齐 sub2api。
+	ImageModel string
 }
 
 // CalculateCostWithBillingInput 统一覆盖 token / per_request / image / video 四种计费模式。

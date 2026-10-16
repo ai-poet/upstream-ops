@@ -20,6 +20,10 @@ func (rt *Runtime) recordUsage(c *gin.Context, u usageRecord) {
 	if priceModel == "" {
 		priceModel = u.requestedModel
 	}
+	// Responses 生图工具真的出了图：按出图模型计价（对齐 sub2api 的 imageBillingModel）
+	if u.meta.BillingInput.EndpointMode == pricing.BillingModeImage && u.meta.BillingInput.ImageModel != "" {
+		priceModel = u.meta.BillingInput.ImageModel
+	}
 	// 拆成互斥桶再计费 / 落库：OpenAI（Chat / Responses）的输入 token 含缓存读写，要扣掉（对齐 sub2api）；
 	// Anthropic 的 input_tokens 本来就不含缓存，Gemini 解析时已扣过，再扣一次输入就少算了
 	tokens := u.tokens

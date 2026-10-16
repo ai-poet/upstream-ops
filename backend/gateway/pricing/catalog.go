@@ -511,6 +511,22 @@ func (c *Catalog) logError(msg string, err error) {
 // seedFallbackPrices 对齐 sub2api billing_service.go 硬编码回退价。
 // LiteLLM JSON 未必覆盖全部在用模型（如 grok-4.5），无表项时靠此表计费。
 func (c *Catalog) seedFallbackPrices() {
+	// OpenAI GPT-6 官方价（照抄 sub2api billing_service.go fallbackPrices）：远程价目表同步失败时也能按官方价计费，
+	// 以前没有这几条，同步失败时 gpt-6.x 全部按 0 计。长上下文：输入超过 272K 时输入 ×2、输出 ×1.5。
+	gpt6 := func(in, out, cacheWrite, cacheRead float64) ModelPricing {
+		return ModelPricing{
+			InputPricePerToken: in, InputPricePerTokenPriority: in * 2,
+			OutputPricePerToken: out, OutputPricePerTokenPriority: out * 2,
+			CacheCreationPricePerToken: cacheWrite, CacheCreationPricePerTokenPriority: cacheWrite * 2,
+			CacheReadPricePerToken: cacheRead, CacheReadPricePerTokenPriority: cacheRead * 2,
+			LongContextInputThreshold: 272_000, LongContextInputMultiplier: 2, LongContextOutputMultiplier: 1.5,
+		}
+	}
+	c.fallbacks["gpt-6.1-sol"] = gpt6(2e-6, 10e-6, 2.5e-6, 0.1e-6)
+	c.fallbacks["gpt-6-sol"] = gpt6(2e-6, 10e-6, 2.5e-6, 0.2e-6)
+	c.fallbacks["gpt-6-luna"] = gpt6(0.1e-6, 0.5e-6, 0.125e-6, 0.01e-6)
+	c.fallbacks["gpt-6-astra"] = gpt6(10e-6, 50e-6, 12.5e-6, 1e-6)
+
 	// xAI Grok 4.5: $2 / $6 / cached $0.50 per MTok
 	c.fallbacks["grok-4.5"] = ModelPricing{
 		InputPricePerToken:     2e-6,
@@ -767,6 +783,10 @@ func (c *Catalog) fallbackForModel(model string) ModelPricing {
 		return c.fallbacks["grok-4.3"]
 	case "grok-build", "grok-build-0.1", "grok-composer", "grok-composer-2.5-fast", "composer-2.5":
 		return c.fallbacks["grok-build-0.1"]
+	}
+	// 精确名的硬编码回退（gpt-6.x 等）
+	if p, ok := c.fallbacks[modelLower]; ok && p.HasTokenPrice() {
+		return p
 	}
 	// 前缀宽松匹配：grok-4.5-xxx
 	if strings.HasPrefix(modelLower, "grok-4.5") {

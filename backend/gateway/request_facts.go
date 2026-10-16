@@ -97,11 +97,29 @@ func scanRequestFacts(path string, body []byte) requestFacts {
 	if f.billing.EndpointMode == pricing.BillingModeVideo && f.billing.SizeTier == "" {
 		f.billing.SizeTier = "480p"
 	}
-	if strings.Contains(path, "/responses") && responsesRequestHasImageGenerationJSON(tools, input) {
-		f.billing.EndpointMode = pricing.BillingModeImage
+	// Responses 带生图工具：只记下出图时按哪个模型、哪个尺寸计价；是否按图片计费看响应里有没有真的出图
+	// （见 BillingInput.WithResponse）。以前一带工具就整单按图片计费，Codex 每个请求都带这个工具，
+	// 结果每个请求都按一张图（$0.134）收费（线上 2026-10-16）。模型 / 尺寸的取法对齐 sub2api
+	// resolveOpenAIResponsesImageBillingConfigDetailedFromBody。
+	if strings.Contains(path, "/responses") {
+		if model, size, ok := responsesImageGenerationTool(tools, input); ok {
+			if model == "" && strings.HasPrefix(strings.ToLower(f.model), "gpt-image") {
+				model = f.model
+			}
+			if model == "" {
+				model = defaultResponsesImageModel
+			}
+			f.billing.ImageModel = model
+			if size != "" {
+				f.billing.SizeTier = size
+			}
+		}
 	}
 	return f
 }
+
+// defaultResponsesImageModel 生图工具没写 model 时出图按它计价（与 sub2api 一致）。
+const defaultResponsesImageModel = "gpt-image-2"
 
 func baseBillingInput(path string) pricing.BillingInput {
 	input := pricing.BillingInput{RequestCount: 1}
@@ -134,35 +152,34 @@ func reasoningEffortFrom(model, nestedEffort, flatEffort, outputEffort string, t
 	return ""
 }
 
-// responsesRequestHasImageGenerationJSON Responses 请求是否带图片生成工具（顶层 tools，或 input 里的 additional_tools）。
-func responsesRequestHasImageGenerationJSON(tools, input gjson.Result) bool {
-	hasTool := func(list gjson.Result) bool {
-		found := false
+// responsesImageGenerationTool Responses 请求里的图片生成工具（顶层 tools，或 input 里的 additional_tools）：
+// 有没有、工具指定的 model 与 size。
+func responsesImageGenerationTool(tools, input gjson.Result) (model, size string, ok bool) {
+	find := func(list gjson.Result) bool {
 		list.ForEach(func(_, tool gjson.Result) bool {
 			typ := strings.TrimSpace(tool.Get("type").String())
 			if typ == "image_generation" || (typ == "namespace" && strings.TrimSpace(tool.Get("name").String()) == "image_gen") {
-				found = true
+				model = strings.TrimSpace(tool.Get("model").String())
+				size = strings.TrimSpace(tool.Get("size").String())
+				ok = true
 				return false
 			}
 			return true
 		})
-		return found
+		return ok
 	}
-	if tools.IsArray() && hasTool(tools) {
-		return true
+	if tools.IsArray() && find(tools) {
+		return model, size, true
 	}
-	if !input.IsArray() {
-		return false
+	if input.IsArray() {
+		input.ForEach(func(_, entry gjson.Result) bool {
+			if strings.TrimSpace(entry.Get("type").String()) == "additional_tools" && find(entry.Get("tools")) {
+				return false
+			}
+			return true
+		})
 	}
-	found := false
-	input.ForEach(func(_, entry gjson.Result) bool {
-		if strings.TrimSpace(entry.Get("type").String()) == "additional_tools" && hasTool(entry.Get("tools")) {
-			found = true
-			return false
-		}
-		return true
-	})
-	return found
+	return model, size, ok
 }
 
 // sameBuffer 两个切片是同一块内存（规则没改写 body 时原样返回）。

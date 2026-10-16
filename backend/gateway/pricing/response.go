@@ -7,6 +7,9 @@ import (
 
 // WithResponse 用上游响应补全计费参数：图片张数（data 数组、Responses 生图调用、tool_usage）与尺寸。
 // body 可以是整包 JSON，也可以是 SSE 流（逐行解析 data:）。
+//
+// Responses 只有响应里真的出了图才改按图片计费（对齐 sub2api：ImageCount > 0 才走图片计费）；
+// 请求带了生图工具但没出图（Codex 每个请求都带这个工具）照常按 token 计费。
 func (input BillingInput) WithResponse(body []byte) BillingInput {
 	for _, raw := range responseJSONObjects(body) {
 		if data, ok := raw["data"].([]any); ok && len(data) > 0 {
@@ -18,6 +21,7 @@ func (input BillingInput) WithResponse(body []byte) BillingInput {
 		}
 		if count, size := responsesImageOutputCount(response); count > 0 {
 			input.RequestCount = count
+			input.EndpointMode = BillingModeImage
 			if size != "" {
 				input.SizeTier = size
 			}
@@ -26,6 +30,7 @@ func (input BillingInput) WithResponse(body []byte) BillingInput {
 			if imageGen, _ := usage["image_gen"].(map[string]any); imageGen != nil {
 				if count := jsonInt(imageGen["images"]); count > 0 {
 					input.RequestCount = count
+					input.EndpointMode = BillingModeImage
 				}
 			}
 		}

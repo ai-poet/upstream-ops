@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -219,5 +220,40 @@ func TestE2E_UnpricedModelMarkedAndWarned(t *testing.T) {
 	}
 	if got := latestUsage(t, h); got.Unpriced || got.TotalCost <= 0 {
 		t.Fatalf("priced model usage = %+v", got)
+	}
+}
+
+// Codex 每个 Responses 请求都带 image_generation 工具：没出图就按 token 计费（以前每个请求都按一张图 $0.134 收，
+// 线上 2026-10-16），真的出了图才按图片计费，按出图模型计价（对齐 sub2api）。
+func TestE2E_ResponsesImageToolBilledByTokensUnlessImageProduced(t *testing.T) {
+	const reqBody = `{"model":"gpt-6.1-sol","stream":true,"input":"hi","tools":[{"type":"function","name":"shell"},{"type":"image_generation","output_format":"png"}]}`
+	completed := func(output string) string {
+		return "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[" + output + "],\"usage\":{\"input_tokens\":130955,\"input_tokens_details\":{\"cached_tokens\":130816},\"output_tokens\":2753,\"output_tokens_details\":{\"reasoning_tokens\":800}}}}\n\n"
+	}
+	var produceImage atomic.Bool
+	up := newMockUpstream(t, func(w http.ResponseWriter, r *http.Request, body []byte) {
+		out := `{"type":"message","content":[{"type":"output_text","text":"done"}]}`
+		if produceImage.Load() {
+			out = `{"type":"image_generation_call","result":"iVBORw0KGgo","size":"1024x1024"}`
+		}
+		writeSSE(w, respCreated, respDelta, completed(out))
+	})
+	h := newE2E(t, nil, e2eRouteSpec{Upstream: up, Protocol: "openai_responses"})
+
+	_ = h.do(http.MethodPost, "/v1/responses", reqBody, nil)
+	u := latestUsage(t, h)
+	// 与 sub2api 同一条记录逐项一致：139×$2 + 2753×$10 + 130816×$0.1（每百万 token）
+	if u.BillingMode != "token" || u.InputTokens != 139 || u.CacheReadTokens != 130816 || u.OutputTokens != 2753 {
+		t.Fatalf("没出图应按 token 计费：mode=%s in=%d cr=%d out=%d", u.BillingMode, u.InputTokens, u.CacheReadTokens, u.OutputTokens)
+	}
+	if diff := u.TotalCost - 0.0408896; diff > 1e-9 || diff < -1e-9 {
+		t.Fatalf("total=%v, want 0.0408896（sub2api 同一请求的金额）", u.TotalCost)
+	}
+
+	produceImage.Store(true)
+	_ = h.do(http.MethodPost, "/v1/responses", reqBody, nil)
+	u = latestUsage(t, h)
+	if u.BillingMode != "image" || u.TotalCost <= 0 {
+		t.Fatalf("出了图应按图片计费：mode=%s total=%v", u.BillingMode, u.TotalCost)
 	}
 }
