@@ -35,6 +35,9 @@ func (rt *Runtime) applySystemPrompt(group *storage.GatewayGroup, key *storage.G
 		inject = injectResponsesSystemPrompt
 	case normalizedKind == protocol.KindAnthropic && (path == "/v1/messages" || path == "/v1/messages/count_tokens"):
 		inject = injectAnthropicSystemPrompt
+	case normalizedKind == protocol.KindGemini && strings.HasPrefix(path, "/v1beta/models/") &&
+		(strings.HasSuffix(path, ":generateContent") || strings.HasSuffix(path, ":streamGenerateContent")):
+		inject = injectGeminiSystemPrompt
 	default:
 		return body, nil
 	}
@@ -225,8 +228,48 @@ func requestHasSystemPrompt(body []byte, kind protocol.Kind) (bool, error) {
 			return strings.TrimSpace(text) != "", nil
 		}
 		return true, nil
+	case protocol.KindGemini:
+		_, instruction := geminiSystemInstruction(request)
+		return len(instruction.Parts) > 0, nil
 	}
 	return false, nil
+}
+
+type geminiInstruction struct {
+	Role  string            `json:"role,omitempty"`
+	Parts []json.RawMessage `json:"parts"`
+}
+
+// geminiSystemInstruction 取 systemInstruction（兼容 snake_case），返回所用的键名与内容。
+func geminiSystemInstruction(request map[string]json.RawMessage) (string, geminiInstruction) {
+	for _, k := range []string{"systemInstruction", "system_instruction"} {
+		raw, ok := request[k]
+		if !ok || string(raw) == "null" {
+			continue
+		}
+		var ins geminiInstruction
+		if json.Unmarshal(raw, &ins) == nil {
+			return k, ins
+		}
+	}
+	return "systemInstruction", geminiInstruction{}
+}
+
+// injectGeminiSystemPrompt 在 systemInstruction.parts 最前面插入提示词。
+func injectGeminiSystemPrompt(body []byte, prompt string, override bool) ([]byte, error) {
+	request, err := decodePromptRequest(body)
+	if err != nil {
+		return nil, err
+	}
+	key, ins := geminiSystemInstruction(request)
+	if len(ins.Parts) > 0 && !override {
+		return body, nil
+	}
+	part, _ := json.Marshal(map[string]string{"text": prompt})
+	ins.Parts = append([]json.RawMessage{part}, ins.Parts...)
+	ins.Role = ""
+	request[key], _ = json.Marshal(ins)
+	return json.Marshal(request)
 }
 
 func injectChatSystemPrompt(body []byte, prompt string, override bool) ([]byte, error) {

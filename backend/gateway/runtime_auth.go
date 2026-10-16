@@ -18,6 +18,14 @@ func (rt *Runtime) Authenticate(c *gin.Context) (*AuthResult, error) {
 		raw = strings.TrimSpace(c.GetHeader("x-api-key"))
 	}
 	if raw == "" {
+		// Gemini SDK / CLI 用 x-goog-api-key
+		raw = strings.TrimSpace(c.GetHeader("x-goog-api-key"))
+	}
+	if raw == "" && isGeminiNativePath(c.Request.URL.Path) {
+		// 与 Google API 一致：/v1beta 下允许 ?key=（其它路径不接受查询串里的密钥，避免泄露进日志）
+		raw = strings.TrimSpace(c.Query("key"))
+	}
+	if raw == "" {
 		return nil, errors.New("missing api key")
 	}
 	key, err := rt.Keys.FindByHash(HashAPIKey(raw))
@@ -41,4 +49,10 @@ func (rt *Runtime) Authenticate(c *gin.Context) (*AuthResult, error) {
 		return nil, errors.New("gateway group disabled")
 	}
 	return &AuthResult{Key: key, Group: group}, nil
+}
+
+// isGeminiNativePath Gemini 原生端点（/v1beta、/antigravity/v1beta）。
+func isGeminiNativePath(path string) bool {
+	return strings.HasPrefix(path, "/v1beta/") || path == "/v1beta" ||
+		strings.HasPrefix(path, "/antigravity/v1beta/") || path == "/antigravity/v1beta"
 }

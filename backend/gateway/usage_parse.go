@@ -490,6 +490,9 @@ func ParseAnthropicSSEUsage(stream []byte) UsageTokens {
 // ParseUsage 按协议与是否 SSE 统一解析 usage（gateway 转发落库入口）。
 func ParseUsage(body []byte, stream bool, kind protocol.Kind) UsageTokens {
 	k := protocol.NormalizeKind(kind)
+	if k == protocol.KindGemini {
+		return ParseGeminiUsage(body)
+	}
 	if stream {
 		if k == protocol.KindAnthropic {
 			return ParseAnthropicSSEUsage(body)
@@ -526,6 +529,57 @@ func EnsureStreamUsageOption(body []byte, stream bool) []byte {
 	out, err := json.Marshal(m)
 	if err != nil {
 		return body
+	}
+	return out
+}
+
+// ParseGeminiUsage 解析 Gemini usageMetadata（JSON、JSON 数组或 SSE 缓冲，取最后一份）。
+//
+//	input  = promptTokenCount + toolUsePromptTokenCount - cachedContentTokenCount
+//	output = candidatesTokenCount + thoughtsTokenCount（思考按输出计费）
+//	cache_read = cachedContentTokenCount
+func ParseGeminiUsage(body []byte) UsageTokens {
+	var last map[string]any
+	consider := func(raw []byte) {
+		var m map[string]any
+		if json.Unmarshal(raw, &m) != nil {
+			return
+		}
+		if um, ok := m["usageMetadata"].(map[string]any); ok && len(um) > 0 {
+			last = um
+		} else if um, ok := m["usage_metadata"].(map[string]any); ok && len(um) > 0 {
+			last = um
+		}
+	}
+	trim := bytes.TrimSpace(body)
+	switch {
+	case len(trim) == 0:
+		return UsageTokens{}
+	case trim[0] == '{':
+		consider(trim)
+	case trim[0] == '[':
+		var arr []json.RawMessage
+		if json.Unmarshal(trim, &arr) == nil {
+			for _, item := range arr {
+				consider(item)
+			}
+		}
+	default:
+		for _, payload := range splitSSEDataPayloads(body) {
+			consider([]byte(payload))
+		}
+	}
+	if last == nil {
+		return UsageTokens{}
+	}
+	prompt := firstPositiveInt(last, "promptTokenCount", "prompt_token_count") +
+		firstPositiveInt(last, "toolUsePromptTokenCount", "tool_use_prompt_token_count")
+	cached := firstPositiveInt(last, "cachedContentTokenCount", "cached_content_token_count")
+	out := UsageTokens{
+		InputTokens:     max0(prompt - cached),
+		OutputTokens:    firstPositiveInt(last, "candidatesTokenCount", "candidates_token_count") + firstPositiveInt(last, "thoughtsTokenCount", "thoughts_token_count"),
+		CacheReadTokens: cached,
+		ReasoningTokens: firstPositiveInt(last, "thoughtsTokenCount", "thoughts_token_count"),
 	}
 	return out
 }

@@ -5,7 +5,7 @@
 > 本项目基于 [worryzyy/upstream-hub](https://github.com/worryzyy/upstream-hub) 二次开发，感谢原作者 [@worryzyy](https://github.com/worryzyy) 的开源工作。
 
 > UpstreamOps 是一个面向 NewAPI / Sub2API 上游站点的集中监控与运维面板，用来统一管理上游账号、查看余额与消费、同步模型倍率、追踪倍率变化、维护上游 API Key、发起充值/兑换，并通过多种通知渠道推送余额告警、倍率变更、登录异常、监控异常和上游公告。
-同时内置 OpenAI / Claude / Responses 兼容的请求转发网关：可创建网关密钥、绑定同步渠道或直连上游、按倍率与权重调度、协议互转、故障自动切换，并记录每次请求的用量与费用参考。
+同时内置 OpenAI / Claude / Responses / Gemini 兼容的请求转发网关：可创建网关密钥、绑定同步渠道或直连上游、按优先级与倍率调度、协议互转、故障自动切换，并记录每次请求的用量与费用参考。
 
 
 ## ❤️赞助商
@@ -59,31 +59,44 @@ UpstreamOps 主要解决这些痛点：
 
 ### 请求转发网关
 
-- 提供兼容客户端入口（Bearer / `x-api-key`）：
+- 提供兼容客户端入口（Bearer / `x-api-key` / `x-goog-api-key`；`/v1beta` 下也接受 `?key=`），覆盖面对齐 sub2api：
   - `GET /v1`（无嵌入前端时也可为 `GET /`）返回 endpoints 说明
-  - `GET /v1/models`、`GET /v1/usage`
+  - `GET /v1/models`、`GET /v1/models/:model`、`GET /v1/usage`
   - `POST /v1/chat/completions`、`POST /v1/completions`
-  - `POST /v1/responses`（OpenAI Responses，含 stream / 子路径）
+  - `POST /v1/responses`（OpenAI Responses，含 stream / 子路径 / WebSocket；`GET` 不带 Upgrade 返回 426）
   - `POST /v1/messages`、`POST /v1/messages/count_tokens`（Anthropic）
-  - 透传类：`/v1/embeddings`、`/v1/images/*`、`/v1/videos/*` 等（改 model 后按上游 path 转发）
-  - 兼容路径：`/chat/completions`、`/responses`、Codex `/backend-api/codex/*`、Gemini `/v1beta/*` 等
+  - Gemini 原生：`/v1beta/models/{model}:generateContent`、`:streamGenerateContent`（`alt=sse` 或 JSON 数组）、`:countTokens`、`:embedContent`、`/v1beta/cachedContents`
+  - 透传类：`/v1/embeddings`、`/v1/moderations`、`/v1/rerank`、`/v1/audio/*`、`/v1/images/*`（含异步任务 `/async` 与 `/v1/images/tasks/:id`、批量图像）、`/v1/videos*`、`/v1/tts`、`/v1/stt`、`/v1/custom-voices*`、`/v1/web_search`、`/v1/x_search`、Seedance `/api/v3/contents/generations/tasks`（改 model 后按上游 path 转发，multipart 表单里的 model 同样改写，查询串原样透传）
+  - 异步任务亲和：任务在哪条路由创建，查询 / 下载 / 取消就优先回到哪条路由
+  - 兼容路径：上述端点的无 `/v1` 别名、Codex `/backend-api/codex/*`、Antigravity `/antigravity/*`；`POST /api/event_logging/batch`（Claude Code 遥测）直接吞掉
 - **网关组**为配置单元：组内多把密钥共享路由、映射、模型列表与重试/顺延策略。
 - **路由来源**两种：
   - **同步渠道**：绑定已监控的 NewAPI / Sub2API 渠道 + 源分组；可「确保上游密钥」自动创建/复用专用 API Key。
   - **直连渠道（Provider）**：在网关内维护 base URL、API Key、默认计费倍率、鉴权样式与代理开关，无需先做监控渠道。
-- 路由调度：源分组倍率换算（raw / ×100 / ÷100 / custom）+ 权重；组级升序/降序；可开启「倍率扫描后自动重排」。
+- 路由调度（与 new-api 一致）：优先级数字从高到低调用；同优先级再按源分组倍率换算（raw / ×100 / ÷100 / custom）后的倍率排序（组级升序/降序）；可开启「倍率扫描后自动重排」。
 - 可视化模型映射（A→B、`*` 通配）与模型列表（从上游拉取去重 / 自定义 / auto·manual·hybrid）；支持按路由预览、同步与探测。
-- **协议互转**（含非流式与 SSE 增量）：
-  - OpenAI Chat ↔ Anthropic Messages
-  - OpenAI Chat ↔ OpenAI Responses
-  - Anthropic ↔ OpenAI Responses
-  - 路由 `upstream_protocol`：`auto` / `openai`（Chat）/ `openai_responses` / `anthropic`
-- 故障转移：网络错误、429、5xx 临时暂停并顺延；组可开「4xx 顺延」；支持组级重试次数、最大切换次数、冷却秒数。
+- **协议互转**（含非流式与 SSE 增量），默认由 [new-api RelayKit](https://github.com/QuantumNous/new-api/tree/main/relaykit) 完成：
+  - OpenAI Chat / OpenAI Responses / Anthropic Messages / Gemini 四种协议两两互转（Claude ↔ Gemini、Gemini ↔ Responses 经 Chat 中转）
+  - 工具调用（含 Responses custom / namespaced 工具）、推理设置（effort ↔ thinking budget ↔ Gemini thinkingConfig，Claude max_tokens 自动抬高）、多模态、引用与 usage（含缓存写入 5m / 1h 拆分）
+  - 客户端没显式要求推理时，不把源模型的默认思考档位带到别的模型族上游
+  - 带 `tool_search` 的 Responses 请求仍走内置转换器的工具桥；系统设置 `gateway.protocolEngine=legacy` 可整体回退旧转换器（Gemini 始终走 RelayKit）
+  - 跨协议需要下载图片时只允许公网 http(s) 地址（拦截内网 / 回环 / 元数据地址），单个不超过 20MB
+  - 路由 `upstream_protocol`：`auto` / `openai`（Chat）/ `openai_responses` / `anthropic` / `gemini`；`auto` 下 Claude 模型走 anthropic，Gemini 原生入站的 Gemini 模型走 gemini
+- **故障转移**（参考 new-api，不含会话粘滞）：
+  - 网络错误、429、5xx 冷却并顺延；组可开「4xx 顺延」，或用「重试状态码」（如 `429,500-599`）精确指定
+  - 模型不存在 / 无可用渠道 / 404 / 端点不支持：不冷却、直接换下一条路由（不受 4xx 开关限制）
+  - 上下文超长：换哪条都一样，直接回显，不浪费顺延
+  - 429 / 503 的 `Retry-After` 用作冷却时长（与组冷却取较长，上限 10 分钟）
+  - 自动禁用（组级开关）：鉴权失败 / 额度耗尽 / 账号停用（状态码与关键词在系统设置 `gateway` 段配置）时禁用路由，后台按间隔探测，成功自动恢复；路由列表可手动清除
+  - 同优先级随机分流（组级开关）；按模型优先选路由：模型清单里声明了该模型的路由排前，其余仍作兜底
+  - 某条路由的上游协议接不住请求（如有状态的 Responses 请求降级到 Chat 被拒）时直接换下一条
+- 组级重试次数、最大切换次数、冷却秒数。
 - **首字超时**（可选）：在仍有可顺延路由时，对首字节等待限时，加速切换到下一条路由。
 - **系统提示词注入**（组级）：按规则顺序注入，可作用于全部 Key 或指定 Key；覆盖 Chat `system`、Responses `instructions`、Anthropic `system`（HTTP 与 Responses WebSocket）。
 - **`service_tier` 策略**（组级）：匹配 `all` / `default` / `priority` / `flex`（并规范化 `fast` → `priority`）；动作支持透传、过滤、强制 `default` / `priority`、或拦截。
 - **Responses WebSocket**：`/v1/responses` 支持 Upgrade；会话中不可切换协议，仅 Responses 能力路由可接入。
 - **Responses 工具桥接**：Responses→Chat/Anthropic 降级时保留 custom tools、namespaced tools 与 `tool_search` 往返语义。
+- 系统提示词注入同样覆盖 Gemini `systemInstruction`。
 - **图片 / 视频计费输入**：从 image/video 接口与 Responses 图片生成工具用量解析请求数、分辨率档位与时长，用于费用估算。
 - User-Agent：路由级 `passthrough` / `group` / `custom`；管理侧拉模型、探测会回落默认 UA。
 - 使用记录对齐 sub2api 字段：endpoint、协议、tokens（含缓存读写分桶）、费用、延迟、首字延迟、成功/失败与上游错误详情；提供列表、stats、模型筛选项与清理。
@@ -832,7 +845,7 @@ POST /api/channels/:id/clear-login-info
 |------|------|
 | **网关组 (Group)** | 配置单元：路由表、组级模型映射、模型列表、重试/顺延/冷却/首字超时、组级 UA |
 | **网关密钥 (Key)** | 客户端鉴权用；绑定到组；支持额度、IP 黑白名单；明文只在创建/揭示时可见 |
-| **路由 (Route)** | 一条可调度的上游目标：同步渠道+源分组，或直连 Provider；含权重、倍率换算、协议、UA 策略 |
+| **路由 (Route)** | 一条可调度的上游目标：同步渠道+源分组，或直连 Provider；含优先级、倍率换算、协议、UA 策略 |
 | **直连渠道 (Provider)** | 网关内维护的 base URL + API Key + 默认计费倍率等，无需先做成监控渠道 |
 | **模型映射** | 客户端模型名 → 上游模型名；组映射与路由映射可叠加（先路由后组）；支持 `"*"` 通配 |
 | **模型列表** | 暴露给 `/v1/models` 的清单；`auto` / `manual` / `hybrid` 三种维护模式 |
@@ -845,7 +858,7 @@ POST /api/channels/:id/clear-login-info
 2. **创建网关组**
    设置排序方向（倍率升/降）、是否扫描后重排、重试与顺延、可选首字超时、组级 UA。
 3. **添加路由**
-   选 monitor 或 provider；配置权重、倍率换算、`upstream_protocol`、UA 模式；保存后可点「确保上游密钥」（仅 monitor 路由）。
+   选 monitor 或 provider；配置优先级、倍率换算、`upstream_protocol`、UA 模式；保存后可点「确保上游密钥」（仅 monitor 路由）。
 4. **模型**
    配置组/路由映射；用「预览 / 同步 / 探测」维护模型列表。
 5. **创建网关密钥**
@@ -924,7 +937,7 @@ x-api-key: sk-...
 ### 调度与计费倍率
 
 - 仅 **enabled** 且未在临时暂停期内的路由参与调度。
-- 排序：有效倍率（组方向 asc/desc）→ 权重 → position。
+- 排序：优先级（数字大的先调用）→ 有效倍率（组方向 asc/desc）→ position。
 - 有效倍率（网关路由倍率换算）：
   1. `custom` → 使用自定义值
   2. 能匹配源分组 → 用实时 ratio 按 raw / ×100 / ÷100 换算

@@ -136,10 +136,9 @@ func registerFrontend(r *gin.Engine, dist fs.FS) {
 	r.NoRoute(func(c *gin.Context) {
 		path := c.Request.URL.Path
 
-		// 永远不让 SPA fallback 覆盖 API / 健康检查 / 公开转发路径。
+		// 永远不让 SPA fallback 覆盖 API / 健康检查 / 公开转发路径（SDK 拿到 index.html 会解析失败）。
 		// /gateway 是前端管理页，必须允许 SPA fallback。
-		if strings.HasPrefix(path, "/api/") || path == "/healthz" ||
-			strings.HasPrefix(path, "/v1/") || path == "/v1" {
+		if path == "/healthz" || isGatewayPath(path) {
 			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}
@@ -157,6 +156,20 @@ func registerFrontend(r *gin.Engine, dist fs.FS) {
 }
 
 // fail 统一错误响应。
+// gatewayPathPrefixes 网关转发与 API 的路径前缀；这些前缀下没匹配到的路径一律 404，不回落到前端页面。
+var gatewayPathPrefixes = []string{
+	"/api", "/v1", "/v1beta", "/v3", "/antigravity", "/backend-api", "/contents",
+}
+
+func isGatewayPath(path string) bool {
+	for _, p := range gatewayPathPrefixes {
+		if path == p || strings.HasPrefix(path, p+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 func fail(c *gin.Context, status int, err error) {
 	c.JSON(status, gin.H{"error": err.Error()})
 }

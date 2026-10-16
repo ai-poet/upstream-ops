@@ -56,6 +56,17 @@ func (svc *Service) writeAuthError(c *gin.Context, kind protocolKind, msg string
 
 func (svc *Service) writeGatewayError(c *gin.Context, kind protocolKind, status int, typ, msg string) {
 	reqID := svc.ensureGatewayRequestID(c)
+	if protocol.NormalizeKind(kind) == protocol.KindGemini {
+		c.JSON(status, gin.H{
+			"error": gin.H{
+				"code":    status,
+				"message": msg,
+				"status":  geminiStatusFor(typ, status),
+			},
+			jsonKeyUpstreamOpsRequestID: reqID,
+		})
+		return
+	}
 	if protocol.NormalizeKind(kind) == protocol.KindAnthropic {
 		c.JSON(status, gin.H{
 			"type": "error",

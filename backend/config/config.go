@@ -155,7 +155,35 @@ const (
 	DefaultGatewayStreamKeepaliveSeconds     = 15
 	DefaultGatewayStreamIdleTimeoutSeconds   = 120
 	DefaultGatewayStreamMaxLineBytes         = 8 << 20
+	DefaultGatewayProtocolEngine             = "relaykit"
+	DefaultGatewayAutoDisableStatusCodes     = "401"
+	// GatewayAutoDisableStatusCodesNone 自动禁用不看状态码（只按关键词）
+	GatewayAutoDisableStatusCodesNone = "none"
+	DefaultGatewayAutoRecoverMinutes  = 10
+	// MaxGatewayAutoRecoverMinutes 恢复探测间隔上限（7 天）
+	MaxGatewayAutoRecoverMinutes = 7 * 24 * 60
 )
+
+// DefaultGatewayAutoDisableKeywords 上游错误命中即自动禁用路由的关键词（不区分大小写）。
+// 只收鉴权失效 / 额度耗尽 / 账号停用这类「换个时间也不会好」的错误，模型级拒绝不在内。
+var DefaultGatewayAutoDisableKeywords = []string{
+	"your credit balance is too low",
+	"this organization has been disabled",
+	"you exceeded your current quota",
+	"insufficient_quota",
+	"account_deactivated",
+	"invalid_api_key",
+	"incorrect api key provided",
+	"api key not valid",
+	"api key expired",
+	"the security token included in the request is invalid",
+	"your account is not authorized",
+	"令牌额度已用尽",
+	"该令牌已过期",
+	"该令牌状态不可用",
+	"无效的令牌",
+	"用户额度不足",
+}
 
 type UpstreamConfig struct {
 	TimeoutSeconds int    `mapstructure:"timeoutSeconds" yaml:"timeoutSeconds" json:"timeoutSeconds"`
@@ -234,6 +262,17 @@ type GatewayConfig struct {
 	StreamIdleTimeoutSeconds int `mapstructure:"streamIdleTimeoutSeconds" yaml:"streamIdleTimeoutSeconds" json:"streamIdleTimeoutSeconds"`
 	// StreamMaxLineBytes 上游单条 SSE 行最大字节数。
 	StreamMaxLineBytes int `mapstructure:"streamMaxLineBytes" yaml:"streamMaxLineBytes" json:"streamMaxLineBytes"`
+	// ProtocolEngine 协议转换引擎：relaykit（默认，new-api RelayKit，含 Gemini）| legacy（内置旧转换器）。
+	// 选 legacy 时涉及 Gemini 的转换仍走 relaykit。
+	ProtocolEngine string `mapstructure:"protocolEngine" yaml:"protocolEngine" json:"protocolEngine"`
+	// AutoDisableStatusCodes 组开启自动禁用后，命中即禁用路由的上游状态码（如 "401,403"）。
+	// 留空用默认 401；填 none 表示不按状态码禁用。
+	AutoDisableStatusCodes string `mapstructure:"autoDisableStatusCodes" yaml:"autoDisableStatusCodes" json:"autoDisableStatusCodes"`
+	// AutoDisableKeywords 组开启自动禁用后，上游错误信息命中任一关键词即禁用路由。
+	// 留空用内置列表（随版本更新）。
+	AutoDisableKeywords []string `mapstructure:"autoDisableKeywords" yaml:"autoDisableKeywords" json:"autoDisableKeywords"`
+	// AutoRecoverMinutes 自动禁用路由的恢复探测间隔（分钟）。
+	AutoRecoverMinutes int `mapstructure:"autoRecoverMinutes" yaml:"autoRecoverMinutes" json:"autoRecoverMinutes"`
 }
 
 func (g GatewayConfig) WithDefaults() GatewayConfig {
@@ -276,7 +315,67 @@ func (g GatewayConfig) WithDefaults() GatewayConfig {
 	if g.StreamMaxLineBytes <= 0 {
 		g.StreamMaxLineBytes = DefaultGatewayStreamMaxLineBytes
 	}
+	switch strings.ToLower(strings.TrimSpace(g.ProtocolEngine)) {
+	case "legacy":
+		g.ProtocolEngine = "legacy"
+	default:
+		g.ProtocolEngine = DefaultGatewayProtocolEngine
+	}
+	switch codes := strings.TrimSpace(g.AutoDisableStatusCodes); {
+	case codes == "":
+		g.AutoDisableStatusCodes = DefaultGatewayAutoDisableStatusCodes
+	case strings.EqualFold(codes, GatewayAutoDisableStatusCodesNone), strings.EqualFold(codes, "off"):
+		g.AutoDisableStatusCodes = GatewayAutoDisableStatusCodesNone
+	default:
+		g.AutoDisableStatusCodes = codes
+	}
+	keywords := make([]string, 0, len(g.AutoDisableKeywords))
+	for _, kw := range g.AutoDisableKeywords {
+		if kw = strings.TrimSpace(kw); kw != "" {
+			keywords = append(keywords, kw)
+		}
+	}
+	if len(keywords) == 0 {
+		keywords = append(keywords, DefaultGatewayAutoDisableKeywords...)
+	}
+	g.AutoDisableKeywords = keywords
+	if g.AutoRecoverMinutes <= 0 {
+		g.AutoRecoverMinutes = DefaultGatewayAutoRecoverMinutes
+	}
+	if g.AutoRecoverMinutes > MaxGatewayAutoRecoverMinutes {
+		g.AutoRecoverMinutes = MaxGatewayAutoRecoverMinutes
+	}
 	return g
+}
+
+// ForSave 写配置文件前去掉与内置默认一致的自动禁用规则，让文件里保持「未设置」，
+// 以后版本更新内置关键词时自动生效（而不是被第一次保存设置时的默认列表钉死）。
+func (g GatewayConfig) ForSave() GatewayConfig {
+	if g.AutoDisableStatusCodes == DefaultGatewayAutoDisableStatusCodes {
+		g.AutoDisableStatusCodes = ""
+	}
+	if sameKeywords(g.AutoDisableKeywords, DefaultGatewayAutoDisableKeywords) {
+		g.AutoDisableKeywords = nil
+	}
+	return g
+}
+
+func sameKeywords(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, k := range a {
+		seen[strings.ToLower(strings.TrimSpace(k))]++
+	}
+	for _, k := range b {
+		k = strings.ToLower(strings.TrimSpace(k))
+		if seen[k] == 0 {
+			return false
+		}
+		seen[k]--
+	}
+	return true
 }
 
 func (g GatewayConfig) TempPause() time.Duration {

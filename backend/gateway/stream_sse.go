@@ -77,6 +77,10 @@ func (rt *Runtime) sseFrameIsTerminal(frame []byte) bool {
 		strings.Contains(s, "event: response.canceled") || strings.Contains(s, "event:response.canceled") {
 		return true
 	}
+	// Gemini：带 finishReason 的块即终态（SSE 与数组模式都适用）
+	if strings.Contains(s, `"finishReason":"`) || strings.Contains(s, `"finishReason": "`) {
+		return true
+	}
 	if strings.Contains(s, `"type":"response.completed"`) || strings.Contains(s, `"type": "response.completed"`) ||
 		strings.Contains(s, `"type":"response.done"`) || strings.Contains(s, `"type": "response.done"`) ||
 		strings.Contains(s, `"type":"response.failed"`) || strings.Contains(s, `"type": "response.failed"`) ||
@@ -111,6 +115,12 @@ func (rt *Runtime) upstreamSSETerminal(eventName, data string, kind protocolKind
 		case "error":
 			return true, false, sseErrorMessage(payload, "upstream stream failed")
 		}
+	case protocol.KindGemini:
+		// 正常结束靠 EOF（见 geminiUpstreamFinished）；这里只识别流中错误
+		if _, ok := payload["error"]; ok {
+			return true, false, sseErrorMessage(payload, "upstream stream failed")
+		}
+		return false, false, ""
 	default:
 		switch name {
 		case "response.completed", "response.done", "response.incomplete":
@@ -126,6 +136,18 @@ func (rt *Runtime) upstreamSSETerminal(eventName, data string, kind protocolKind
 		}
 	}
 	return false, false, ""
+}
+
+// geminiErrorFrame Gemini 流中的错误块（SSE 形式；数组模式由 geminiArrayEncoder 改写）。
+func geminiErrorFrame(errType, message string) []byte {
+	code := 500
+	if errType == "stream_timeout" {
+		code = 504
+	}
+	body, _ := json.Marshal(map[string]any{
+		"error": map[string]any{"code": code, "message": message, "status": geminiStatusFor(errType, code)},
+	})
+	return []byte(fmt.Sprintf("data: %s\n\n", body))
 }
 
 func sseErrorMessage(payload map[string]any, fallback string) string {
@@ -213,7 +235,9 @@ func (rt *Runtime) writeStreamTerminalError(c *gin.Context, kind protocolKind, e
 		message = errType
 	}
 	var payload []byte
-	if protocol.NormalizeKind(kind) == protocol.KindAnthropic {
+	if protocol.NormalizeKind(kind) == protocol.KindGemini {
+		payload = geminiErrorFrame(errType, message)
+	} else if protocol.NormalizeKind(kind) == protocol.KindAnthropic {
 		body, _ := json.Marshal(map[string]any{
 			"type": "error",
 			"error": map[string]string{
@@ -258,7 +282,9 @@ func (rt *Runtime) mergeStreamUsage(dst *UsageTokens, data string, kind protocol
 		return
 	}
 	var u UsageTokens
-	if protocol.NormalizeKind(kind) == protocol.KindAnthropic {
+	if protocol.NormalizeKind(kind) == protocol.KindGemini {
+		u = ParseGeminiUsage([]byte(data))
+	} else if protocol.NormalizeKind(kind) == protocol.KindAnthropic {
 		u = ParseAnthropicUsage([]byte(data))
 		// Anthropic SSE 中 usage 常嵌在 message_start / message_delta
 		if !usageNonEmpty(u) {

@@ -28,7 +28,11 @@ type CreateGroupInput struct {
 	CooldownSeconds       *int   `json:"cooldown_seconds"`
 	FirstTokenTimeoutSec  *int   `json:"first_token_timeout_sec"`
 	// UserAgent 组级统一 UA；路由 mode=group 时使用。
-	UserAgent string `json:"user_agent"`
+	UserAgent          string `json:"user_agent"`
+	RetryStatusCodes   string `json:"retry_status_codes"`
+	LoadBalanceMode    string `json:"load_balance_mode"`
+	ModelAwareRouting  *bool  `json:"model_aware_routing"`
+	AutoDisableEnabled *bool  `json:"auto_disable_enabled"`
 }
 
 // UpdateGroupInput 更新网关分组（指针字段：nil 表示不改）。
@@ -51,7 +55,11 @@ type UpdateGroupInput struct {
 	CooldownSeconds       *int    `json:"cooldown_seconds"`
 	FirstTokenTimeoutSec  *int    `json:"first_token_timeout_sec"`
 	// UserAgent 空串=清除组级 UA。
-	UserAgent *string `json:"user_agent"`
+	UserAgent          *string `json:"user_agent"`
+	RetryStatusCodes   *string `json:"retry_status_codes"`
+	LoadBalanceMode    *string `json:"load_balance_mode"`
+	ModelAwareRouting  *bool   `json:"model_aware_routing"`
+	AutoDisableEnabled *bool   `json:"auto_disable_enabled"`
 }
 
 // CreateKeyInput 创建网关 API Key。
@@ -118,6 +126,7 @@ type RouteInput struct {
 	GatewayProviderID     uint    `json:"gateway_provider_id"`
 	SourceGroupID         *int64  `json:"source_group_id"`
 	SourceGroupName       string  `json:"source_group_name"`
+	// Weight 优先级：数字越大越先调用
 	Weight                int     `json:"weight"`
 	RateConvertMode       string  `json:"rate_convert_mode"`
 	RateConvertValue      float64 `json:"rate_convert_value"`

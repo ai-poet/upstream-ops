@@ -319,6 +319,14 @@ export interface SystemGatewayConfig {
   streamKeepaliveSeconds: number
   streamIdleTimeoutSeconds: number
   streamMaxLineBytes: number
+  /** 协议转换引擎：relaykit（默认，含 Gemini）| legacy（内置旧转换器） */
+  protocolEngine?: "relaykit" | "legacy"
+  /** 组开启自动禁用后，命中即禁用路由的上游状态码，如 "401" */
+  autoDisableStatusCodes?: string
+  /** 组开启自动禁用后，错误信息命中任一关键词即禁用路由（不区分大小写） */
+  autoDisableKeywords?: string[]
+  /** 自动禁用路由的恢复探测间隔（分钟） */
+  autoRecoverMinutes?: number
 }
 
 export interface SystemConfig {
@@ -555,13 +563,14 @@ export interface GatewaySystemPromptRule {
   key_scope: "all" | "selected"
   key_ids: number[]
 }
-/** 上游协议：auto / OpenAI Chat / OpenAI Responses / Anthropic；openai 为 chat 历史别名 */
+/** 上游协议：auto / OpenAI Chat / OpenAI Responses / Anthropic / Gemini；openai 为 chat 历史别名 */
 export type GatewayUpstreamProtocol =
   | "auto"
   | "openai"
   | "openai_chat"
   | "openai_responses"
   | "anthropic"
+  | "gemini"
 
 export interface GatewayGroup {
   id: number
@@ -606,6 +615,14 @@ export interface GatewayGroup {
    * 转发 / 模型测试 / 拉模型渠道共用。
    */
   user_agent?: string
+  /** 触发重试/顺延的上游状态码，如 "429,500-599"；空=默认（429、5xx，开 4xx 顺延再加 4xx） */
+  retry_status_codes?: string
+  /** ordered（默认）：同优先级按倍率先后；random：同优先级随机分流（旧值 weighted 视同 random） */
+  load_balance_mode?: "ordered" | "random" | "weighted"
+  /** 优先选模型清单里声明了该模型的路由（其余路由仍可顺延兜底） */
+  model_aware_routing?: boolean
+  /** 鉴权 / 额度类错误时自动禁用路由，后台定时探测恢复 */
+  auto_disable_enabled?: boolean
   created_at: string
   updated_at: string
 }
@@ -680,6 +697,7 @@ export interface GatewayRoute {
   gateway_provider_id?: number
   source_group_id?: number | null
   source_group_name?: string
+  /** 优先级：数字越大越先调用（字段名沿用 weight） */
   weight: number
   rate_convert_mode: GatewayRateConvertMode
   rate_convert_value: number
@@ -695,6 +713,10 @@ export interface GatewayRoute {
   source_api_key_id: number
   source_api_key_name: string
   temp_unschedulable_until?: string | null
+  /** 因鉴权 / 额度类错误被自动禁用；后台探测成功或手动清除后恢复 */
+  auto_disabled?: boolean
+  auto_disabled_at?: string | null
+  auto_disabled_reason?: string
   temp_unschedulable_reason?: string
   /** 最近一次触发暂停的失败请求时间 */
   temp_unschedulable_at?: string | null

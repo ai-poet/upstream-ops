@@ -16,10 +16,15 @@ func (svc *Service) normalizeUpstreamProtocol(v string) string {
 		return storage.GatewayUpstreamProtocolOpenAIChat
 	case storage.GatewayUpstreamProtocolOpenAIChat,
 		storage.GatewayUpstreamProtocolOpenAIResponses,
-		storage.GatewayUpstreamProtocolAnthropic:
+		storage.GatewayUpstreamProtocolAnthropic,
+		storage.GatewayUpstreamProtocolGemini:
 		return up
 	case "responses":
 		return storage.GatewayUpstreamProtocolOpenAIResponses
+	case "claude":
+		return storage.GatewayUpstreamProtocolAnthropic
+	case "google":
+		return storage.GatewayUpstreamProtocolGemini
 	default:
 		return storage.GatewayUpstreamProtocolAuto
 	}

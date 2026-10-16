@@ -191,7 +191,22 @@ func (r *GatewayGroups) FindByName(name string) (*GatewayGroup, error) {
 }
 
 // Create 插入记录。
-func (r *GatewayGroups) Create(item *GatewayGroup) error { return r.db.Create(item).Error }
+//
+// default:true 的布尔列在 gorm Create 时传 false 会被换成列默认值（并回写结构体），
+// 先记下调用方的取值，插入后显式写回。
+func (r *GatewayGroups) Create(item *GatewayGroup) error {
+	retry, failover, modelAware := item.RetryEnabled, item.FailoverEnabled, item.ModelAwareRouting
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(item).Error; err != nil {
+			return err
+		}
+		item.RetryEnabled, item.FailoverEnabled, item.ModelAwareRouting = retry, failover, modelAware
+		if retry && failover && modelAware {
+			return nil
+		}
+		return tx.Model(item).Select("RetryEnabled", "FailoverEnabled", "ModelAwareRouting").Updates(item).Error
+	})
+}
 
 // Update 全量保存。
 func (r *GatewayGroups) Update(item *GatewayGroup) error { return r.db.Save(item).Error }
@@ -385,6 +400,9 @@ func (r *GatewayRoutes) SaveForGroup(groupID uint, list []GatewayRoute) error {
 				list[i].TempUnschedulableAt = prev.TempUnschedulableAt
 				list[i].TempUnschedulableRequestID = prev.TempUnschedulableRequestID
 				list[i].RecoverSuccessStreak = prev.RecoverSuccessStreak
+				list[i].AutoDisabled = prev.AutoDisabled
+				list[i].AutoDisabledAt = prev.AutoDisabledAt
+				list[i].AutoDisabledReason = prev.AutoDisabledReason
 				list[i].CreatedAt = prev.CreatedAt
 			} else {
 				list[i].SourceAPIKeyID = 0
@@ -395,6 +413,9 @@ func (r *GatewayRoutes) SaveForGroup(groupID uint, list []GatewayRoute) error {
 				list[i].TempUnschedulableAt = nil
 				list[i].TempUnschedulableRequestID = ""
 				list[i].RecoverSuccessStreak = 0
+				list[i].AutoDisabled = false
+				list[i].AutoDisabledAt = nil
+				list[i].AutoDisabledReason = ""
 			}
 
 			if hasPrev {
@@ -403,8 +424,16 @@ func (r *GatewayRoutes) SaveForGroup(groupID uint, list []GatewayRoute) error {
 				}
 			} else {
 				list[i].ID = 0
+				// Enabled 是 default:true：新建禁用路由时 Create 会把 false 换成 true，插入后写回
+				enabled := list[i].Enabled
 				if err := tx.Create(&list[i]).Error; err != nil {
 					return err
+				}
+				if !enabled {
+					list[i].Enabled = false
+					if err := tx.Model(&list[i]).Update("enabled", false).Error; err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -468,10 +497,15 @@ func normalizeGatewayRoute(item *GatewayRoute) {
 	case GatewayUpstreamProtocolOpenAIChat,
 		GatewayUpstreamProtocolOpenAIResponses,
 		GatewayUpstreamProtocolAnthropic,
+		GatewayUpstreamProtocolGemini,
 		GatewayUpstreamProtocolAuto:
 		item.UpstreamProtocol = up
 	case "responses":
 		item.UpstreamProtocol = GatewayUpstreamProtocolOpenAIResponses
+	case "claude":
+		item.UpstreamProtocol = GatewayUpstreamProtocolAnthropic
+	case "google":
+		item.UpstreamProtocol = GatewayUpstreamProtocolGemini
 	case "":
 		item.UpstreamProtocol = GatewayUpstreamProtocolAuto
 	default:
@@ -517,13 +551,44 @@ func (r *GatewayRoutes) SetTempUnschedulable(id uint, until time.Time, reason st
 	}).Error
 }
 
-// ClearTempUnschedulable 手动清除暂停时间与错误信息。
+// ClearTempUnschedulable 手动清除暂停时间与错误信息（含自动禁用）。
 func (r *GatewayRoutes) ClearTempUnschedulable(id uint) error {
 	// 用 Exec 强制写 NULL；GORM Updates(map) 对 nil 在部分版本会跳过
 	return r.db.Exec(
-		`UPDATE gateway_routes SET temp_unschedulable_until = NULL, temp_unschedulable_reason = '', temp_unschedulable_at = NULL, temp_unschedulable_request_id = '', recover_success_streak = 0, updated_at = ? WHERE id = ?`,
-		time.Now(), id,
+		`UPDATE gateway_routes SET temp_unschedulable_until = NULL, temp_unschedulable_reason = '', temp_unschedulable_at = NULL, temp_unschedulable_request_id = '', recover_success_streak = 0, auto_disabled = ?, auto_disabled_at = NULL, auto_disabled_reason = '', updated_at = ? WHERE id = ?`,
+		false, time.Now(), id,
 	).Error
+}
+
+// SetAutoDisabled 自动禁用路由（鉴权 / 额度类错误），同时记下触发的失败请求。
+func (r *GatewayRoutes) SetAutoDisabled(id uint, reason string, at time.Time, requestID string) error {
+	if at.IsZero() {
+		at = time.Now()
+	}
+	return r.db.Model(&GatewayRoute{}).Where("id = ?", id).Updates(map[string]any{
+		"auto_disabled":                 true,
+		"auto_disabled_at":              at,
+		"auto_disabled_reason":          reason,
+		"temp_unschedulable_reason":     reason,
+		"temp_unschedulable_at":         at,
+		"temp_unschedulable_request_id": strings.TrimSpace(requestID),
+		"recover_success_streak":        0,
+	}).Error
+}
+
+// ClearAutoDisabled 探测恢复后解除自动禁用（保留错误残留，交由连续成功逻辑清理）。
+func (r *GatewayRoutes) ClearAutoDisabled(id uint) error {
+	return r.db.Exec(
+		`UPDATE gateway_routes SET auto_disabled = ?, auto_disabled_at = NULL, auto_disabled_reason = '', updated_at = ? WHERE id = ?`,
+		false, time.Now(), id,
+	).Error
+}
+
+// ListAutoDisabled 列出被自动禁用且仍启用的路由（供恢复探测）。
+func (r *GatewayRoutes) ListAutoDisabled() ([]GatewayRoute, error) {
+	var list []GatewayRoute
+	err := r.db.Where("auto_disabled = ? AND enabled = ?", true, true).Order("id ASC").Find(&list).Error
+	return list, err
 }
 
 // ClearTempUnschedulableUntil 仅结束临时暂停（恢复调度），保留 reason / request_id / at 供排查。

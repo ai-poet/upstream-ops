@@ -727,6 +727,11 @@ export function GatewayPage() {
       cooldown_seconds: String(g.cooldown_seconds ?? 30),
       first_token_timeout_sec: String(g.first_token_timeout_sec ?? 0),
       user_agent: g.user_agent ?? "",
+      retry_status_codes: g.retry_status_codes ?? "",
+      load_balance_mode:
+        g.load_balance_mode === "random" || g.load_balance_mode === "weighted" ? "random" : "ordered",
+      model_aware_routing: g.model_aware_routing !== false,
+      auto_disable_enabled: !!g.auto_disable_enabled,
     })
     setGroupDialogOpen(true)
   }
@@ -757,6 +762,10 @@ export function GatewayPage() {
       cooldown_seconds: cooldownSeconds,
       first_token_timeout_sec: firstTokenTimeout,
       user_agent: groupForm.user_agent.trim(),
+      retry_status_codes: groupForm.retry_status_codes.trim(),
+      load_balance_mode: groupForm.load_balance_mode,
+      model_aware_routing: groupForm.model_aware_routing,
+      auto_disable_enabled: groupForm.auto_disable_enabled,
     }
     setBusy(true)
     try {

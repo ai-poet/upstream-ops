@@ -8,20 +8,25 @@ import (
 	"github.com/bejix/upstream-ops/backend/storage"
 )
 
-func TestSortRoutes_RateThenWeight(t *testing.T) {
+func TestSortRoutes_PriorityThenRate(t *testing.T) {
 	now := time.Now()
 	routes := []storage.GatewayRoute{
 		{ID: 1, SourceChannelID: 1, Position: 0, Weight: 1, Enabled: true, RateConvertMode: "custom", RateConvertValue: 0.5, SourceAPIKeyCipher: "x", BillingRateMultiplier: 1},
-		{ID: 2, SourceChannelID: 2, Position: 1, Weight: 10, Enabled: true, RateConvertMode: "custom", RateConvertValue: 0.2, SourceAPIKeyCipher: "x", BillingRateMultiplier: 1},
-		{ID: 3, SourceChannelID: 3, Position: 2, Weight: 5, Enabled: true, RateConvertMode: "custom", RateConvertValue: 0.2, SourceAPIKeyCipher: "x", BillingRateMultiplier: 1},
+		{ID: 2, SourceChannelID: 2, Position: 1, Weight: 10, Enabled: true, RateConvertMode: "custom", RateConvertValue: 0.9, SourceAPIKeyCipher: "x", BillingRateMultiplier: 1},
+		{ID: 3, SourceChannelID: 3, Position: 2, Weight: 1, Enabled: true, RateConvertMode: "custom", RateConvertValue: 0.2, SourceAPIKeyCipher: "x", BillingRateMultiplier: 1},
 	}
 	got := SortRoutes(routes, nil, "asc", now, nil)
 	if len(got) != 3 {
 		t.Fatalf("len=%d", len(got))
 	}
-	// rate 0.2 first; among 0.2 weight 10 before 5
+	// 优先级 10 最先（即使倍率最高）；同优先级 1 内按倍率升序：0.2 再 0.5
 	if got[0].Route.ID != 2 || got[1].Route.ID != 3 || got[2].Route.ID != 1 {
 		t.Fatalf("order=%v %v %v", got[0].Route.ID, got[1].Route.ID, got[2].Route.ID)
+	}
+	// desc：优先级仍在最前，同优先级内高倍率在前
+	got = SortRoutes(routes, nil, "desc", now, nil)
+	if got[0].Route.ID != 2 || got[1].Route.ID != 1 || got[2].Route.ID != 3 {
+		t.Fatalf("desc order=%v %v %v", got[0].Route.ID, got[1].Route.ID, got[2].Route.ID)
 	}
 }
 
@@ -92,15 +97,15 @@ func TestRateForRoute_FallbackBillingMultiplier(t *testing.T) {
 	}
 }
 
-func TestOrderRoutesByRate_SameRateHigherWeightFirst(t *testing.T) {
+func TestOrderRoutesByRate_HigherPriorityFirst(t *testing.T) {
 	routes := []storage.GatewayRoute{
 		{ID: 1, Position: 0, Weight: 1, Enabled: true, RateConvertMode: "custom", RateConvertValue: 0.05, SourceAPIKeyCipher: "x"},
-		{ID: 2, Position: 1, Weight: 99, Enabled: true, RateConvertMode: "custom", RateConvertValue: 0.05, SourceAPIKeyCipher: "x"},
+		{ID: 2, Position: 1, Weight: 99, Enabled: true, RateConvertMode: "custom", RateConvertValue: 0.5, SourceAPIKeyCipher: "x"},
 	}
-	// 输入顺序：低权重在前；同倍率应按权重大优先
+	// 输入顺序：低优先级在前；优先级 99 应排最前，即使倍率更高
 	ordered := OrderRoutesByRate(routes, nil, "asc")
 	if ordered[0].ID != 2 || ordered[1].ID != 1 {
-		t.Fatalf("want weight 99 first, got ids %d %d", ordered[0].ID, ordered[1].ID)
+		t.Fatalf("want priority 99 first, got ids %d %d", ordered[0].ID, ordered[1].ID)
 	}
 }
 

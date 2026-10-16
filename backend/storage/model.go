@@ -364,6 +364,7 @@ const (
 	GatewayUpstreamProtocolOpenAIChat      = "openai_chat"      // /v1/chat/completions · messages
 	GatewayUpstreamProtocolOpenAIResponses = "openai_responses" // /v1/responses · input
 	GatewayUpstreamProtocolAnthropic       = "anthropic"        // /v1/messages
+	GatewayUpstreamProtocolGemini          = "gemini"           // /v1beta/models/{model}:generateContent
 
 	// GatewayRoute 上游来源：监控渠道 vs 直连提供商（base+key）
 	GatewayRouteSourceMonitor  = "monitor"
@@ -449,9 +450,20 @@ type GatewayGroup struct {
 	FirstTokenTimeoutSec int `gorm:"not null;default:0" json:"first_token_timeout_sec"`
 	// UserAgent 组级统一 User-Agent。路由 mode=group 时使用；留空表示组未配置。
 	// 不用 omitempty：空串也要返回，前端编辑回填才能区分「未配置」与「字段缺失」。
-	UserAgent string    `gorm:"size:512;not null;default:''" json:"user_agent"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	UserAgent string `gorm:"size:512;not null;default:''" json:"user_agent"`
+	// RetryStatusCodes 触发重试 / 顺延的上游状态码，如 "429,500-599"。
+	// 空串沿用默认：429、5xx，开启 FailoverOn4xx 时再加全部 4xx。
+	RetryStatusCodes string `gorm:"size:256;not null;default:''" json:"retry_status_codes"`
+	// LoadBalanceMode ordered：同倍率按权重、position 固定顺序（默认）；
+	// weighted：同倍率的路由按权重随机分流，失败再顺延到下一条。
+	LoadBalanceMode string `gorm:"size:16;not null;default:'ordered'" json:"load_balance_mode"`
+	// ModelAwareRouting 优先选模型清单里声明了该模型的路由（其余路由仍可作为顺延兜底）。
+	ModelAwareRouting bool `gorm:"not null;default:true" json:"model_aware_routing"`
+	// AutoDisableEnabled 上游返回鉴权 / 额度类错误（状态码与关键词见系统设置 gateway 段）时自动禁用路由，
+	// 由后台定时探测恢复。
+	AutoDisableEnabled bool      `gorm:"not null;default:false" json:"auto_disable_enabled"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 func (GatewayGroup) TableName() string { return "gateway_groups" }
@@ -489,6 +501,7 @@ type GatewayRoute struct {
 	GatewayProviderID     uint    `gorm:"not null;index;default:0" json:"gateway_provider_id"`
 	SourceGroupID         *int64  `json:"source_group_id,omitempty"`
 	SourceGroupName       string  `gorm:"size:256;not null;default:''" json:"source_group_name,omitempty"`
+	// Weight 即路由「优先级」（列名沿用 weight）：数字越大越先调用，同优先级再按倍率方向排；最小 1。
 	Weight                int     `gorm:"default:1" json:"weight"`
 	RateConvertMode       string  `gorm:"size:32;not null;default:'raw'" json:"rate_convert_mode"`
 	RateConvertValue      float64 `gorm:"default:1" json:"rate_convert_value"`
@@ -512,9 +525,13 @@ type GatewayRoute struct {
 	TempUnschedulableAt        *time.Time `json:"temp_unschedulable_at,omitempty"`
 	TempUnschedulableRequestID string     `gorm:"size:64;not null;default:''" json:"temp_unschedulable_request_id,omitempty"`
 	// RecoverSuccessStreak：失败残留信息存在期间的连续成功次数；达到阈值后自动清空错误展示
-	RecoverSuccessStreak int       `gorm:"not null;default:0" json:"recover_success_streak,omitempty"`
-	CreatedAt            time.Time `json:"created_at"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	RecoverSuccessStreak int `gorm:"not null;default:0" json:"recover_success_streak,omitempty"`
+	// AutoDisabled 因鉴权 / 额度类错误被自动禁用；不参与调度，后台定时探测成功后恢复（也可手动清除）。
+	AutoDisabled       bool       `gorm:"not null;default:false;index" json:"auto_disabled"`
+	AutoDisabledAt     *time.Time `json:"auto_disabled_at,omitempty"`
+	AutoDisabledReason string     `gorm:"type:text" json:"auto_disabled_reason,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
 }
 
 // RouteRecoverSuccessClearStreak 连续成功多少次后自动清除「已恢复/错误」残留展示。

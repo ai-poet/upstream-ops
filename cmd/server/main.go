@@ -116,6 +116,7 @@ func main() {
 	gatewaySvc.UpdateUpstreamConfig(cfg.Upstream)
 	gatewaySvc.UpdateGatewayConfig(cfg.Gateway)
 	gatewaySvc.StartPricing(cfg.Pricing)
+	gatewaySvc.StartAutoRecover()
 	defer gatewaySvc.Stop()
 	dispatcher := notify.NewDispatcher(notifies, cipher, log, notify.Policy{
 		NotificationPrefix:                       cfg.App.NotificationPrefix,

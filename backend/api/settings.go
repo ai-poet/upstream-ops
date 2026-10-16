@@ -1,9 +1,11 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/bejix/upstream-ops/backend/config"
+	"github.com/bejix/upstream-ops/backend/gateway"
 	"github.com/gin-gonic/gin"
 )
 
@@ -63,6 +65,13 @@ func saveSettingsConfig(c *gin.Context, d *Deps) {
 		fail(c, http.StatusBadRequest, err)
 		return
 	}
+	// 状态码写错会让运行时悄悄跳过整条规则，保存时就拦下
+	codes, err := gateway.NormalizeAutoDisableStatusCodes(in.Gateway.AutoDisableStatusCodes)
+	if err != nil {
+		fail(c, http.StatusBadRequest, fmt.Errorf("gateway.autoDisableStatusCodes: %w", err))
+		return
+	}
+	in.Gateway.AutoDisableStatusCodes = codes
 
 	path := d.Runtime.ConfigPath()
 	cfg, err := config.LoadFile(path)
@@ -78,7 +87,8 @@ func saveSettingsConfig(c *gin.Context, d *Deps) {
 	cfg.Notifications = in.Notifications
 	cfg.Proxy = in.Proxy
 	cfg.Upstream = in.Upstream.WithDefaults()
-	cfg.Gateway = in.Gateway.WithDefaults()
+	// 与内置默认一致的自动禁用规则不落文件，以后版本更新默认关键词时自动生效
+	cfg.Gateway = in.Gateway.WithDefaults().ForSave()
 
 	if err := config.Save(path, cfg); err != nil {
 		fail(c, http.StatusInternalServerError, err)

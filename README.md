@@ -4,7 +4,7 @@
 
 > UpstreamOps is a centralized monitoring and operations dashboard for NewAPI and Sub2API upstream sites. It helps manage upstream accounts, balances, spending, model or group rates, rate changes, upstream API keys, recharge and redeem workflows, subscriptions, announcements, and notification alerts.
 
-It also includes an OpenAI / Claude / Responses compatible request gateway: create gateway API keys, bind monitored channels or direct providers, schedule by rate and weight, convert protocols, fail over on errors, and record per-request usage and cost estimates.
+It also includes an OpenAI / Claude / Responses compatible request gateway: create gateway API keys, bind monitored channels or direct providers, schedule by priority and rate, convert protocols, fail over on errors, and record per-request usage and cost estimates.
 
 > This project is based on [worryzyy/upstream-hub](https://github.com/worryzyy/upstream-hub). Thanks to [@worryzyy](https://github.com/worryzyy) for the original open-source work.
 
@@ -55,31 +55,44 @@ UpstreamOps focuses on these problems:
 
 ### Request Gateway
 
-- Client endpoints (Bearer / `x-api-key`):
+- Client endpoints (Bearer / `x-api-key` / `x-goog-api-key`; `?key=` is also accepted under `/v1beta`), matching sub2api's coverage:
   - `GET /v1` (or `GET /` when the SPA is not mounted) for endpoints discovery
-  - `GET /v1/models`, `GET /v1/usage`
+  - `GET /v1/models`, `GET /v1/models/:model`, `GET /v1/usage`
   - `POST /v1/chat/completions`, `POST /v1/completions`
-  - `POST /v1/responses` (OpenAI Responses, including stream / subpaths)
+  - `POST /v1/responses` (OpenAI Responses, including stream / subpaths / WebSocket; a plain `GET` without Upgrade returns 426)
   - `POST /v1/messages`, `POST /v1/messages/count_tokens` (Anthropic)
-  - Passthrough-style: `/v1/embeddings`, `/v1/images/*`, `/v1/videos/*`, and similar (model rewrite, path preserved)
-  - Compatibility paths: `/chat/completions`, `/responses`, Codex `/backend-api/codex/*`, Gemini `/v1beta/*`, and more
+  - Gemini native: `/v1beta/models/{model}:generateContent`, `:streamGenerateContent` (`alt=sse` or JSON array), `:countTokens`, `:embedContent`, `/v1beta/cachedContents`
+  - Passthrough-style: `/v1/embeddings`, `/v1/moderations`, `/v1/rerank`, `/v1/audio/*`, `/v1/images/*` (including async `/async` + `/v1/images/tasks/:id` and image batches), `/v1/videos*`, `/v1/tts`, `/v1/stt`, `/v1/custom-voices*`, `/v1/web_search`, `/v1/x_search`, Seedance `/api/v3/contents/generations/tasks` (model rewritten, including multipart form fields; query string forwarded)
+  - Async task affinity: polling / download / cancel goes back to the route that created the task
+  - Compatibility paths: unprefixed aliases of the above, Codex `/backend-api/codex/*`, Antigravity `/antigravity/*`; `POST /api/event_logging/batch` (Claude Code telemetry) is swallowed
 - **Gateway groups** own routes, mapping, model lists, and retry/failover policy; multiple keys per group share the same config.
 - **Two route sources**:
   - **Monitored channel**: NewAPI / Sub2API channel + source group; “ensure upstream keys” creates/reuses dedicated source API keys.
   - **Direct provider**: base URL, API key, default billing rate, auth style, and proxy toggle managed inside the gateway (no monitor channel required).
-- Scheduling: source-group rate conversion (raw / ×100 / ÷100 / custom) plus weight; group sort direction; optional re-sort after rate scans.
+- Scheduling (same as new-api): routes are called from the highest priority number down; within a priority, by the converted source-group rate (raw / ×100 / ÷100 / custom) in the group sort direction; optional re-sort after rate scans.
 - Visual model mapping (A→B, `*` wildcard) and model list (pull from upstream with dedupe / custom / auto·manual·hybrid); preview, sync, and probe per route.
-- **Protocol conversion** (JSON and incremental SSE):
-  - OpenAI Chat ↔ Anthropic Messages
-  - OpenAI Chat ↔ OpenAI Responses
-  - Anthropic ↔ OpenAI Responses
-  - Per-route `upstream_protocol`: `auto` / `openai` (Chat) / `openai_responses` / `anthropic`
-- Failover on network errors, 429, and 5xx with temporary pause; optional “failover on 4xx”; group-level retry count, max switches, and cooldown.
+- **Protocol conversion** (JSON and incremental SSE), handled by [new-api RelayKit](https://github.com/QuantumNous/new-api/tree/main/relaykit) by default:
+  - Any pair of OpenAI Chat / OpenAI Responses / Anthropic Messages / Gemini (Claude ↔ Gemini and Gemini ↔ Responses go through Chat)
+  - Tool calls (including Responses custom / namespaced tools), reasoning (effort ↔ thinking budget ↔ Gemini thinkingConfig, Claude max_tokens raised as needed), multimodal content, citations and usage (including 5m / 1h cache-write split)
+  - Default thinking levels of the source model are not forwarded to a different model family unless the client asked for reasoning
+  - Responses requests carrying `tool_search` keep using the built-in tool bridge; `gateway.protocolEngine=legacy` in system settings falls back to the built-in converters (Gemini always uses RelayKit)
+  - Image downloads needed for conversion are limited to public http(s) URLs (private / loopback / metadata addresses blocked), 20MB each
+  - Per-route `upstream_protocol`: `auto` / `openai` (Chat) / `openai_responses` / `anthropic` / `gemini`
+- **Failover** (modelled on new-api, without session stickiness):
+  - Network errors, 429 and 5xx cool down and fail over; groups can enable “failover on 4xx” or list exact “retry status codes” (e.g. `429,500-599`)
+  - Model not found / no available channel / 404 / unsupported endpoint: move to the next route without cooldown (regardless of the 4xx switch)
+  - Context-length errors are returned directly instead of being retried elsewhere
+  - `Retry-After` on 429 / 503 sets the cooldown (the longer of it and the group cooldown, capped at 10 minutes)
+  - Auto-disable (per group): authentication / quota / deactivated-account errors (status codes and keywords in the `gateway` settings) disable the route; a background probe re-enables it once it works again; routes can be cleared manually
+  - Random load balancing among routes with the same priority (per group); model-aware ordering prefers routes that declare the model, the others stay as fallbacks
+  - A route whose upstream protocol cannot carry the request (e.g. a stateful Responses request lowered to Chat) is skipped
+- Group-level retry count, max switches, and cooldown.
 - **First-token timeout** (optional): fail fast on the first byte when another route can still be tried.
 - **System prompt injection** (per group): ordered rules scoped to all keys or selected keys; injects into Chat `system`, Responses `instructions`, and Anthropic `system` (HTTP and Responses WebSocket).
 - **`service_tier` policy** (per group): match `all` / `default` / `priority` / `flex` (and normalize `fast` → `priority`); actions include passthrough, filter, force `default` / `priority`, or block.
 - **Responses WebSocket**: upgrades `/v1/responses` when requested; only Responses-capable routes are eligible (protocol cannot change mid-session).
 - **Responses tools bridge**: when lowering Responses→Chat/Anthropic, preserves custom tools, namespaced tools, and `tool_search` round-trips.
+- **System prompt injection** also covers Gemini `systemInstruction`.
 - **Image / video billing input**: derives request count, size tier, and duration from image/video endpoints and Responses image-generation tool usage for cost estimates.
 - User-Agent modes: `passthrough` / `group` / `custom`; admin model pull and probe fall back to the default UA.
 - Usage logs aligned with sub2api fields (endpoint, protocol, tokens including cache buckets, cost, latency, first-token latency, success/error detail) with list, stats, model filters, and cleanup.
@@ -661,7 +674,7 @@ The request gateway aggregates multiple upstreams (monitored NewAPI/Sub2API chan
 |---------|-------------|
 | **Group** | Configuration unit: route table, group-level model map, model list, retry / failover / cooldown / first-token timeout, group UA |
 | **Key** | Client auth credential bound to a group; supports quota and IP allow/deny lists; plaintext is shown only on create/reveal |
-| **Route** | A schedulable upstream target: monitor channel + source group, or a direct Provider; weight, ratio conversion, protocol, UA policy |
+| **Route** | A schedulable upstream target: monitor channel + source group, or a direct Provider; priority, ratio conversion, protocol, UA policy |
 | **Provider** | Gateway-managed base URL + API key + default billing ratio; no need to create a monitor channel first |
 | **Model map** | Client model name → upstream model name; group and route maps stack (route first, then group); `"*"` wildcard supported |
 | **Model list** | Exposed via `/v1/models`; modes: `auto` / `manual` / `hybrid` |
@@ -674,7 +687,7 @@ The request gateway aggregates multiple upstreams (monitored NewAPI/Sub2API chan
 2. **Create a gateway group**
    Sort direction (ratio asc/desc), reorder-after-scan, retry/failover, optional first-token timeout, group UA.
 3. **Add routes**
-   Choose monitor or provider; set weight, ratio conversion, `upstream_protocol`, UA mode; optionally **Ensure upstream keys** (monitor routes only).
+   Choose monitor or provider; set priority, ratio conversion, `upstream_protocol`, UA mode; optionally **Ensure upstream keys** (monitor routes only).
 4. **Models**
    Configure group/route maps; use Preview / Sync / Probe to maintain the model list.
 5. **Create a gateway key**
@@ -753,7 +766,7 @@ Route field `upstream_protocol`:
 ### Scheduling and billing ratio
 
 - Only **enabled** routes not inside a temporary pause window are scheduled.
-- Order: effective ratio (group direction asc/desc) → weight → position.
+- Order: priority (higher number first) → effective ratio (group direction asc/desc) → position.
 - Effective ratio (aligned with monitor account sync logic):
   1. `custom` → use custom value
   2. if source group matches → live ratio with raw / ×100 / ÷100 conversion

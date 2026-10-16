@@ -321,19 +321,27 @@ export function RoutePauseErrorDialog({
               <div>
                 <div className="text-[11px] text-muted-foreground">调度状态</div>
                 <div>
-                  {isRouteTempPaused(pauseErrorRoute.temp_unschedulable_until)
-                    ? "暂停中（不参与调度）"
-                    : "已恢复（可调度）"}
+                  {pauseErrorRoute.auto_disabled
+                    ? "已自动禁用（不参与调度，后台探测成功后恢复）"
+                    : isRouteTempPaused(pauseErrorRoute.temp_unschedulable_until)
+                      ? "暂停中（不参与调度）"
+                      : "已恢复（可调度）"}
                 </div>
               </div>
               <div>
-                <div className="text-[11px] text-muted-foreground">暂停至</div>
+                <div className="text-[11px] text-muted-foreground">
+                  {pauseErrorRoute.auto_disabled ? "自动禁用于" : "暂停至"}
+                </div>
                 <div className="font-mono text-xs">
-                  {pauseErrorRoute.temp_unschedulable_until
-                    ? new Date(pauseErrorRoute.temp_unschedulable_until).toLocaleString(
-                        "zh-CN",
-                      )
-                    : "—"}
+                  {pauseErrorRoute.auto_disabled
+                    ? pauseErrorRoute.auto_disabled_at
+                      ? new Date(pauseErrorRoute.auto_disabled_at).toLocaleString("zh-CN")
+                      : "—"
+                    : pauseErrorRoute.temp_unschedulable_until
+                      ? new Date(pauseErrorRoute.temp_unschedulable_until).toLocaleString(
+                          "zh-CN",
+                        )
+                      : "—"}
                 </div>
               </div>
             </div>
@@ -377,6 +385,7 @@ export function RoutePauseErrorDialog({
               </div>
               <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted/30 p-3 font-mono text-[12px] leading-5 text-red-700 dark:text-red-300">
                 {pauseErrorRoute.temp_unschedulable_reason?.trim() ||
+                  pauseErrorRoute.auto_disabled_reason?.trim() ||
                   "（无错误详情；若此前已自动清空，请看「使用记录」失败行）"}
               </pre>
             </div>
@@ -797,7 +806,7 @@ export function GroupFormDialog({
               <div className="min-w-0 flex-1">
                 <Label>顺延下一个接口</Label>
                 <p className="text-[11px] leading-5 text-muted-foreground">
-                  当前路由重试耗尽后，按倍率顺序切换下一条路由。
+                  当前路由重试耗尽后，按优先级（从高到低）与倍率顺序切换下一条路由。
                 </p>
               </div>
               <Switch
@@ -839,6 +848,69 @@ export function GroupFormDialog({
                 disabled={!groupForm.retry_enabled}
                 onCheckedChange={(v) =>
                   setGroupForm({ ...groupForm, failover_on_4xx: v })
+                }
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>重试状态码</Label>
+              <Input
+                disabled={!groupForm.retry_enabled}
+                value={groupForm.retry_status_codes}
+                onChange={(e) =>
+                  setGroupForm({ ...groupForm, retry_status_codes: e.target.value })
+                }
+                placeholder="留空用默认，例如 429,500-503,520-599"
+              />
+              <p className="text-[11px] leading-5 text-muted-foreground">
+                填写后只有这些上游状态码会重试/顺延（覆盖「4xx 状态码顺延」）。
+                无论怎么配：模型不存在 / 无可用渠道 / 404 总是直接换下一条且不冷却；
+                上下文超长总是直接回显；429 / 503 带 Retry-After 时冷却取二者较长。
+              </p>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <Label>同优先级随机分流</Label>
+                <p className="text-[11px] leading-5 text-muted-foreground">
+                  路由按优先级数字从高到低调用。关闭：同优先级再按倍率先后固定顺序。
+                  开启：同优先级的路由随机选，失败再顺延到同级其它路由、再到下一优先级。
+                </p>
+              </div>
+              <Switch
+                className="shrink-0"
+                checked={groupForm.load_balance_mode === "random"}
+                onCheckedChange={(v) =>
+                  setGroupForm({ ...groupForm, load_balance_mode: v ? "random" : "ordered" })
+                }
+              />
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <Label>按模型优先选路由</Label>
+                <p className="text-[11px] leading-5 text-muted-foreground">
+                  优先尝试模型清单里声明了该模型的路由，其它路由仍作为顺延兜底。
+                </p>
+              </div>
+              <Switch
+                className="shrink-0"
+                checked={groupForm.model_aware_routing}
+                onCheckedChange={(v) =>
+                  setGroupForm({ ...groupForm, model_aware_routing: v })
+                }
+              />
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <Label>自动禁用失效路由</Label>
+                <p className="text-[11px] leading-5 text-muted-foreground">
+                  上游返回鉴权失败 / 额度耗尽 / 账号停用（状态码与关键词见系统设置 → 网关）时禁用该路由，
+                  后台按间隔探测，成功后自动恢复；也可在路由列表手动清除。
+                </p>
+              </div>
+              <Switch
+                className="shrink-0"
+                checked={groupForm.auto_disable_enabled}
+                onCheckedChange={(v) =>
+                  setGroupForm({ ...groupForm, auto_disable_enabled: v })
                 }
               />
             </div>

@@ -13,8 +13,8 @@ func SupportsIncrementalStream(inbound, upstream Kind, converted bool) bool {
 	}
 	in, up := NormalizeKind(inbound), NormalizeKind(upstream)
 	// 任意 OpenAI Chat / Responses / Anthropic 互转均可增量
-	okIn := in == KindOpenAIChat || in == KindOpenAI || in == KindOpenAIResponses || in == KindAnthropic
-	okUp := up == KindOpenAIChat || up == KindOpenAI || up == KindOpenAIResponses || up == KindAnthropic
+	okIn := in == KindOpenAIChat || in == KindOpenAI || in == KindOpenAIResponses || in == KindAnthropic || in == KindGemini
+	okUp := up == KindOpenAIChat || up == KindOpenAI || up == KindOpenAIResponses || up == KindAnthropic || up == KindGemini
 	return okIn && okUp
 }
 

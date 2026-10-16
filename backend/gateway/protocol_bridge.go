@@ -3,6 +3,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 
@@ -23,86 +24,34 @@ func (svc *Service) prepareUpstreamRequest(
 	stream bool,
 	inboundPath string,
 ) (fwd []byte, upstreamPath string, converted bool, err error) {
-	in := protocol.NormalizeKind(inbound)
-	up := protocol.NormalizeKind(upstream)
-	upstreamPath = protocol.PathFor(up, inboundPath)
-	fwd = RewriteModelInBody(body, model)
-	if !protocol.NeedsBodyConvert(in, up) {
-		// 同形态：仍可能需要改 path（例如入站 chat、上游 responses 不走这里）
-		if protocol.IsOpenAIFamily(in) && protocol.IsOpenAIFamily(up) &&
-			protocol.NormalizeKind(in) == protocol.NormalizeKind(up) {
-			// OpenAI Chat 流式：对齐 sub2api，强制 include_usage
-			if stream && (up == protocol.KindOpenAIChat || up == protocol.KindOpenAI) {
-				fwd = EnsureStreamUsageOption(fwd, stream)
-			}
-			return fwd, upstreamPath, false, nil
-		}
-		if in == up {
-			if stream && (up == protocol.KindOpenAIChat || up == protocol.KindOpenAI) {
-				fwd = EnsureStreamUsageOption(fwd, stream)
-			}
-			return fwd, upstreamPath, false, nil
-		}
-	}
-
-	// 透传端点：不做 body 协议转换，只改 model（若有）
-	if protocol.IsPassthroughEndpoint(inboundPath) {
-		if stream && (up == protocol.KindOpenAIChat || up == protocol.KindOpenAI) {
-			fwd = EnsureStreamUsageOption(fwd, stream)
-		}
-		return fwd, upstreamPath, false, nil
-	}
-
-	fwd, converted, err = protocol.ConvertRequest(in, up, fwd, model, stream)
+	fwd, upstreamPath, plan, err := svc.planUpstreamRequest(context.Background(), body, inbound, upstream, "", model, stream, inboundPath)
 	if err != nil {
 		return nil, "", false, err
 	}
-	// 转换后若上游仍是 OpenAI Chat，强制 include_usage（sub2api 同款）
-	if stream && (up == protocol.KindOpenAIChat || up == protocol.KindOpenAI) {
-		fwd = EnsureStreamUsageOption(fwd, stream)
-	}
-	return fwd, upstreamPath, converted, nil
+	return fwd, upstreamPath, plan.Converted, nil
 }
 
-// prepareUpstreamRequestWithToolBridge keeps the reversible tool mapping for
-// Responses requests that must be lowered to Chat Completions or Anthropic.
-func (svc *Service) prepareUpstreamRequestWithToolBridge(
-	body []byte,
-	inbound, upstream protocolKind,
+// prepareLegacyUpstreamRequest 旧转换器路径（engine=legacy，或 relaykit 不支持的 tool_search 往返）。
+// Responses 降级到 Chat / Anthropic 时保留可逆的工具映射。
+func (svc *Service) prepareLegacyUpstreamRequest(
+	fwd []byte,
+	in, up protocolKind,
 	model string,
 	stream bool,
-	inboundPath string,
-) (fwd []byte, upstreamPath string, converted bool, bridge protocol.ResponsesToolBridge, err error) {
-	in := protocol.NormalizeKind(inbound)
-	up := protocol.NormalizeKind(upstream)
-	if in != protocol.KindOpenAIResponses || protocol.IsPassthroughEndpoint(inboundPath) ||
-		(up != protocol.KindOpenAIChat && up != protocol.KindOpenAI && up != protocol.KindAnthropic) {
-		fwd, upstreamPath, converted, err = svc.prepareUpstreamRequest(body, inbound, upstream, model, stream, inboundPath)
-		return
+) ([]byte, protocol.ResponsesToolBridge, error) {
+	if in == protocol.KindOpenAIResponses && (up == protocol.KindOpenAIChat || up == protocol.KindAnthropic) {
+		chat, bridge, err := protocol.ResponsesToOpenAIChatRequestWithToolBridge(fwd, model, stream)
+		if err != nil {
+			return nil, protocol.ResponsesToolBridge{}, err
+		}
+		if up == protocol.KindAnthropic {
+			out, err := protocol.OpenAIToAnthropicRequest(chat, model, stream)
+			return out, bridge, err
+		}
+		return chat, bridge, nil
 	}
-
-	fwd = RewriteModelInBody(body, model)
-	bridge, err = protocol.BuildResponsesToolBridge(fwd)
-	if err != nil {
-		return nil, "", false, protocol.ResponsesToolBridge{}, err
-	}
-	chat, builtBridge, convErr := protocol.ResponsesToOpenAIChatRequestWithToolBridge(fwd, model, stream)
-	if convErr != nil {
-		return nil, "", false, protocol.ResponsesToolBridge{}, convErr
-	}
-	bridge = builtBridge
-	if up == protocol.KindAnthropic {
-		fwd, err = protocol.OpenAIToAnthropicRequest(chat, model, stream)
-	} else {
-		fwd = chat
-	}
-	if err != nil {
-		return nil, "", false, protocol.ResponsesToolBridge{}, err
-	}
-	if stream && (up == protocol.KindOpenAIChat || up == protocol.KindOpenAI) {
-		fwd = EnsureStreamUsageOption(fwd, stream)
-	}
-	return fwd, protocol.PathFor(up, inboundPath), true, bridge, nil
+	out, _, err := protocol.ConvertRequest(in, up, fwd, model, stream)
+	return out, protocol.ResponsesToolBridge{}, err
 }
 
 // convertUpstreamResponse 将上游响应转回客户端协议。
@@ -278,46 +227,125 @@ func (svc *Service) parseUsageByKind(body []byte, stream bool, kind protocolKind
 }
 
 func (svc *Service) convertErrorBody(body []byte, client, upstream protocolKind, converted bool) []byte {
-	if !converted {
-		return body
-	}
 	in := protocol.NormalizeKind(client)
 	up := protocol.NormalizeKind(upstream)
-	if in == up {
+	if in == up || len(bytes.TrimSpace(body)) == 0 {
 		return body
 	}
-	// Anthropic 上游错误 → OpenAI 族客户端
-	if protocol.IsOpenAIFamily(in) && up == protocol.KindAnthropic {
-		if out, err := protocol.AnthropicToOpenAIResponse(body, ""); err == nil {
-			return out
+	// OpenAI Chat ↔ Responses 的错误体同为 {"error":{...}}，原样保留 code / param
+	if protocol.IsOpenAIFamily(in) && protocol.IsOpenAIFamily(up) {
+		return body
+	}
+	// 透传端点（同协议族）且客户端不是 Gemini：保持原样
+	if !converted && in != protocol.KindGemini && up != protocol.KindGemini {
+		return body
+	}
+	typ, msg, code := extractUpstreamError(body)
+	if msg == "" {
+		return body
+	}
+	return renderClientError(in, typ, msg, code)
+}
+
+// extractUpstreamError 从任意协议的错误体里取 type / message / code。
+// 覆盖 OpenAI {"error":{...}}、Anthropic {"type":"error","error":{...}}、Gemini {"error":{"code","message","status"}}、
+// 以及 [{"error":...}]（Gemini 流式数组）与 {"message":...} 这类裸错误。
+func extractUpstreamError(body []byte) (typ, msg string, code int) {
+	trim := bytes.TrimSpace(body)
+	if len(trim) > 0 && trim[0] == '[' {
+		var arr []json.RawMessage
+		if json.Unmarshal(trim, &arr) == nil && len(arr) > 0 {
+			trim = arr[0]
 		}
 	}
-	// OpenAI Chat 上游错误 → Anthropic 客户端
-	if in == protocol.KindAnthropic && (up == protocol.KindOpenAIChat || up == protocol.KindOpenAI) {
-		if out, err := protocol.OpenAIToAnthropicResponse(body, ""); err == nil {
-			return out
-		}
+	var m map[string]any
+	if json.Unmarshal(trim, &m) != nil {
+		return "", "", 0
 	}
-	// Responses 上游错误 → Anthropic 客户端（尽量包一层 message 错误）
-	if in == protocol.KindAnthropic && up == protocol.KindOpenAIResponses {
-		if out, err := protocol.OpenAIToAnthropicResponse(body, ""); err == nil {
-			return out
+	if errObj, ok := m["error"].(map[string]any); ok {
+		typ = stringValue(errObj["type"])
+		if typ == "" {
+			typ = stringValue(errObj["status"])
 		}
-		// 裸 OpenAI error JSON
-		var m map[string]any
-		if json.Unmarshal(body, &m) == nil {
-			if errObj, ok := m["error"].(map[string]any); ok {
-				out, _ := json.Marshal(map[string]any{
-					"type": "error",
-					"error": map[string]any{
-						"type":    errObj["type"],
-						"message": errObj["message"],
-					},
-				})
-				return out
-			}
+		msg = stringValue(errObj["message"])
+		if f, ok := errObj["code"].(float64); ok {
+			code = int(f)
+		} else if typ == "" {
+			typ = stringValue(errObj["code"])
 		}
+		return typ, msg, code
 	}
-	// Responses 上游错误 → Chat 客户端：多数已是 OpenAI error 形态，原样
-	return body
+	if s, ok := m["error"].(string); ok {
+		return stringValue(m["type"]), s, 0
+	}
+	return stringValue(m["type"]), stringValue(m["message"]), 0
+}
+
+// renderClientError 按客户端协议重新包装上游错误。
+func renderClientError(kind protocolKind, typ, msg string, code int) []byte {
+	if typ == "" {
+		typ = "api_error"
+	}
+	var out []byte
+	switch protocol.NormalizeKind(kind) {
+	case protocol.KindAnthropic:
+		out, _ = json.Marshal(map[string]any{
+			"type":  "error",
+			"error": map[string]any{"type": typ, "message": msg},
+		})
+	case protocol.KindGemini:
+		if code == 0 {
+			code = 500
+		}
+		out, _ = json.Marshal(map[string]any{
+			"error": map[string]any{"code": code, "message": msg, "status": geminiStatusFor(typ, code)},
+		})
+	default:
+		out, _ = json.Marshal(map[string]any{
+			"error": map[string]any{"message": msg, "type": typ},
+		})
+	}
+	return out
+}
+
+// geminiStatusFor 把错误类型 / HTTP 码映射到 Google RPC status。
+func geminiStatusFor(typ string, code int) string {
+	t := strings.ToUpper(strings.TrimSpace(typ))
+	switch t {
+	case "INVALID_ARGUMENT", "FAILED_PRECONDITION", "OUT_OF_RANGE", "UNAUTHENTICATED", "PERMISSION_DENIED",
+		"NOT_FOUND", "RESOURCE_EXHAUSTED", "INTERNAL", "UNAVAILABLE", "DEADLINE_EXCEEDED", "CANCELLED", "ABORTED":
+		return t
+	}
+	switch strings.ToLower(typ) {
+	case "invalid_request_error":
+		return "INVALID_ARGUMENT"
+	case "authentication_error":
+		return "UNAUTHENTICATED"
+	case "permission_error":
+		return "PERMISSION_DENIED"
+	case "not_found_error":
+		return "NOT_FOUND"
+	case "rate_limit_error":
+		return "RESOURCE_EXHAUSTED"
+	case "overloaded_error":
+		return "UNAVAILABLE"
+	}
+	switch {
+	case code == 400:
+		return "INVALID_ARGUMENT"
+	case code == 401:
+		return "UNAUTHENTICATED"
+	case code == 403:
+		return "PERMISSION_DENIED"
+	case code == 404:
+		return "NOT_FOUND"
+	case code == 429:
+		return "RESOURCE_EXHAUSTED"
+	case code == 503:
+		return "UNAVAILABLE"
+	case code == 504:
+		return "DEADLINE_EXCEEDED"
+	default:
+		return "INTERNAL"
+	}
 }

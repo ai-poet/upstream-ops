@@ -33,12 +33,8 @@ func (rt *Runtime) buildUpstreamHTTPRequest(
 	if target == nil {
 		return nil, errors.New("upstream target is nil")
 	}
-	base := strings.TrimRight(target.BaseURL, "/")
 	apiKey := target.APIKey
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-	fullURL := base + path
+	fullURL := joinUpstreamURL(target.BaseURL, path)
 
 	upKind := protocol.NormalizeKind(kind)
 	if stream && (upKind == protocol.KindOpenAIChat || upKind == protocol.KindOpenAI) {
@@ -56,14 +52,19 @@ func (rt *Runtime) buildUpstreamHTTPRequest(
 	}
 	// 请求相关 ID 原样转发上游；网关只在响应侧写 X-Upstream-Ops-Request-Id
 	rt.copyClientRequestIDHeaders(req.Header, inHeader)
-	if upKind == protocol.KindAnthropic {
+	switch upKind {
+	case protocol.KindAnthropic:
 		if v := inHeader.Get("anthropic-version"); v != "" {
 			req.Header.Set("anthropic-version", v)
 		}
 		if v := inHeader.Get("anthropic-beta"); v != "" {
 			req.Header.Set("anthropic-beta", v)
 		}
-	} else {
+	case protocol.KindGemini:
+		if v := inHeader.Get("x-goog-api-client"); v != "" {
+			req.Header.Set("x-goog-api-client", v)
+		}
+	default:
 		if v := inHeader.Get("OpenAI-Beta"); v != "" {
 			req.Header.Set("OpenAI-Beta", v)
 		}
@@ -75,15 +76,26 @@ func (rt *Runtime) buildUpstreamHTTPRequest(
 	if target.Provider != nil {
 		authStyle = rt.normalizeProviderAuthStyle(target.Provider.AuthStyle)
 	}
+	// Gemini 上游的密钥头是 x-goog-api-key（NewAPI / Sub2API 的 /v1beta 也认）
+	keyHeader := "x-api-key"
+	if upKind == protocol.KindGemini {
+		keyHeader = "x-goog-api-key"
+	}
 	switch authStyle {
 	case storage.GatewayProviderAuthBearer:
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	case storage.GatewayProviderAuthXAPIKey:
-		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set(keyHeader, apiKey)
 	default:
+		if upKind == protocol.KindGemini {
+			// Google 原生端点会把 Authorization: Bearer 当 OAuth 令牌校验，API key 放这里会被拒成 401；
+			// 默认只发 x-goog-api-key（要 Bearer 的上游可把鉴权方式显式设为 bearer）
+			req.Header.Set(keyHeader, apiKey)
+			break
+		}
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 		if upKind == protocol.KindAnthropic {
-			req.Header.Set("x-api-key", apiKey)
+			req.Header.Set(keyHeader, apiKey)
 		}
 	}
 	if upKind == protocol.KindAnthropic {
@@ -135,10 +147,10 @@ func (rt *Runtime) forwardStream(
 	converted bool,
 	firstTokenTimeout time.Duration,
 ) streamAttemptResult {
-	return rt.forwardStreamWithToolBridge(ctx, c, target, path, method, inHeader, body, inboundKind, upstreamKind, model, converted, firstTokenTimeout, protocol.ResponsesToolBridge{})
+	return rt.forwardStreamPlan(ctx, c, target, path, method, inHeader, body, defaultStreamPlan(inboundKind, upstreamKind, model, converted), firstTokenTimeout)
 }
 
-func (rt *Runtime) forwardStreamWithToolBridge(
+func (rt *Runtime) forwardStreamPlan(
 	ctx context.Context,
 	c *gin.Context,
 	target *upstreamTarget,
@@ -146,13 +158,10 @@ func (rt *Runtime) forwardStreamWithToolBridge(
 	method string,
 	inHeader http.Header,
 	body []byte,
-	inboundKind protocolKind,
-	upstreamKind protocolKind,
-	model string,
-	converted bool,
+	plan *conversionPlan,
 	firstTokenTimeout time.Duration,
-	bridge protocol.ResponsesToolBridge,
 ) streamAttemptResult {
+	upstreamKind := plan.Upstream
 	clientCtx := context.Background()
 	if c != nil && c.Request != nil && c.Request.Context() != nil {
 		clientCtx = c.Request.Context()
@@ -205,11 +214,11 @@ func (rt *Runtime) forwardStreamWithToolBridge(
 		}
 	}
 
-	incremental := protocol.SupportsIncrementalStream(inboundKind, upstreamKind, converted)
+	incremental := protocol.SupportsIncrementalStream(plan.Inbound, plan.Upstream, plan.Converted)
 	if !incremental {
-		return rt.forwardStreamBufferedWithToolBridge(c, resp, start, firstTokenTimeout, inboundKind, upstreamKind, model, converted, headers, status, bridge)
+		return rt.forwardStreamBufferedPlan(c, resp, start, firstTokenTimeout, plan, headers, status)
 	}
-	return rt.forwardStreamIncrementalWithToolBridge(upCtx, clientCtx, abortReq, c, resp, start, firstTokenTimeout, inboundKind, upstreamKind, model, converted, headers, status, bridge)
+	return rt.forwardStreamIncrementalPlan(upCtx, clientCtx, abortReq, c, resp, start, firstTokenTimeout, plan, headers, status)
 }
 
 // forwardStreamBuffered 仅兜底：三协议互转已走增量真流；此处保留给未知协议或未实现转换器。
@@ -226,21 +235,19 @@ func (rt *Runtime) forwardStreamBuffered(
 	headers http.Header,
 	status int,
 ) streamAttemptResult {
-	return rt.forwardStreamBufferedWithToolBridge(c, resp, start, firstTokenTimeout, inbound, upstream, model, converted, headers, status, protocol.ResponsesToolBridge{})
+	return rt.forwardStreamBufferedPlan(c, resp, start, firstTokenTimeout, defaultStreamPlan(inbound, upstream, model, converted), headers, status)
 }
 
-func (rt *Runtime) forwardStreamBufferedWithToolBridge(
+func (rt *Runtime) forwardStreamBufferedPlan(
 	c *gin.Context,
 	resp *http.Response,
 	start time.Time,
 	firstTokenTimeout time.Duration,
-	inbound, upstream protocolKind,
-	model string,
-	converted bool,
+	plan *conversionPlan,
 	headers http.Header,
 	status int,
-	bridge protocol.ResponsesToolBridge,
 ) streamAttemptResult {
+	inbound, upstream, model, converted, bridge := plan.Inbound, plan.Upstream, plan.Model, plan.Converted, plan.Bridge
 	var ft *int64
 	// 从请求发起起算剩余首字预算（含已花费的等响应头时间）
 	bodyWait, timedOut := rt.remainingFirstTokenWait(start, firstTokenTimeout)
@@ -315,10 +322,10 @@ func (rt *Runtime) forwardStreamIncremental(
 	headers http.Header,
 	status int,
 ) streamAttemptResult {
-	return rt.forwardStreamIncrementalWithToolBridge(upCtx, clientCtx, abortReq, c, resp, start, firstTokenTimeout, inbound, upstream, model, converted, headers, status, protocol.ResponsesToolBridge{})
+	return rt.forwardStreamIncrementalPlan(upCtx, clientCtx, abortReq, c, resp, start, firstTokenTimeout, defaultStreamPlan(inbound, upstream, model, converted), headers, status)
 }
 
-func (rt *Runtime) forwardStreamIncrementalWithToolBridge(
+func (rt *Runtime) forwardStreamIncrementalPlan(
 	upCtx context.Context,
 	clientCtx context.Context,
 	abortReq context.CancelFunc,
@@ -326,12 +333,9 @@ func (rt *Runtime) forwardStreamIncrementalWithToolBridge(
 	resp *http.Response,
 	start time.Time,
 	firstTokenTimeout time.Duration,
-	inbound, upstream protocolKind,
-	model string,
-	converted bool,
+	plan *conversionPlan,
 	headers http.Header,
 	status int,
-	bridge protocol.ResponsesToolBridge,
 ) streamAttemptResult {
 	if upCtx == nil {
 		upCtx = context.Background()
@@ -340,41 +344,22 @@ func (rt *Runtime) forwardStreamIncrementalWithToolBridge(
 		clientCtx = context.Background()
 	}
 	result := streamAttemptResult{Status: status, Headers: headers}
-	clientKind := protocol.NormalizeKind(inbound)
-	upKind := protocol.NormalizeKind(upstream)
+	clientKind := protocol.NormalizeKind(plan.Inbound)
+	upKind := protocol.NormalizeKind(plan.Upstream)
 	gwCfg := rt.gatewayRuntime()
 	maxLineSize := gwCfg.StreamMaxLineSize()
 
-	var (
-		anth2oai  *protocol.AnthropicToOpenAIStream
-		oai2anth  *protocol.OpenAIToAnthropicStream
-		resp2anth *protocol.ResponsesToAnthropicStream
-		resp2oai  *protocol.ResponsesToOpenAIStream
-		anth2resp *protocol.AnthropicToResponsesStream
-		chat2resp *protocol.ChatToResponsesStream
-	)
-	if converted {
-		switch {
-		case protocol.IsOpenAIFamily(clientKind) && clientKind != protocol.KindOpenAIResponses && upKind == protocol.KindAnthropic:
-			// Chat ← Anthropic
-			anth2oai = protocol.NewAnthropicToOpenAIStream(model)
-		case clientKind == protocol.KindAnthropic && (upKind == protocol.KindOpenAIChat || upKind == protocol.KindOpenAI):
-			// Anthropic ← Chat
-			oai2anth = protocol.NewOpenAIToAnthropicStream(model)
-		case clientKind == protocol.KindAnthropic && upKind == protocol.KindOpenAIResponses:
-			// Anthropic ← Responses
-			resp2anth = protocol.NewResponsesToAnthropicStream(model)
-		case protocol.IsOpenAIFamily(clientKind) && clientKind != protocol.KindOpenAIResponses && upKind == protocol.KindOpenAIResponses:
-			// Chat ← Responses
-			resp2oai = protocol.NewResponsesToOpenAIStream(model)
-		case clientKind == protocol.KindOpenAIResponses && upKind == protocol.KindAnthropic:
-			// Responses ← Anthropic
-			anth2resp = protocol.NewAnthropicToResponsesStreamWithToolBridge(model, bridge)
-		case clientKind == protocol.KindOpenAIResponses && (upKind == protocol.KindOpenAIChat || upKind == protocol.KindOpenAI):
-			// Responses ← Chat
-			chat2resp = protocol.NewChatToResponsesStreamWithToolBridge(model, bridge)
-		}
+	// conv 为 nil 表示同协议透传
+	conv := rt.newStreamConverter(upCtx, plan)
+	// Gemini 客户端未带 alt=sse 时按 JSON 数组逐元素写出
+	var geminiArray *geminiArrayEncoder
+	if clientKind == protocol.KindGemini && plan.GeminiArray {
+		geminiArray = &geminiArrayEncoder{}
 	}
+	// Gemini 上游没有 [DONE]：见过 finishReason 后 EOF 才算正常结束
+	geminiUpstreamFinished := false
+	// 数组模式下已向客户端写出带 finishReason 的元素（数组本身可能还没闭合）
+	geminiFinishSent := false
 
 	type scanEvent struct {
 		line string
@@ -467,6 +452,10 @@ func (rt *Runtime) forwardStreamIncrementalWithToolBridge(
 			if err := rt.commitSSEHeaders(c, headers); err != nil {
 				return err
 			}
+			if geminiArray != nil {
+				// Gemini REST 非 SSE 流式：JSON 数组
+				c.Header("Content-Type", "application/json; charset=utf-8")
+			}
 			result.Committed = true
 			ms := time.Since(start).Milliseconds()
 			result.FirstTokenMS = &ms
@@ -474,6 +463,9 @@ func (rt *Runtime) forwardStreamIncrementalWithToolBridge(
 		}
 		if result.ClientDisconnected {
 			return nil
+		}
+		if geminiArray != nil {
+			frames = geminiArray.encode(frames)
 		}
 		for _, f := range frames {
 			if len(f) == 0 {
@@ -483,7 +475,14 @@ func (rt *Runtime) forwardStreamIncrementalWithToolBridge(
 				result.ClientDisconnected = true
 				return err
 			}
-			if rt.sseFrameIsTerminal(f) {
+			if geminiArray != nil {
+				// 数组模式：写出 "]" 才算完整交付；带 finishReason 的元素只记下已给出终态
+				if geminiArray.closed {
+					result.DownstreamComplete = true
+				} else if rt.sseFrameIsTerminal(f) {
+					geminiFinishSent = true
+				}
+			} else if rt.sseFrameIsTerminal(f) {
 				result.DownstreamComplete = true
 			}
 		}
@@ -504,23 +503,13 @@ func (rt *Runtime) forwardStreamIncrementalWithToolBridge(
 			rt.mergeStreamUsage(&tokens, data, upKind)
 		}
 
+		if upKind == protocol.KindGemini && geminiChunkFinished(data) {
+			geminiUpstreamFinished = true
+		}
 		var frames [][]byte
 		switch {
-		case anth2oai != nil:
-			frames = anth2oai.Feed(eventName, data)
-		case oai2anth != nil:
-			if !oai2anth.Started {
-				frames = append(frames, oai2anth.EnsureStarted()...)
-			}
-			frames = append(frames, oai2anth.FeedData(data)...)
-		case resp2anth != nil:
-			frames = resp2anth.Feed(eventName, data)
-		case resp2oai != nil:
-			frames = resp2oai.Feed(eventName, data)
-		case anth2resp != nil:
-			frames = anth2resp.Feed(eventName, data)
-		case chat2resp != nil:
-			frames = chat2resp.FeedData(data)
+		case conv != nil:
+			frames = conv.Feed(eventName, data)
 		default:
 			// 透传完整 event。commit 前丢弃纯注释/空事件，避免上游 :PING 过早
 			// 提交响应头后无法再 retry/failover，并污染 first_token 统计。
@@ -546,26 +535,59 @@ func (rt *Runtime) forwardStreamIncrementalWithToolBridge(
 			return
 		}
 		errorEventSent = true
+		if geminiArray != nil {
+			// 已给出 finishReason：客户端已拿到完整回答，只闭合数组（与 SSE 模式终态后不再补错误一致）
+			frames := [][]byte{geminiErrorFrame(errType, msg), geminiArrayCloseFrame}
+			if geminiFinishSent {
+				frames = frames[1:]
+			}
+			if err := writeFrames(frames); err == nil {
+				result.DownstreamComplete = true
+			}
+			return
+		}
 		if err := rt.writeStreamTerminalError(c, clientKind, errType, msg); err == nil {
 			result.DownstreamComplete = true
 		}
 	}
 
+	// 转换器遇到无法解析 / 转换的上游事件：之后的输出不可信，按失败结束（未提交时本次尝试失败，可重试 / 顺延）
+	failOnConvertError := func() bool {
+		ce, ok := conv.(interface{ Err() error })
+		if !ok || ce.Err() == nil {
+			return false
+		}
+		convErr := ce.Err()
+		if rt.Log != nil {
+			rt.Log.Warn("gateway stream convert failed", "inbound", plan.Inbound, "upstream", plan.Upstream, "err", convErr)
+		}
+		result.Body = append([]byte(nil), usageBuf.Bytes()...)
+		result.Tokens = rt.finalizeStreamTokens(tokens, result.Body, upKind)
+		msg := "stream convert failed: " + convErr.Error()
+		if !result.Committed {
+			result.Err = errors.New(msg)
+			if abortReq != nil {
+				abortReq()
+			}
+			return true
+		}
+		if !result.ClientDisconnected {
+			sendTerminalError("upstream_error", msg)
+		}
+		result.StreamErr = errors.New(msg)
+		rt.finalizeStreamClientDisconnect(&result)
+		return true
+	}
+
 	closeConverters := func() {
 		var frames [][]byte
-		switch {
-		case anth2oai != nil:
-			frames = anth2oai.Close()
-		case oai2anth != nil:
-			frames = oai2anth.Close()
-		case resp2anth != nil:
-			frames = resp2anth.Close()
-		case resp2oai != nil:
-			frames = resp2oai.Close()
-		case anth2resp != nil:
-			frames = anth2resp.Close()
-		case chat2resp != nil:
-			frames = chat2resp.Close()
+		if conv != nil {
+			frames = conv.Close()
+		}
+		if geminiArray != nil {
+			_ = writeFrames(frames)
+			_ = writeFrames([][]byte{geminiArrayCloseFrame})
+			return
 		}
 		_ = writeFrames(frames)
 	}
@@ -644,6 +666,10 @@ func (rt *Runtime) forwardStreamIncrementalWithToolBridge(
 				continue
 			}
 			ping := rt.streamKeepaliveFrame(clientKind)
+			if geminiArray != nil {
+				// JSON 数组里只能插空白
+				ping = []byte("\r\n")
+			}
 			if _, err := c.Writer.Write(ping); err != nil {
 				result.ClientDisconnected = true
 				continue
@@ -678,8 +704,18 @@ func (rt *Runtime) forwardStreamIncrementalWithToolBridge(
 					}
 					pendingLines = pendingLines[:0]
 				}
+				if failOnConvertError() {
+					return result
+				}
 				result.Body = append([]byte(nil), usageBuf.Bytes()...)
 				result.Tokens = rt.finalizeStreamTokens(tokens, result.Body, upKind)
+				if geminiUpstreamFinished && result.Committed && !result.DownstreamComplete {
+					// Gemini 上游以 EOF 结束：补齐客户端终态（转换器收尾 / 数组闭合）
+					closeConverters()
+					if conv == nil && geminiArray == nil {
+						result.DownstreamComplete = true
+					}
+				}
 				if !result.DownstreamComplete {
 					msg := "upstream stream closed before terminal event"
 					if !result.Committed {
@@ -702,8 +738,11 @@ func (rt *Runtime) forwardStreamIncrementalWithToolBridge(
 					if !result.Committed {
 						// 无任何输出：视为成功空流，commit 空 SSE 结束
 						if err := rt.commitSSEHeaders(c, headers); err == nil {
+							if geminiArray != nil {
+								c.Header("Content-Type", "application/json; charset=utf-8")
+							}
 							result.Committed = true
-							if anth2oai == nil && oai2anth == nil && resp2anth == nil && resp2oai == nil && anth2resp == nil && chat2resp == nil {
+							if conv == nil && geminiArray == nil && clientKind != protocol.KindGemini {
 								doneFrame := []byte("data: [DONE]\n\n")
 								if _, werr := c.Writer.Write(doneFrame); werr == nil {
 									result.DownstreamComplete = true
@@ -750,7 +789,7 @@ func (rt *Runtime) forwardStreamIncrementalWithToolBridge(
 			if strings.TrimSpace(line) == "" {
 				// 完整 SSE event 结束。commit 前的纯注释/ping 不计入首字、不停首字计时器，
 				// 否则上游 :PING 会误取消 2s 首字超时，真实内容 7s 才到却无法顺延。
-				if !result.Committed && anth2oai == nil && oai2anth == nil && resp2anth == nil && resp2oai == nil && anth2resp == nil && chat2resp == nil && !rt.sseEventHasPayload(pendingLines) {
+				if !result.Committed && conv == nil && !rt.sseEventHasPayload(pendingLines) {
 					pendingLines = pendingLines[:0]
 					continue
 				}
@@ -769,6 +808,9 @@ func (rt *Runtime) forwardStreamIncrementalWithToolBridge(
 					// write error already flagged disconnect
 				}
 				pendingLines = pendingLines[:0]
+				if failOnConvertError() {
+					return result
+				}
 				if terminal {
 					result.Body = append([]byte(nil), usageBuf.Bytes()...)
 					result.Tokens = rt.finalizeStreamTokens(tokens, result.Body, upKind)
@@ -791,4 +833,20 @@ func (rt *Runtime) forwardStreamIncrementalWithToolBridge(
 			pendingLines = append(pendingLines, line)
 		}
 	}
+}
+
+// joinUpstreamURL 拼上游 URL。方舟（Seedance）的 /api/v3/... 路径在 base 已以 /api/v3 或 /v3 结尾时
+// 去掉重复的版本段，避免 /api/v3/api/v3/...。
+func joinUpstreamURL(base, path string) string {
+	base = strings.TrimRight(base, "/")
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	if strings.HasPrefix(path, "/api/v3/") {
+		lower := strings.ToLower(base)
+		if strings.HasSuffix(lower, "/api/v3") || strings.HasSuffix(lower, "/v3") {
+			path = strings.TrimPrefix(path, "/api/v3")
+		}
+	}
+	return base + path
 }

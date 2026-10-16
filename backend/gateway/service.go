@@ -17,6 +17,7 @@ import (
 	"github.com/bejix/upstream-ops/backend/config"
 	"github.com/bejix/upstream-ops/backend/connector"
 	"github.com/bejix/upstream-ops/backend/crypto"
+	"github.com/bejix/upstream-ops/backend/gateway/protocol"
 	"github.com/bejix/upstream-ops/backend/storage"
 )
 
@@ -67,6 +68,12 @@ type Service struct {
 	// 源分组列表缓存（ListAPIKeyGroups 远程调用昂贵；列表接口不再实时拉，运行时/保存仍可复用缓存）
 	channelGroupsCacheMu sync.Mutex
 	channelGroupsCache   map[uint]channelGroupsCacheEntry // keyed by channel id
+
+	// 异步任务（图片 / 视频 / Seedance / 语音 / cachedContents）创建时的路由，供后续查询回到同一上游
+	tasks *taskAffinity
+
+	autoRecoverMu   sync.Mutex
+	autoRecoverStop chan struct{}
 }
 
 type modelsCacheEntry struct {
@@ -105,6 +112,7 @@ func NewService(
 		gatewayCfg:         config.GatewayConfig{}.WithDefaults(),
 		modelsCache:        map[uint]modelsCacheEntry{},
 		channelGroupsCache: map[uint]channelGroupsCacheEntry{},
+		tasks:              newTaskAffinity(),
 	}
 	s.Admin = &AdminService{Service: s}
 	s.Runtime = &Runtime{Service: s}
@@ -140,6 +148,7 @@ func (s *Service) UpdateGatewayConfig(cfg config.GatewayConfig) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.gatewayCfg = cfg.WithDefaults()
+	protocol.SetEngine(s.gatewayCfg.ProtocolEngine)
 }
 
 // StartPricing 启动模型价格远程同步。内置价目始终可用，远程失败不会中断网关。
@@ -156,7 +165,11 @@ func (s *Service) UpdatePricingConfig(cfg config.PricingConfig) {
 
 // Stop 停止网关后台任务。
 func (s *Service) Stop() {
-	if s != nil && s.Pricing != nil {
+	if s == nil {
+		return
+	}
+	if s.Pricing != nil {
 		s.Pricing.Stop()
 	}
+	s.stopAutoRecover()
 }

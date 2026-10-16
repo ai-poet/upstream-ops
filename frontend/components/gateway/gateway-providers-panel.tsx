@@ -303,7 +303,9 @@ export function GatewayProvidersPanel() {
                             ? "Chat"
                             : p.upstream_protocol === "anthropic"
                               ? "Anthropic"
-                              : "自动"}
+                              : p.upstream_protocol === "gemini"
+                                ? "Gemini"
+                                : "自动"}
                       </TableCell>
                       <TableCell className="tabular-nums text-sm">
                         {p.default_billing_rate}
@@ -457,6 +459,9 @@ export function GatewayProvidersPanel() {
                     </SelectItem>
                     <SelectItem value="anthropic" description="/v1/messages">
                       Anthropic
+                    </SelectItem>
+                    <SelectItem value="gemini" description="/v1beta/models/{model}:generateContent">
+                      Gemini
                     </SelectItem>
                     <SelectItem value="openai" description="兼容，等同 Chat">
                       openai

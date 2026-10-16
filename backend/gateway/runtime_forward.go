@@ -15,8 +15,33 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// forwardRequest 一次客户端请求的转发参数。
+type forwardRequest struct {
+	// Path 规范化后的入站端点（写用量；透传类端点也是上游 path）
+	Path string
+	Kind protocolKind
+	// Model 非空时覆盖 body 里的 model（Gemini 原生：模型在 URL 上）
+	Model string
+	// Stream 非空时覆盖 body 里的 stream（Gemini 原生：由 action 决定）
+	Stream *bool
+	// GeminiArray Gemini 流式且客户端未带 alt=sse：按 JSON 数组写出
+	GeminiArray bool
+	// TaskID 查询 / 取消异步任务时的任务 id：优先回到创建它的路由，404 直接换路由
+	TaskID string
+}
+
 // HandleForward 主转发（含故障转移）。
 func (rt *Runtime) HandleForward(c *gin.Context, path string, kind protocolKind) {
+	rt.handleForward(c, forwardRequest{Path: path, Kind: kind})
+}
+
+// HandleTaskForward 异步任务查询 / 下载 / 取消：按任务 id 回到创建它的路由。
+func (rt *Runtime) HandleTaskForward(c *gin.Context, path string, kind protocolKind, taskID string) {
+	rt.handleForward(c, forwardRequest{Path: path, Kind: kind, TaskID: taskID})
+}
+
+func (rt *Runtime) handleForward(c *gin.Context, req forwardRequest) {
+	path, kind := req.Path, req.Kind
 	// 尽早生成/透传 request id，保证后续任意错误体都可带上
 	reqID := rt.ensureGatewayRequestID(c)
 
@@ -37,18 +62,21 @@ func (rt *Runtime) HandleForward(c *gin.Context, path string, kind protocolKind)
 		rt.writeGatewayError(c, kind, http.StatusBadRequest, "invalid_request_error", "system prompt injection failed: "+err.Error())
 		return
 	}
-	// legacy completions 不做跨协议
-	if kind == protocolOpenAI && strings.Contains(path, "/completions") && !strings.Contains(path, "/chat/") {
-		// 仅透传；若路由强制 anthropic 则报错
-	}
 
-	requestedModel := ExtractModelFromBody(body)
+	contentType := c.GetHeader("Content-Type")
+	requestedModel := strings.TrimSpace(req.Model)
+	if requestedModel == "" {
+		requestedModel = requestModel(contentType, body)
+	}
 	body, err = rt.applyServiceTierRules(group, key, kind, requestedModel, body)
 	if err != nil {
 		rt.writeGatewayError(c, kind, http.StatusForbidden, "permission_error", err.Error())
 		return
 	}
 	stream := ExtractStreamFlag(body)
+	if req.Stream != nil {
+		stream = *req.Stream
+	}
 	billingInput := billingInputFromRequest(path, body)
 	serviceTier, reasoningEffort := ExtractMetaFromBody(body)
 	// thinking 是否开启：国产模型无 effort 档位时，按上游映射模型补默认 high（对齐 sub2api）
@@ -63,13 +91,21 @@ func (rt *Runtime) HandleForward(c *gin.Context, path string, kind protocolKind)
 
 	groupsByChannel := rt.loadGroupsByChannel(c.Request.Context(), routes)
 	groupMapping := ParseModelMapping(group.ModelMappingJSON)
+	groupMappedModel, _ := ResolveModel(requestedModel, groupMapping)
+	prefs := routePreferences{
+		ModelRouteIDs: rt.modelRouteIDs(group, routes, requestedModel, groupMappedModel),
+	}
+	if req.TaskID != "" {
+		prefs.PinnedRouteID = rt.tasks.lookup(group.ID, req.TaskID)
+	}
+	// 透传请求的查询串（分页、Gemini 参数等）原样带给上游；Gemini 的 ?key= 是网关密钥，不外传
+	query := forwardQuery(c)
 
 	// 组级重试策略
 	retryEnabled := group.RetryEnabled
 	sameRouteRetries := group.RetryCount
 	failoverEnabled := group.FailoverEnabled
 	failoverMax := group.FailoverMax
-	failoverOn4xx := group.FailoverOn4xx
 	cooldownSec := group.CooldownSeconds
 	ftTimeoutSec := rt.clampFirstTokenTimeoutSec(group.FirstTokenTimeoutSec)
 	var firstTokenTimeout time.Duration
@@ -90,7 +126,6 @@ func (rt *Runtime) HandleForward(c *gin.Context, path string, kind protocolKind)
 		sameRouteRetries = 0
 		failoverEnabled = false
 		failoverMax = 0
-		failoverOn4xx = false
 	}
 
 	exclude := map[uint]struct{}{}
@@ -103,31 +138,44 @@ func (rt *Runtime) HandleForward(c *gin.Context, path string, kind protocolKind)
 	attemptNo := 0
 	routesTried := 0
 
+	// 跨协议转换时下载的图片等媒体：整个请求共享一份缓存与预算，换路由不重复下载
+	convCtx := withMediaFetchState(c.Request.Context())
+	// Gemini 原生透传（embedContent / cachedContents 等）不跨协议，只能交给 Gemini 上游
+	geminiPassthrough := protocol.IsPassthroughEndpoint(path) && protocol.NormalizeKind(kind) == protocol.KindGemini
+
 	for {
-		candidates := SortRoutes(routes, groupsByChannel, group.RateSortDirection, time.Now(), exclude)
+		candidates := orderCandidates(routes, groupsByChannel, group, time.Now(), exclude, prefs)
 		if len(candidates) == 0 {
 			break
 		}
+
+		cand := candidates[0]
+		route := cand.Route
+		routeMapping := ParseModelMapping(route.ModelMappingJSON)
+		upstreamModel, chain := ResolveModel(requestedModel, routeMapping, groupMapping)
+		if upstreamModel == "" {
+			upstreamModel = requestedModel
+		}
+		// 接不住的路由直接跳过：不发请求、不占顺延次数
+		if geminiPassthrough && !rt.geminiPassthroughCapable(&route, upstreamModel) {
+			exclude[route.ID] = struct{}{}
+			if lastErr == nil && lastStatus == 0 {
+				lastErr = fmt.Errorf("no gemini upstream route in this group can serve %s", path)
+			}
+			continue
+		}
+
 		// 非首条路由 = 顺延；超过顺延次数则停止
 		if routesTried > 0 {
 			if !failoverEnabled || failoversDone >= failoverMax {
 				break
 			}
 		}
-
-		cand := candidates[0]
-		route := cand.Route
 		exclude[route.ID] = struct{}{}
 		if routesTried > 0 {
 			failoversDone++
 		}
 		routesTried++
-
-		routeMapping := ParseModelMapping(route.ModelMappingJSON)
-		upstreamModel, chain := ResolveModel(requestedModel, routeMapping, groupMapping)
-		if upstreamModel == "" {
-			upstreamModel = requestedModel
-		}
 		// 映射后的上游模型可能是 kimi/glm 等；thinking 开了但无档位时补 high
 		attemptReasoningEffort := ApplyThinkingEnabledEffortFallback(
 			reasoningEffort, thinkingEnabled, upstreamModel, requestedModel,
@@ -182,10 +230,14 @@ func (rt *Runtime) HandleForward(c *gin.Context, path string, kind protocolKind)
 				}
 			}
 			upstreamKind := protocol.ResolveUpstream(routeProto, kind, upstreamModel)
+			// 透传端点不跨协议：上游协议跟随入站（Gemini 透传的路由已在选路时过滤）
+			if protocol.IsPassthroughEndpoint(path) {
+				upstreamKind = protocol.NormalizeKind(kind)
+			}
 
 			// legacy completions 不跨协议
 			if protocol.IsOpenAIFamily(kind) && strings.Contains(path, "/completions") && !strings.Contains(path, "/chat/") {
-				if upstreamKind == protocolAnthropic || upstreamKind == protocol.KindOpenAIResponses {
+				if upstreamKind == protocolAnthropic || upstreamKind == protocol.KindOpenAIResponses || upstreamKind == protocol.KindGemini {
 					rt.writeGatewayError(c, kind, http.StatusBadRequest, "invalid_request_error",
 						"protocol conversion for /v1/completions is not supported; use /v1/chat/completions")
 					return
@@ -193,19 +245,43 @@ func (rt *Runtime) HandleForward(c *gin.Context, path string, kind protocolKind)
 				upstreamKind = protocol.KindOpenAIChat
 			}
 
-			fwdBody, upstreamPath, converted, toolBridge, convErr := rt.prepareUpstreamRequestWithToolBridge(body, kind, upstreamKind, upstreamModel, stream, path)
+			attemptBody := body
+			if upstreamModel != requestedModel && isMultipartContentType(contentType) {
+				attemptBody = rewriteMultipartModel(contentType, body, upstreamModel)
+			}
+			fwdBody, upstreamPath, plan, convErr := rt.planUpstreamRequest(convCtx, attemptBody, kind, upstreamKind, requestedModel, upstreamModel, stream, path)
 			if convErr != nil {
-				rt.writeGatewayError(c, kind, http.StatusBadRequest, "invalid_request_error", "protocol convert failed: "+convErr.Error())
-				return
+				// 这条路由的上游协议接不住该请求：记一条配置错误，换下一条路由
+				lastErr = convErr
+				lastStatus = 0
+				errInfo := usageErrorInfo{
+					Type:    "config",
+					Summary: convErr.Error(),
+					Detail:  fmt.Sprintf("protocol convert failed\nroute_id: %d\ninbound: %s\nupstream: %s\nerror: %s\n", route.ID, kind, upstreamKind, convErr.Error()),
+				}
+				rt.recordUsage(key, group, &route, target, reqID, requestedModel, upstreamModel, chain, UsageTokens{}, cand.EffectiveRate, cand.BillingRate, stream, 0, false, errInfo, 0, nil, c, usageRecordMeta{
+					InboundEndpoint: path, InboundProtocol: string(kind), UpstreamProtocol: string(upstreamKind), ProtocolConverted: true,
+					ServiceTier: serviceTier, ReasoningEffort: attemptReasoningEffort, Attempt: attemptNo, AttemptKind: attemptKind,
+				})
+				// 请求里的图片 / 文件下载失败：换哪条路由都一样，直接回 400
+				if mediaErr := mediaFetchFailure(convCtx); mediaErr != nil {
+					rt.writeGatewayError(c, kind, http.StatusBadRequest, "invalid_request_error", "failed to load media from the request: "+mediaErr.Error())
+					return
+				}
+				break
+			}
+			plan.GeminiArray = req.GeminiArray
+			if query != "" && protocol.IsPassthroughEndpoint(path) {
+				upstreamPath = appendQuery(upstreamPath, query)
 			}
 
-			upstreamFullURL := target.BaseURL + upstreamPath
+			upstreamFullURL := joinUpstreamURL(target.BaseURL, upstreamPath)
 			usageMeta := usageRecordMeta{
 				InboundEndpoint:   path,
 				UpstreamEndpoint:  upstreamPath,
 				InboundProtocol:   string(kind),
 				UpstreamProtocol:  string(upstreamKind),
-				ProtocolConverted: converted,
+				ProtocolConverted: plan.Converted,
 				ServiceTier:       serviceTier,
 				ReasoningEffort:   attemptReasoningEffort,
 				UpstreamURL:       upstreamFullURL,
@@ -228,9 +304,9 @@ func (rt *Runtime) HandleForward(c *gin.Context, path string, kind protocolKind)
 			)
 			if stream {
 				// 真流式：边读上游 SSE 边写客户端。Committed 后禁止 retry/failover。
-				res := rt.forwardStreamWithToolBridge(
+				res := rt.forwardStreamPlan(
 					c.Request.Context(), c, target, upstreamPath, c.Request.Method, c.Request.Header, fwdBody,
-					kind, upstreamKind, upstreamModel, converted, attemptFTTimeout, toolBridge,
+					plan, attemptFTTimeout,
 				)
 				status = res.Status
 				respHeaders = res.Headers
@@ -328,7 +404,8 @@ func (rt *Runtime) HandleForward(c *gin.Context, path string, kind protocolKind)
 				return
 			}
 
-			if fwdErr != nil || rt.isFailoverStatus(status, failoverOn4xx) {
+			failed := fwdErr != nil || status >= 400
+			if failed {
 				gwCfg := rt.gatewayRuntime()
 				errInfo := rt.buildUpstreamErrorInfoCfg(gwCfg, fwdErr, status, respHeaders, respBody, upstreamFullURL, c.Request.Method)
 				if rt.isFirstTokenTimeout(fwdErr) {
@@ -356,18 +433,52 @@ func (rt *Runtime) HandleForward(c *gin.Context, path string, kind protocolKind)
 				if clientCanceled {
 					rt.annotateClientContextError(&errInfo, c, upstreamFullURL, c.Request.Method, fwdErr)
 				}
+				decision := rt.classifyFailure(group, status, respHeaders, respBody, fwdErr, req.TaskID != "", requestedModel, upstreamModel)
+				if decision.Reason != "" && !clientCanceled {
+					errInfo.Detail = strings.TrimRight(errInfo.Detail, "\n") + "\nfailover_decision: " + decision.Reason + "\n"
+				}
 				if fwdErr != nil {
 					lastErr = fwdErr
 				} else {
 					lastStatus = status
-					lastBody = rt.convertErrorBody(respBody, kind, upstreamKind, converted)
+					lastBody = rt.convertErrorBody(respBody, kind, upstreamKind, plan.Converted)
 					lastErr = fmt.Errorf("upstream status %d: %s", status, errInfo.Summary)
 				}
-				// 最后一次同路由尝试失败才进入冷却（客户端取消 / 重试关闭时不写冷却）
+
+				// 不可重试的错误（默认 4xx、上下文超长等）：直接回显给客户端
+				if decision.Action == failStop && !clientCanceled && fwdErr == nil {
+					clientBody := rt.injectUpstreamOpsRequestID(lastBody, reqID)
+					rt.copyResponseHeaders(c.Writer.Header(), respHeaders)
+					c.Writer.Header().Del("Content-Length")
+					c.Header("Content-Type", "application/json")
+					rt.setGatewayRequestIDHeaders(c, reqID)
+					c.Status(status)
+					_, _ = c.Writer.Write(clientBody)
+					rt.recordUsage(key, group, &route, target, reqID, requestedModel, upstreamModel, chain, UsageTokens{}, cand.EffectiveRate, cand.BillingRate, stream, status, false, errInfo, duration, firstTokenMS, c, usageMeta)
+					return
+				}
+
 				lastTryOnRoute := tryOnRoute >= maxTriesOnRoute-1
 				var cooldownUntil *time.Time
-				if retryEnabled && lastTryOnRoute && cooldownSec > 0 && !clientCanceled {
-					until := time.Now().Add(time.Duration(cooldownSec) * time.Second)
+				switch {
+				case clientCanceled:
+					// 客户端取消不冷却
+				case decision.Action == failDisableRoute:
+					reason := errInfo.Summary
+					if strings.TrimSpace(errInfo.Detail) != "" {
+						reason = rt.truncateRunes(errInfo.Detail, 4000)
+					}
+					_ = rt.Routes.SetAutoDisabled(route.ID, reason, time.Now(), reqID)
+					if rt.Log != nil {
+						rt.Log.Warn("gateway route auto-disabled", "request_id", reqID, "route_id", route.ID, "status", status, "err", errInfo.Summary)
+					}
+				case decision.Action == failRetry && retryEnabled && lastTryOnRoute && cooldownSec > 0:
+					// 最后一次同路由尝试失败才进入冷却；Retry-After 更长时以它为准
+					cool := time.Duration(cooldownSec) * time.Second
+					if decision.Cooldown > cool {
+						cool = decision.Cooldown
+					}
+					until := time.Now().Add(cool)
 					cooldownUntil = &until
 					pauseReason := errInfo.Summary
 					if strings.TrimSpace(errInfo.Detail) != "" {
@@ -386,47 +497,33 @@ func (rt *Runtime) HandleForward(c *gin.Context, path string, kind protocolKind)
 						"status", status,
 						"upstream_url", upstreamFullURL,
 						"err", errInfo.Summary,
+						"decision", decision.Reason,
 						"client_canceled", clientCanceled,
 					)
 				}
 				// 客户端已取消：立刻结束，避免用已取消 context 继续打上游
-				if clientCanceled {
+				if clientCanceled || !retryEnabled {
 					goto finishError
 				}
-				// 重试关闭，或还可同路由重试则 continue；否则跳出到顺延
-				if !retryEnabled {
-					goto finishError
-				}
-				if tryOnRoute < maxTriesOnRoute-1 {
+				// 只有可重试错误才在同路由重试；其余直接顺延
+				if decision.Action == failRetry && tryOnRoute < maxTriesOnRoute-1 {
 					continue
 				}
-				break // 同路由耗尽，顺延
-			}
-
-			// 默认 4xx（非 429）不重试不顺延，直接回显；组开启 failover_on_4xx 时已在上方 isFailoverStatus 分支处理。
-			if status >= 400 {
-				errInfo := rt.buildUpstreamErrorInfoCfg(rt.gatewayRuntime(), nil, status, respHeaders, respBody, upstreamFullURL, c.Request.Method)
-				clientBody := rt.convertErrorBody(respBody, kind, upstreamKind, converted)
-				clientBody = rt.injectUpstreamOpsRequestID(clientBody, reqID)
-				rt.copyResponseHeaders(c.Writer.Header(), respHeaders)
-				c.Writer.Header().Del("Content-Length")
-				c.Header("Content-Type", "application/json")
-				rt.setGatewayRequestIDHeaders(c, reqID)
-				c.Status(status)
-				_, _ = c.Writer.Write(clientBody)
-				rt.recordUsage(key, group, &route, target, reqID, requestedModel, upstreamModel, chain, UsageTokens{}, cand.EffectiveRate, cand.BillingRate, stream, status, false, errInfo, duration, firstTokenMS, c, usageMeta)
-				return
+				break // 同路由结束，顺延
 			}
 
 			// 非流式成功：整包转换后写出
 			tokens := rt.parseUsageByKind(respBody, false, upstreamKind)
 			usageMeta.BillingInput = billingInputWithResponse(billingInput, respBody)
-			clientBody := rt.convertUpstreamResponseWithToolBridge(respBody, kind, upstreamKind, upstreamModel, false, converted, toolBridge)
-			if converted && rt.Log != nil && len(clientBody) == 0 && len(respBody) > 0 {
+			clientBody := rt.convertResponseWithPlan(c.Request.Context(), respBody, plan)
+			if plan.Converted && rt.Log != nil && len(clientBody) == 0 && len(respBody) > 0 {
 				rt.Log.Warn("response convert produced empty body")
 			}
+			if protocol.IsPassthroughEndpoint(path) && c.Request.Method != http.MethodGet {
+				rt.tasks.remember(group.ID, route.ID, taskIDsFromResponse(respBody))
+			}
 			rt.copyResponseHeaders(c.Writer.Header(), respHeaders)
-			if converted {
+			if plan.Converted {
 				c.Writer.Header().Del("Content-Length")
 				c.Header("Content-Type", "application/json")
 			}
@@ -455,10 +552,15 @@ finishError:
 		return
 	}
 	msg := "all upstream routes failed"
+	status := http.StatusBadGateway
+	errType := "api_error"
 	if lastErr != nil {
 		msg = lastErr.Error()
+		if isProtocolConvertError(lastErr) {
+			status, errType = http.StatusBadRequest, "invalid_request_error"
+		}
 	}
-	rt.writeGatewayError(c, kind, http.StatusBadGateway, "api_error", msg)
+	rt.writeGatewayError(c, kind, status, errType, msg)
 }
 
 // prepareUpstreamRequest 按入站/上游协议准备转发 body 与 path。

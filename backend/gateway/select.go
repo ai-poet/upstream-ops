@@ -61,6 +61,10 @@ func IsRouteSchedulable(route *storage.GatewayRoute, now time.Time) bool {
 	if route.TempUnschedulableUntil != nil && route.TempUnschedulableUntil.After(now) {
 		return false
 	}
+	// 自动禁用：等后台探测恢复或手动清除
+	if route.AutoDisabled {
+		return false
+	}
 	if route.NormalizeSourceKind() == storage.GatewayRouteSourceProvider {
 		return route.GatewayProviderID > 0
 	}
@@ -70,18 +74,18 @@ func IsRouteSchedulable(route *storage.GatewayRoute, now time.Time) bool {
 	return true
 }
 
-// routeRateLess 比较两条路由优先级（与同步账号 sortAccountsForApply 一致）。
-// direction: asc 低倍率优先；desc 高倍率优先。
-// 同倍率：权重大优先；再比 position；再比 id。
+// routeRateLess 比较两条路由的尝试先后（与 new-api 一致：优先级数字越大越先调用）。
+// 先比优先级（Weight，大的在前）；同优先级按倍率方向：asc 低倍率优先，desc 高倍率优先；
+// 再比 position；再比 id。
 func routeRateLess(a, b storage.GatewayRoute, rateA, rateB float64, desc bool) bool {
+	if a.Weight != b.Weight {
+		return a.Weight > b.Weight
+	}
 	if rateA != rateB {
 		if desc {
 			return rateA > rateB
 		}
 		return rateA < rateB
-	}
-	if a.Weight != b.Weight {
-		return a.Weight > b.Weight
 	}
 	if a.Position != b.Position {
 		return a.Position < b.Position
@@ -89,7 +93,7 @@ func routeRateLess(a, b storage.GatewayRoute, rateA, rateB float64, desc bool) b
 	return a.ID < b.ID
 }
 
-// OrderRoutesByRate 按倍率对全部路由重排（含禁用），用于列表展示与保存落库。
+// OrderRoutesByRate 按优先级与倍率对全部路由重排（含禁用），用于列表展示与保存落库。
 // 列表顺序 = 排序结果 = 尝试顺序。
 func OrderRoutesByRate(routes []storage.GatewayRoute, groupsByChannel map[uint][]connector.APIKeyGroup, direction string) []storage.GatewayRoute {
 	if len(routes) <= 1 {
@@ -122,7 +126,7 @@ func OrderRoutesByRate(routes []storage.GatewayRoute, groupsByChannel map[uint][
 	return out
 }
 
-// SortRoutes 按倍率方向 + 权重 + position 排序（仅可调度路由，用于运行时 failover）。
+// SortRoutes 按优先级 + 倍率方向 + position 排序（仅可调度路由，用于运行时 failover）。
 // direction: asc 低倍率优先；desc 高倍率优先。
 //
 // BillingRate 即 RateForRoute 换算结果（原值 / ×100 / ÷100 / 自定义），

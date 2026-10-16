@@ -70,12 +70,15 @@ const defaultGatewayConfig: SystemGatewayConfig = {
   streamKeepaliveSeconds: 15,
   streamIdleTimeoutSeconds: 120,
   streamMaxLineBytes: 8 * 1024 * 1024,
+  protocolEngine: "relaykit",
+  autoDisableStatusCodes: "401",
+  autoRecoverMinutes: 10,
 };
 
-function patchGateway(
+function patchGateway<K extends keyof SystemGatewayConfig>(
   prev: SystemConfig | null,
-  key: keyof SystemGatewayConfig,
-  value: number,
+  key: K,
+  value: SystemGatewayConfig[K],
 ): SystemConfig | null {
   if (!prev) return prev;
   return {
@@ -1153,6 +1156,71 @@ export default function SettingsPage() {
                   onChange={(e) =>
                     setForm((prev) =>
                       patchGateway(prev, "usageErrorHeaderValueRunes", num(e.target.value)),
+                    )
+                  }
+                />
+              </Field>
+              <Field
+                label="协议转换引擎"
+                description="relaykit：new-api RelayKit，覆盖 Chat / Responses / Anthropic / Gemini 互转（默认）。legacy：内置旧转换器，仅作回退；涉及 Gemini 的转换始终走 relaykit。"
+              >
+                <Select
+                  value={form.gateway?.protocolEngine ?? "relaykit"}
+                  onValueChange={(value) =>
+                    setForm((prev) =>
+                      patchGateway(prev, "protocolEngine", value as "relaykit" | "legacy"),
+                    )
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="relaykit">relaykit</SelectItem>
+                    <SelectItem value="legacy">legacy</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field
+                label="自动禁用状态码"
+                description="网关组开启「自动禁用失效路由」后，上游返回这些状态码即禁用该路由，例如 401 或 401,403。留空用默认 401；填 none 表示不按状态码禁用。"
+              >
+                <Input
+                  value={form.gateway?.autoDisableStatusCodes ?? defaultGatewayConfig.autoDisableStatusCodes}
+                  onChange={(e) =>
+                    setForm((prev) => patchGateway(prev, "autoDisableStatusCodes", e.target.value))
+                  }
+                />
+              </Field>
+              <Field
+                label="恢复探测间隔（分钟）"
+                description={`自动禁用的路由每隔多久探测一次，成功即恢复，默认 ${defaultGatewayConfig.autoRecoverMinutes}，最长 10080（7 天）。`}
+              >
+                <Input
+                  type="number"
+                  min={1}
+                  max={10080}
+                  value={String(form.gateway?.autoRecoverMinutes ?? defaultGatewayConfig.autoRecoverMinutes)}
+                  onChange={(e) =>
+                    setForm((prev) => patchGateway(prev, "autoRecoverMinutes", num(e.target.value)))
+                  }
+                />
+              </Field>
+              <Field
+                label="自动禁用关键词"
+                description="每行一个，不区分大小写。上游错误码 / 错误类型命中即禁用；错误信息只看 4xx，且先去掉请求模型名和引号里的内容，单个英文词（如 insufficient_quota）只在 401 / 402 / 403 / 429 上匹配，避免被请求内容回显误触发。留空使用内置列表（额度耗尽、账号停用、密钥无效等，随版本更新）。"
+              >
+                <textarea
+                  className="min-h-24 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                  value={(form.gateway?.autoDisableKeywords ?? []).join("\n")}
+                  onChange={(e) =>
+                    setForm((prev) =>
+                      patchGateway(
+                        prev,
+                        "autoDisableKeywords",
+                        // 编辑中不裁剪，否则无法输入空格与换行；后端保存时清理空白
+                        e.target.value.split("\n"),
+                      ),
                     )
                   }
                 />

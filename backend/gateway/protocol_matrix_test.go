@@ -340,10 +340,11 @@ func TestProtocolMatrix_TrueStreamAllDirections(t *testing.T) {
 			clientReq: `{"model":"m","stream":true,"messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":"Bash","parameters":{"type":"object"}}}]}`,
 			upstreamChunks: []string{
 				"event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\",\"model\":\"m\"}}\n\n",
-				"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"Bash\",\"arguments\":\"\"}}\n\n",
-				"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"call_id\":\"c1\",\"delta\":\"{\\\"x\\\":\"}\n\n",
-				"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"call_id\":\"c1\",\"delta\":\"1}\"}\n\n",
-				"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"Bash\",\"arguments\":\"{\\\"x\\\":1}\"}}\n\n",
+				// 与 OpenAI 实际事件一致：delta / done 带 output_index 与 item_id
+				"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"Bash\",\"arguments\":\"\"}}\n\n",
+				"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"fc_1\",\"call_id\":\"c1\",\"delta\":\"{\\\"x\\\":\"}\n\n",
+				"event: response.function_call_arguments.delta\ndata: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"item_id\":\"fc_1\",\"call_id\":\"c1\",\"delta\":\"1}\"}\n\n",
+				"event: response.output_item.done\ndata: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"c1\",\"name\":\"Bash\",\"arguments\":\"{\\\"x\\\":1}\"}}\n\n",
 				"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"status\":\"completed\"}}\n\n",
 			},
 			wantClient:   []string{"chat.completion.chunk", "tool_calls", "Bash", "[DONE]"},

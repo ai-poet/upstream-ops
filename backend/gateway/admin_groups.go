@@ -68,6 +68,18 @@ func (a *AdminService) CreateGroup(in CreateGroupInput) (*storage.GatewayGroup, 
 	if in.RateResortEnabled != nil {
 		rateResort = *in.RateResortEnabled
 	}
+	retryCodes, err := NormalizeStatusCodeRanges(in.RetryStatusCodes)
+	if err != nil {
+		return nil, err
+	}
+	modelAware := true
+	if in.ModelAwareRouting != nil {
+		modelAware = *in.ModelAwareRouting
+	}
+	autoDisable := false
+	if in.AutoDisableEnabled != nil {
+		autoDisable = *in.AutoDisableEnabled
+	}
 	pos, err := a.Groups.NextPosition()
 	if err != nil {
 		return nil, err
@@ -92,6 +104,10 @@ func (a *AdminService) CreateGroup(in CreateGroupInput) (*storage.GatewayGroup, 
 		CooldownSeconds:       cooldown,
 		FirstTokenTimeoutSec:  ftTimeout,
 		UserAgent:             strings.TrimSpace(in.UserAgent),
+		RetryStatusCodes:      retryCodes,
+		LoadBalanceMode:       normalizeLoadBalanceMode(in.LoadBalanceMode),
+		ModelAwareRouting:     modelAware,
+		AutoDisableEnabled:    autoDisable,
 	}
 	if err := a.Groups.Create(item); err != nil {
 		return nil, err
@@ -196,9 +212,31 @@ func (a *AdminService) UpdateGroup(id uint, in UpdateGroupInput) (*storage.Gatew
 	if in.UserAgent != nil {
 		item.UserAgent = strings.TrimSpace(*in.UserAgent)
 	}
+	if in.RetryStatusCodes != nil {
+		codes, err := NormalizeStatusCodeRanges(*in.RetryStatusCodes)
+		if err != nil {
+			return nil, err
+		}
+		item.RetryStatusCodes = codes
+	}
+	if in.LoadBalanceMode != nil {
+		item.LoadBalanceMode = normalizeLoadBalanceMode(*in.LoadBalanceMode)
+	}
+	if in.ModelAwareRouting != nil {
+		item.ModelAwareRouting = *in.ModelAwareRouting
+	}
+	autoDisableTurnedOff := false
+	if in.AutoDisableEnabled != nil {
+		autoDisableTurnedOff = item.AutoDisableEnabled && !*in.AutoDisableEnabled
+		item.AutoDisableEnabled = *in.AutoDisableEnabled
+	}
 	rateSortChanged := in.RateSortDirection != nil
 	if err := a.Groups.Update(item); err != nil {
 		return nil, err
+	}
+	// 关掉自动禁用：已被自动禁用的路由一并放回调度，否则它们只能等探测或手动清除
+	if autoDisableTurnedOff {
+		a.releaseAutoDisabledRoutes(id)
 	}
 	// 排序方向变更，或刚打开「渠道分组价格倍率重排」时，立即按实时倍率落库顺序
 	if rateSortChanged || rateResortTurnedOn {
@@ -208,6 +246,22 @@ func (a *AdminService) UpdateGroup(id uint, in UpdateGroupInput) (*storage.Gatew
 	}
 	a.invalidateModelsCache(id)
 	return item, nil
+}
+
+// releaseAutoDisabledRoutes 清除组内所有路由的自动禁用标记。
+func (a *AdminService) releaseAutoDisabledRoutes(groupID uint) {
+	routes, err := a.Routes.ListByGroupID(groupID)
+	if err != nil {
+		return
+	}
+	for _, r := range routes {
+		if !r.AutoDisabled {
+			continue
+		}
+		if err := a.Routes.ClearAutoDisabled(r.ID); err != nil && a.Log != nil {
+			a.Log.Warn("release auto-disabled route", "group_id", groupID, "route_id", r.ID, "err", err)
+		}
+	}
 }
 
 // DeleteGroup 删除分组。

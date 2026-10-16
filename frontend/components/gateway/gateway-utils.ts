@@ -36,6 +36,14 @@ export type GroupFormState = {
   first_token_timeout_sec: string
   /** 组级统一 User-Agent；路由选「组」时使用 */
   user_agent: string
+  /** 触发重试/顺延的状态码，如 "429,500-599"；空=默认规则 */
+  retry_status_codes: string
+  /** ordered：同优先级按倍率固定先后；random：同优先级随机分流 */
+  load_balance_mode: "ordered" | "random"
+  /** 优先选模型清单里声明了该模型的路由 */
+  model_aware_routing: boolean
+  /** 鉴权/额度类错误自动禁用路由，后台定时探测恢复 */
+  auto_disable_enabled: boolean
 }
 
 /** 自动生成时 sk- 之后的字符长度（总长 = 3 + n） */
@@ -347,7 +355,11 @@ export function isRouteTempPaused(
 
 /** 是否有可展示的上次/当前暂停错误 */
 export function hasRoutePauseError(route: Partial<GatewayRoute>): boolean {
-  return !!(route.temp_unschedulable_reason?.trim() || route.temp_unschedulable_until)
+  return !!(
+    route.auto_disabled ||
+    route.temp_unschedulable_reason?.trim() ||
+    route.temp_unschedulable_until
+  )
 }
 
 /** 对齐网关路由 accountRateMultiplier：原值=源分组 ratio，非强制 1 */
@@ -395,7 +407,7 @@ export function routeEffectiveRate(
 }
 
 /**
- * 对齐同步账号 sortSyncAccountRows：按倍率方向 + 权重重排。
+ * 与运行时尝试顺序一致：优先级（weight）从高到低，同优先级按倍率方向，再按原顺序。
  * 返回 { route, index }，index 为原数组下标便于原地编辑。
  */
 export function sortGatewayRouteRows(
@@ -416,11 +428,11 @@ export function sortGatewayRouteRows(
       }
     })
     .sort((a, b) => {
+      const pa = Number(a.route.weight) || 1
+      const pb = Number(b.route.weight) || 1
+      if (pa !== pb) return pb - pa
       const rateDiff = (a.rate - b.rate) * dir
       if (rateDiff !== 0) return rateDiff
-      const wa = Number(a.route.weight) || 1
-      const wb = Number(b.route.weight) || 1
-      if (wa !== wb) return wb - wa
       return a.index - b.index
     })
 }
@@ -579,6 +591,10 @@ export const emptyGroupForm = (): GroupFormState => ({
   cooldown_seconds: "30",
   first_token_timeout_sec: "0",
   user_agent: "",
+  retry_status_codes: "",
+  load_balance_mode: "ordered",
+  model_aware_routing: true,
+  auto_disable_enabled: false,
 })
 
 export const emptyKeyForm = (): KeyFormState => ({

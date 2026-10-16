@@ -2,7 +2,6 @@
 package gateway
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,7 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// HandleModels 返回 OpenAI 风格模型列表。
+// HandleModels 返回 OpenAI 风格模型列表（GET /v1/models、/models）。
 func (rt *Runtime) HandleModels(c *gin.Context) {
 	_ = rt.ensureGatewayRequestID(c)
 	auth, err := rt.Authenticate(c)
@@ -25,15 +24,66 @@ func (rt *Runtime) HandleModels(c *gin.Context) {
 		rt.writeAuthError(c, protocolOpenAI, err.Error())
 		return
 	}
-	key, group := auth.Key, auth.Group
-	_ = rt.Keys.TouchLastUsed(key.ID, time.Now())
+	_ = rt.Keys.TouchLastUsed(auth.Key.ID, time.Now())
+	payload, err := rt.groupModelsPayload(c, auth.Group)
+	if err != nil {
+		rt.writeGatewayError(c, protocolOpenAI, http.StatusInternalServerError, "api_error", err.Error())
+		return
+	}
+	c.Data(http.StatusOK, "application/json", payload)
+}
 
+// HandleModel 返回单个模型（GET /v1/models/:model）。
+func (rt *Runtime) HandleModel(c *gin.Context) {
+	_ = rt.ensureGatewayRequestID(c)
+	auth, err := rt.Authenticate(c)
+	if err != nil {
+		rt.writeAuthError(c, protocolOpenAI, err.Error())
+		return
+	}
+	id := strings.TrimPrefix(strings.TrimSpace(c.Param("model")), "/")
+	ids, err := rt.groupModelIDs(c, auth.Group)
+	if err != nil {
+		rt.writeGatewayError(c, protocolOpenAI, http.StatusInternalServerError, "api_error", err.Error())
+		return
+	}
+	for _, m := range ids {
+		if m == id {
+			c.JSON(http.StatusOK, gin.H{"id": m, "object": "model", "created": time.Now().Unix(), "owned_by": "upstream-ops"})
+			return
+		}
+	}
+	rt.writeGatewayError(c, protocolOpenAI, http.StatusNotFound, "invalid_request_error", fmt.Sprintf("model %q not found", id))
+}
+
+// groupModelIDs 组对外的模型 id 列表（与 /v1/models 同源、同缓存）。
+func (rt *Runtime) groupModelIDs(c *gin.Context, group *storage.GatewayGroup) ([]string, error) {
+	payload, err := rt.groupModelsPayload(c, group)
+	if err != nil {
+		return nil, err
+	}
+	var list struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &list); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(list.Data))
+	for _, m := range list.Data {
+		ids = append(ids, m.ID)
+	}
+	return ids, nil
+}
+
+// groupModelsPayload 组模型列表的 OpenAI JSON（带 TTL 缓存）。
+func (rt *Runtime) groupModelsPayload(c *gin.Context, group *storage.GatewayGroup) ([]byte, error) {
 	rt.modelsCacheMu.Lock()
 	if ent, ok := rt.modelsCache[group.ID]; ok && time.Since(ent.at) < rt.gatewayRuntime().ModelsCacheTTL() {
 		body := ent.body
 		rt.modelsCacheMu.Unlock()
-		c.Data(http.StatusOK, "application/json", body)
-		return
+		return body, nil
 	}
 	rt.modelsCacheMu.Unlock()
 
@@ -76,8 +126,7 @@ func (rt *Runtime) HandleModels(c *gin.Context) {
 		// auto / hybrid: live aggregate
 		routes, err := rt.Routes.ListByGroupID(group.ID)
 		if err != nil {
-			rt.writeGatewayError(c, protocolOpenAI, http.StatusInternalServerError, "api_error", err.Error())
-			return
+			return nil, err
 		}
 		groupsByChannel := rt.loadGroupsByChannel(c.Request.Context(), routes)
 		candidates := SortRoutes(routes, groupsByChannel, group.RateSortDirection, time.Now(), nil)
@@ -138,7 +187,7 @@ func (rt *Runtime) HandleModels(c *gin.Context) {
 	rt.modelsCacheMu.Lock()
 	rt.modelsCache[group.ID] = modelsCacheEntry{at: time.Now(), body: payload}
 	rt.modelsCacheMu.Unlock()
-	c.Data(http.StatusOK, "application/json", payload)
+	return payload, nil
 }
 
 // fetchUpstreamModels 拉取上游 /v1/models。
@@ -268,124 +317,6 @@ func (rt *Runtime) HandleUsage(c *gin.Context) {
 		"stats":  stats,
 		"recent": page.Items,
 	})
-}
-
-// HandleGeminiModels GET /v1beta/models
-
-func (rt *Runtime) HandleGeminiModels(c *gin.Context) {
-	// 复用 OpenAI models 列表，包装为 Gemini 风格（简化兼容）
-	reqID := rt.ensureGatewayRequestID(c)
-	auth, err := rt.Authenticate(c)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"error":                     gin.H{"message": err.Error(), "code": 401},
-			jsonKeyUpstreamOpsRequestID: reqID,
-		})
-		return
-	}
-	// 调内部 HandleModels 逻辑太重，直接读组 models
-	group := auth.Group
-	list := rt.ParseModelsJSON(group.ModelsJSON)
-	models := make([]gin.H, 0, len(list))
-	for _, m := range list {
-		name := "models/" + m.ID
-		models = append(models, gin.H{
-			"name":                       name,
-			"displayName":                m.ID,
-			"supportedGenerationMethods": []string{"generateContent", "countTokens"},
-		})
-	}
-	if len(models) == 0 {
-		// 回退：走上游 /v1/models 聚合
-		rt.HandleModels(c)
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"models": models})
-}
-
-// HandleGeminiGenerate POST /v1beta/models/*modelAction
-// 将 Gemini generateContent 粗转为 OpenAI chat 再转发，响应简化回传。
-
-func (rt *Runtime) HandleGeminiGenerate(c *gin.Context) {
-	reqID := rt.ensureGatewayRequestID(c)
-	action := c.Param("modelAction") // e.g. /gemini-pro:generateContent
-	action = strings.TrimPrefix(action, "/")
-	// 解析 model:action
-	modelName := action
-	if i := strings.LastIndex(action, ":"); i >= 0 {
-		modelName = action[:i]
-	}
-	modelName = strings.TrimPrefix(modelName, "models/")
-
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":                     gin.H{"message": "bad body"},
-			jsonKeyUpstreamOpsRequestID: reqID,
-		})
-		return
-	}
-	// contents → messages 粗转
-	var gem map[string]any
-	_ = json.Unmarshal(body, &gem)
-	var messages []any
-	if instruction, ok := gem["systemInstruction"].(map[string]any); ok {
-		var text strings.Builder
-		if parts, ok := instruction["parts"].([]any); ok {
-			for _, part := range parts {
-				partMap, ok := part.(map[string]any)
-				if !ok {
-					continue
-				}
-				if value, ok := partMap["text"].(string); ok {
-					text.WriteString(value)
-				}
-			}
-		}
-		if text.Len() > 0 {
-			messages = append(messages, map[string]any{"role": "system", "content": text.String()})
-		}
-	}
-	if contents, ok := gem["contents"].([]any); ok {
-		for _, raw := range contents {
-			cm, _ := raw.(map[string]any)
-			if cm == nil {
-				continue
-			}
-			role, _ := cm["role"].(string)
-			if role == "model" {
-				role = "assistant"
-			}
-			if role == "" {
-				role = "user"
-			}
-			text := ""
-			if parts, ok := cm["parts"].([]any); ok {
-				var b strings.Builder
-				for _, p := range parts {
-					if pm, ok := p.(map[string]any); ok {
-						if t, ok := pm["text"].(string); ok {
-							b.WriteString(t)
-						}
-					}
-				}
-				text = b.String()
-			}
-			messages = append(messages, map[string]any{"role": role, "content": text})
-		}
-	}
-	if len(messages) == 0 {
-		messages = []any{map[string]any{"role": "user", "content": string(body)}}
-	}
-	chatBody, _ := json.Marshal(map[string]any{
-		"model":    modelName,
-		"messages": messages,
-		"stream":   false,
-	})
-	// 伪造 body 走标准转发
-	c.Request.Body = io.NopCloser(bytes.NewReader(chatBody))
-	c.Request.ContentLength = int64(len(chatBody))
-	rt.HandleForward(c, "/v1/chat/completions", protocol.KindOpenAIChat)
 }
 
 // JSON / Header 中的网关请求 ID 字段（与使用记录 request_id 一致，便于排查）

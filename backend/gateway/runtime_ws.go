@@ -23,7 +23,8 @@ import (
 func (rt *Runtime) HandleResponsesWebSocket(c *gin.Context) {
 	reqID := rt.ensureGatewayRequestID(c)
 	if !strings.EqualFold(c.GetHeader("Upgrade"), "websocket") {
-		c.JSON(http.StatusOK, gin.H{
+		// 对齐 sub2api：GET 只用于 WebSocket 升级
+		c.JSON(http.StatusUpgradeRequired, gin.H{
 			"message":                   "Use POST /v1/responses for Responses API",
 			"websocket":                 "supported",
 			jsonKeyUpstreamOpsRequestID: reqID,

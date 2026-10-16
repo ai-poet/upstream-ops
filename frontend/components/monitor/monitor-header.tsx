@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react"
-import { useNavigate } from "react-router-dom"
+import { useLocation, useNavigate } from "react-router-dom"
 import { useTheme } from "next-themes"
 import {
   Activity,
@@ -22,6 +22,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
   Tooltip,
   TooltipContent,
@@ -36,8 +37,43 @@ import type { AppVersion } from "@/lib/api-types"
 import { relativeTime } from "@/lib/format"
 import { toast } from "sonner"
 
-export function MonitorHeader() {
+/** 顶部导航标签：value 即路由 path。 */
+const NAV_TABS = [
+  { value: "/", label: "主页", icon: Home },
+  { value: "/gateway", label: "请求网关", icon: Network },
+  { value: "/settings", label: "系统设置", icon: Settings },
+] as const
+
+/** 当前路由对应的标签；不在标签里的页面（打码平台、通知渠道）不高亮任何一个。 */
+function activeNavTab(pathname: string): string {
+  const hit = NAV_TABS.find((t) =>
+    t.value === "/" ? pathname === "/" : pathname === t.value || pathname.startsWith(`${t.value}/`),
+  )
+  return hit?.value ?? ""
+}
+
+/**
+ * 页面导航标签。activationMode=manual：方向键只移动焦点，回车 / 空格才跳转，
+ * 避免键盘浏览时每按一次方向键就切一次页面。
+ */
+function NavTabs({ className }: { className?: string }) {
   const navigate = useNavigate()
+  const { pathname } = useLocation()
+  return (
+    <Tabs value={activeNavTab(pathname)} onValueChange={(v) => navigate(v)} activationMode="manual">
+      <TabsList aria-label="页面导航" className={cn("h-10 rounded-lg p-[3px]", className)}>
+        {NAV_TABS.map(({ value, label, icon: Icon }) => (
+          <TabsTrigger key={value} value={value} className="h-full gap-1.5 px-3.5">
+            <Icon className="size-4" />
+            {label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </Tabs>
+  )
+}
+
+export function MonitorHeader() {
   const { theme, setTheme } = useTheme()
   const { username, authDisabled, logout } = useAuth()
   const refresh = useTriggerRefresh()
@@ -144,10 +180,10 @@ export function MonitorHeader() {
         </div>
 
         {/* right: actions */}
-        <div className="flex shrink-0 items-center gap-1 sm:gap-3">
-          {/* desktop: last collected + refresh */}
+        <div className="flex shrink-0 items-center gap-1.5 sm:gap-3">
+          {/* wide screens: last collected + refresh */}
           <div className="hidden items-center gap-2 sm:flex">
-            <span className="text-xs text-muted-foreground">
+            <span className="hidden text-xs text-muted-foreground xl:inline">
               {"上次采集 "}
               <span className="font-medium text-foreground">{relativeTime(lastCollectedAt)}</span>
             </span>
@@ -155,17 +191,21 @@ export function MonitorHeader() {
               <TooltipTrigger asChild>
                 <Button
                   variant="outline"
-                  size="sm"
+                  size="icon"
                   onClick={handleRefresh}
                   disabled={syncing}
-                  className="gap-1.5 border-border bg-background text-foreground hover:bg-muted"
+                  className="size-9 border-border bg-background text-foreground hover:bg-muted"
                   aria-label="刷新视图"
                 >
-                  <RefreshCw className={cn("size-3.5", syncing && "animate-spin")} />
+                  <RefreshCw className={cn("size-4", syncing && "animate-spin")} />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="max-w-xs text-xs">
-                <p>{"重新拉取最新的快照数据。"}</p>
+                <p>
+                  {"上次采集 "}
+                  <span className="font-medium">{relativeTime(lastCollectedAt)}</span>
+                </p>
+                <p className="mt-1">{"点击重新拉取最新的快照数据。"}</p>
                 <p className="mt-1 text-muted-foreground">
                   {"提示：实际采集由后台定时任务执行，如需立即采集请到具体渠道点 \"同步\"。"}
                 </p>
@@ -173,28 +213,31 @@ export function MonitorHeader() {
             </Tooltip>
           </div>
 
+          {/* page navigation: inline on md+ (below md it moves to the second row) */}
+          <NavTabs className="hidden md:inline-flex" />
+
           {/* mobile: refresh only (keeps one-tap access) */}
           <Button
             variant="outline"
             size="icon"
             onClick={handleRefresh}
             disabled={syncing}
-            className="size-8 border-border bg-background text-foreground hover:bg-muted sm:hidden"
+            className="size-9 border-border bg-background text-foreground hover:bg-muted sm:hidden"
             aria-label="刷新视图"
           >
-            <RefreshCw className={cn("size-3.5", syncing && "animate-spin")} />
+            <RefreshCw className={cn("size-4", syncing && "animate-spin")} />
           </Button>
 
-          {/* mobile: collapse nav + secondary actions into a menu */}
+          {/* mobile: secondary actions in a menu (navigation lives in the tab row below) */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button
                 variant="outline"
                 size="icon"
-                className="size-8 border-border bg-background text-foreground hover:bg-muted sm:hidden"
+                className="size-9 border-border bg-background text-foreground hover:bg-muted sm:hidden"
                 aria-label="更多菜单"
               >
-                <Menu className="size-3.5" />
+                <Menu className="size-4" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-52">
@@ -202,19 +245,6 @@ export function MonitorHeader() {
                 上次采集{" "}
                 <span className="font-medium text-foreground">{relativeTime(lastCollectedAt)}</span>
               </DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => navigate("/")}>
-                <Home className="size-4" />
-                主页
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => navigate("/gateway")}>
-                <Network className="size-4" />
-                请求网关
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={() => navigate("/settings")}>
-                <Settings className="size-4" />
-                系统设置
-              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem asChild>
                 <a
@@ -242,66 +272,15 @@ export function MonitorHeader() {
             </DropdownMenuContent>
           </DropdownMenu>
 
-          {/* desktop: full action row */}
-          <div className="hidden items-center gap-1.5 sm:flex sm:gap-3">
-            <Tooltip delayDuration={200}>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => navigate("/")}
-                  className="size-8 border-border bg-background text-foreground hover:bg-muted"
-                  aria-label="主页"
-                >
-                  <Home className="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="text-xs">
-                {"主页"}
-              </TooltipContent>
-            </Tooltip>
-
-            <Tooltip delayDuration={200}>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => navigate("/gateway")}
-                  className="size-8 border-border bg-background text-foreground hover:bg-muted"
-                  aria-label="请求网关"
-                >
-                  <Network className="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="text-xs">
-                {"请求网关"}
-              </TooltipContent>
-            </Tooltip>
-
-            <Tooltip delayDuration={200}>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  onClick={() => navigate("/settings")}
-                  className="size-8 border-border bg-background text-foreground hover:bg-muted"
-                  aria-label="系统设置"
-                >
-                  <Settings className="size-3.5" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="text-xs">
-                {"系统设置"}
-              </TooltipContent>
-            </Tooltip>
-
+          {/* sm+: secondary actions as icon buttons */}
+          <div className="hidden items-center gap-1.5 sm:flex">
             <Tooltip delayDuration={200}>
               <TooltipTrigger asChild>
                 <Button
                   asChild
                   variant="outline"
                   size="icon"
-                  className="size-8 border-border bg-background text-foreground hover:bg-muted"
+                  className="size-9 border-border bg-background text-foreground hover:bg-muted"
                   aria-label="GitHub 仓库"
                 >
                   <a
@@ -309,7 +288,7 @@ export function MonitorHeader() {
                     target="_blank"
                     rel="noopener noreferrer"
                   >
-                    <Github className="size-3.5" />
+                    <Github className="size-4" />
                   </a>
                 </Button>
               </TooltipTrigger>
@@ -324,10 +303,10 @@ export function MonitorHeader() {
                   variant="outline"
                   size="icon"
                   onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-                  className="size-8 border-border bg-background text-foreground hover:bg-muted"
+                  className="size-9 border-border bg-background text-foreground hover:bg-muted"
                   aria-label="切换主题"
                 >
-                  {isDark ? <Moon className="size-3.5" /> : <Sun className="size-3.5" />}
+                  {isDark ? <Moon className="size-4" /> : <Sun className="size-4" />}
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="text-xs">
@@ -342,10 +321,10 @@ export function MonitorHeader() {
                     variant="outline"
                     size="icon"
                     onClick={logout}
-                    className="size-8 border-border bg-background text-foreground hover:bg-muted"
+                    className="size-9 border-border bg-background text-foreground hover:bg-muted"
                     aria-label="退出登录"
                   >
-                    <LogOut className="size-3.5" />
+                    <LogOut className="size-4" />
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom" className="text-xs">
@@ -355,6 +334,11 @@ export function MonitorHeader() {
             )}
           </div>
         </div>
+      </div>
+
+      {/* below md: page navigation as a full-width tab row */}
+      <div className="mx-auto max-w-[120rem] px-3 pb-2 sm:px-6 md:hidden">
+        <NavTabs className="flex w-full" />
       </div>
     </header>
   )

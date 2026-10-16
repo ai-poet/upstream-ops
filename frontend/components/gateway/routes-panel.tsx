@@ -240,10 +240,10 @@ export function RoutesPanel({
             <SelectValue placeholder="排序" />
           </SelectTrigger>
           <SelectContent className="min-w-[11rem]">
-            <SelectItem value="asc" description="低倍率先试">
+            <SelectItem value="asc" description="同优先级内低倍率先试">
               升序
             </SelectItem>
-            <SelectItem value="desc" description="高倍率先试">
+            <SelectItem value="desc" description="同优先级内高倍率先试">
               降序
             </SelectItem>
           </SelectContent>
@@ -286,9 +286,9 @@ export function RoutesPanel({
       </Button>
     </div>
     <p className="text-[11px] leading-5 text-muted-foreground">
-      列表顺序 = 尝试顺序：按账号计费倍率
+      列表顺序：先按优先级数字从高到低（与 new-api 一致）；同优先级再按账号计费倍率
       {rateSort === "desc" ? "从高到低" : "从低到高"}
-      排列；同倍率时权重大优先。
+      排列。实际尝试时，开启「按模型优先」会先试模型清单里声明了该模型的路由，随机模式会打散同优先级的路由，异步任务的查询会先回到创建它的路由。
       {rateResortEnabled
         ? "已在编辑组中开启「渠道分组价格倍率重排」：倍率扫描结束后会按源分组实时倍率自动重写顺序与计费倍率。"
         : "未开启价格倍率重排时，仅保存路由 / 改排序方向会落库顺序；可在编辑组中开启。"}
@@ -303,7 +303,7 @@ export function RoutesPanel({
             <TableHead>源分组</TableHead>
             <TableHead>上游协议</TableHead>
             <TableHead>User-Agent</TableHead>
-            <TableHead>权重</TableHead>
+            <TableHead title="数字越大越先调用；同优先级按倍率排序">优先级</TableHead>
             <TableHead className="min-w-28">倍率换算</TableHead>
             <TableHead className="min-w-32">账号计费倍率</TableHead>
             <TableHead>启用</TableHead>
@@ -556,6 +556,9 @@ export function RoutesPanel({
                       <SelectItem value="anthropic" description="/v1/messages">
                         Anthropic
                       </SelectItem>
+                      <SelectItem value="gemini" description="/v1beta/models/{model}:generateContent">
+                        Gemini
+                      </SelectItem>
                       <SelectItem value="openai" description="兼容，等同 Chat">
                         openai
                       </SelectItem>
@@ -594,13 +597,16 @@ export function RoutesPanel({
                   <Input
                     className="w-16"
                     type="number"
+                    min={1}
+                    step={1}
+                    title="优先级：数字越大越先调用"
                     value={r.weight ?? 1}
                     onChange={(e) => {
                       setRouteDrafts((prev) => {
                         const next = [...prev]
                         next[idx] = {
                           ...next[idx],
-                          weight: Number(e.target.value) || 1,
+                          weight: Math.max(1, Math.floor(Number(e.target.value) || 1)),
                         }
                         return next
                       })
@@ -691,7 +697,18 @@ export function RoutesPanel({
                   </div>
                   {hasRoutePauseError(r) && (
                     <div className="mt-1 flex flex-wrap items-center gap-1">
-                      {isRouteTempPaused(r.temp_unschedulable_until) ? (
+                      {r.auto_disabled ? (
+                        <Badge
+                          variant="destructive"
+                          title={
+                            r.auto_disabled_at
+                              ? `自动禁用于 ${new Date(r.auto_disabled_at).toLocaleString("zh-CN")}，后台探测成功后恢复`
+                              : "已自动禁用，后台探测成功后恢复"
+                          }
+                        >
+                          已自动禁用
+                        </Badge>
+                      ) : isRouteTempPaused(r.temp_unschedulable_until) ? (
                         <Badge variant="destructive" title={
                           r.temp_unschedulable_until
                             ? `冷却至 ${new Date(r.temp_unschedulable_until).toLocaleString("zh-CN")}`
