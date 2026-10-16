@@ -840,6 +840,8 @@ export interface GatewayUsageLog {
   service_tier?: string
   reasoning_effort?: string
   billing_mode?: string
+  /** 计费时找不到模型价格，费用按 0 记 */
+  unpriced?: boolean
   /** 不含缓存的新鲜输入（sub2api 互斥桶） */
   input_tokens: number
   output_tokens: number
@@ -941,6 +943,36 @@ export interface ModelPriceOverride {
   enabled: boolean
   created_at: string
   updated_at: string
+}
+
+/** 最近计费时找不到价格的模型（这些请求费用按 0 记、不扣额度） */
+export interface UnpricedModel {
+  model: string
+  requests: number
+  success_requests: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  last_seen_at: string
+  /** 现在已经能找到价格（比如刚加了覆盖）；之前的记录仍按 0 记 */
+  priced_now: boolean
+  /** 参考价目表里查到的价格（只在「从远程同步」时返回） */
+  reference?: ReferencePrice
+}
+
+/** 参考价目表（默认 LiteLLM 全量表）里查到的价格，管理员确认后采用为价格覆盖 */
+export interface ReferencePrice {
+  /** 参考表里的条目名，如 zai/glm-4.5 */
+  source_key: string
+  billing_mode: string
+  input_price_per_token: number
+  output_price_per_token: number
+  cache_creation_price_per_token: number
+  cache_read_price_per_token: number
+  output_price_per_image?: number
+  /** 参考条目只有按输入长度分档的价格，上面取的是最低一档；这一档的输入上限（token） */
+  first_tier_up_to?: number
 }
 
 /** 内置默认价（只读），字段与覆盖表 per-token 一致 */

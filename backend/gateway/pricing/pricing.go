@@ -29,6 +29,8 @@ type ModelPricing struct {
 	VideoPrice720P                     float64
 	VideoPrice1080P                    float64
 	OutputPricePerImage                float64
+	// FirstTierUpTo 只用于参考价目表：条目只有分档定价，这里的单价取的是最低一档，档位上限（输入 token 数）
+	FirstTierUpTo int
 }
 
 type BillingMode string

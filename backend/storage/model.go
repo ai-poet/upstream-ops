@@ -592,6 +592,8 @@ type GatewayUsageLog struct {
 	ServiceTier       string     `gorm:"size:64" json:"service_tier,omitempty"`
 	ReasoningEffort   string     `gorm:"size:32" json:"reasoning_effort,omitempty"`
 	BillingMode       string     `gorm:"size:32;not null;default:'token'" json:"billing_mode"`
+	// Unpriced 计费时找不到模型价格（价格覆盖、价目表、家族回退都没有），费用按 0 记
+	Unpriced bool `gorm:"not null;default:false;index" json:"unpriced,omitempty"`
 	// Token 互斥桶（对齐 sub2api）：
 	// InputTokens = 不含缓存的「新鲜输入」；CacheRead/Creation 单独计
 	InputTokens           int `gorm:"not null;default:0" json:"input_tokens"`

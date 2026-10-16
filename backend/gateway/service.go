@@ -88,6 +88,9 @@ type core struct {
 	// 转发用的 HTTP 客户端，按「代理 + 转发超时」复用连接（见 httpClientForTarget）
 	upstreamClientsMu sync.Mutex
 	upstreamClients   map[string]*http.Client
+
+	// 找不到价格的模型告警限频（见 warnUnpricedModel）
+	unpricedWarn unpricedWarner
 }
 
 // Service 网关组装根：构造 core / Admin / Runtime，管理后台任务与配置下发。

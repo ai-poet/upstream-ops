@@ -38,6 +38,8 @@ import type {
   GatewayUsageStats,
   ModelDefaultPrice,
   ModelPriceOverride,
+  ReferencePrice,
+  UnpricedModel,
   RateSnapshot,
 } from "@/lib/api-types"
 import {
@@ -156,6 +158,11 @@ export function GatewayPage() {
   const usageSeqRef = useRef(0)
 
   const [prices, setPrices] = useState<ModelPriceOverride[]>([])
+  const [unpriced, setUnpriced] = useState<UnpricedModel[]>([])
+  const [unpricedDays, setUnpricedDays] = useState(30)
+  const [syncingPrices, setSyncingPrices] = useState(false)
+  // 最近一次「从远程同步」查到的参考价；null = 还没同步过
+  const [priceReferences, setPriceReferences] = useState<Record<string, ReferencePrice> | null>(null)
   const [priceDialogOpen, setPriceDialogOpen] = useState(false)
   const [editingPrice, setEditingPrice] = useState<ModelPriceOverride | null>(null)
   const [priceForm, setPriceForm] = useState<PriceFormState>(emptyPriceForm)
@@ -474,8 +481,16 @@ export function GatewayPage() {
 
   const loadPrices = useCallback(async () => {
     try {
-      const res = await apiFetch<{ items: ModelPriceOverride[] }>("/gateway/prices")
+      const [res, unpricedRes] = await Promise.all([
+        apiFetch<{ items: ModelPriceOverride[] }>("/gateway/prices"),
+        // 未定价模型只是提示，拉不到不影响价格列表
+        apiFetch<{ items: UnpricedModel[]; days: number }>("/gateway/prices/unpriced").catch(() => null),
+      ])
       setPrices(res.items ?? [])
+      if (unpricedRes) {
+        setUnpriced(unpricedRes.items ?? [])
+        setUnpricedDays(unpricedRes.days || 30)
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "加载价格失败")
     }
@@ -1232,6 +1247,100 @@ export function GatewayPage() {
     setPriceDialogOpen(true)
   }
 
+  /** 立即从远程同步价目表，再看之前找不到价格的模型现在有没有价格 */
+  async function syncRemotePrices() {
+    const pendingBefore = new Set(unpriced.filter((m) => !m.priced_now).map((m) => m.model))
+    setSyncingPrices(true)
+    try {
+      const res = await apiFetch<{
+        sync?: { models: number; changed: boolean }
+        sync_error?: string
+        reference_error?: string
+        items: UnpricedModel[]
+        days: number
+      }>("/gateway/prices/sync", { method: "POST" })
+      const items = res.items ?? []
+      setUnpriced(items)
+      setUnpricedDays(res.days || 30)
+      const refs: Record<string, ReferencePrice> = {}
+      for (const m of items) {
+        if (m.reference) refs[m.model] = m.reference
+      }
+      setPriceReferences(refs)
+
+      const found = items.filter((m) => m.priced_now && pendingBefore.has(m.model)).length
+      const still = items.filter((m) => !m.priced_now)
+      const withRef = still.filter((m) => m.reference).length
+      const head = res.sync
+        ? res.sync.changed
+          ? `已更新网关价目表（${res.sync.models} 个模型）`
+          : `网关价目表已是最新（${res.sync.models} 个模型）`
+        : `网关价目表同步失败：${res.sync_error ?? "未知错误"}`
+      const parts = [head]
+      if (found > 0) parts.push(`${found} 个模型找到了价格`)
+      if (withRef > 0) parts.push(`${withRef} 个模型查到了参考价，确认后可一键采用`)
+      if (still.length - withRef > 0) parts.push(`${still.length - withRef} 个模型参考表里也没有，需要手动设置`)
+      if (res.reference_error) parts.push(`查参考价失败：${res.reference_error}`)
+      const message = parts.join("；")
+      if (!res.sync || res.reference_error) toast.warning(message)
+      else toast.success(message)
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "同步远程价目表失败")
+    } finally {
+      setSyncingPrices(false)
+    }
+  }
+
+  /** 把参考价采用为价格覆盖（按 token 或按张） */
+  async function applyReferencePrices(models: string[]) {
+    const refs = priceReferences ?? {}
+    const targets = models.filter((m) => refs[m])
+    if (targets.length === 0) return
+    setBusy(true)
+    let done = 0
+    try {
+      for (const model of targets) {
+        const ref = refs[model]
+        const perImage = ref.output_price_per_image ?? 0
+        const tokenPriced = ref.input_price_per_token > 0 || ref.output_price_per_token > 0
+        await apiFetch("/gateway/prices", {
+          method: "PUT",
+          body: JSON.stringify({
+            model_name: model,
+            billing_mode: tokenPriced ? "token" : "image",
+            input_price_per_token: ref.input_price_per_token,
+            output_price_per_token: ref.output_price_per_token,
+            cache_creation_price_per_token: ref.cache_creation_price_per_token,
+            cache_read_price_per_token: ref.cache_read_price_per_token,
+            per_request_price: 0,
+            pricing_tiers_json: "[]",
+            image_price_1k: tokenPriced ? 0 : perImage,
+            image_price_2k: tokenPriced ? 0 : perImage,
+            image_price_4k: tokenPriced ? 0 : perImage,
+            video_price_480p: 0,
+            video_price_720p: 0,
+            video_price_1080p: 0,
+            enabled: true,
+          }),
+        })
+        done++
+      }
+      toast.success(`已为 ${done} 个模型采用参考价，新的请求会按这个价格计费`)
+    } catch (e) {
+      toast.error(`${done > 0 ? `已采用 ${done} 个，` : ""}${e instanceof Error ? e.message : "采用参考价失败"}`)
+    } finally {
+      setBusy(false)
+      await loadPrices()
+    }
+  }
+
+  /** 给找不到价格的模型新建价格覆盖（模型名预填） */
+  function openPriceForModel(model: string) {
+    setEditingPrice(null)
+    setPriceForm({ ...emptyPriceForm(), model_name: model })
+    setPriceDialogOpen(true)
+  }
+
   function openEditPrice(p: ModelPriceOverride) {
     setEditingPrice(p)
     setPriceForm({
@@ -1772,6 +1881,13 @@ export function GatewayPage() {
           <PricesPanel
             busy={busy}
             prices={prices}
+            unpriced={unpriced}
+            unpricedDays={unpricedDays}
+            onPriceUnpriced={openPriceForModel}
+            syncingPrices={syncingPrices}
+            onSyncPrices={() => void syncRemotePrices()}
+            references={priceReferences}
+            onApplyReferences={(models) => void applyReferencePrices(models)}
             priceDialogOpen={priceDialogOpen}
             editingPrice={editingPrice}
             priceForm={priceForm}

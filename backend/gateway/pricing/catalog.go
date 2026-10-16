@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -45,19 +46,59 @@ type defaultPriceEntry struct {
 	LongContextInputTokenThreshold      *int     `json:"long_context_input_token_threshold"`
 	LongContextInputCostMultiplier      *float64 `json:"long_context_input_cost_multiplier"`
 	LongContextOutputCostMultiplier     *float64 `json:"long_context_output_cost_multiplier"`
+	// TieredPricing 按输入长度分档的价格（LiteLLM 里部分国产模型只有这个，没有顶层单价）
+	TieredPricing []tieredPriceEntry `json:"tiered_pricing"`
+}
+
+type tieredPriceEntry struct {
+	InputCostPerToken       *float64  `json:"input_cost_per_token"`
+	OutputCostPerToken      *float64  `json:"output_cost_per_token"`
+	CacheReadInputTokenCost *float64  `json:"cache_read_input_token_cost"`
+	Range                   []float64 `json:"range"`
+}
+
+// firstTier 起点最低的一档；没有分档时返回 nil。
+func (e defaultPriceEntry) firstTier() *tieredPriceEntry {
+	var first *tieredPriceEntry
+	for i := range e.TieredPricing {
+		t := &e.TieredPricing[i]
+		if t.InputCostPerToken == nil && t.OutputCostPerToken == nil {
+			continue
+		}
+		if first == nil || tierStart(t) < tierStart(first) {
+			first = t
+		}
+	}
+	return first
+}
+
+func tierStart(t *tieredPriceEntry) float64 {
+	if len(t.Range) == 0 {
+		return 0
+	}
+	return t.Range[0]
 }
 
 // Catalog 内置价 + DB 覆盖 + 硬编码家族回退（对齐 sub2api BillingService）。
 type Catalog struct {
-	mu        sync.RWMutex
-	defaults  map[string]ModelPricing
+	mu       sync.RWMutex
+	defaults map[string]ModelPricing
+	// prefixed 价目表里带渠道前缀的条目按裸模型名索引（moonshot/kimi-k2 → kimi-k2），见 prefixedKeys
+	prefixed  map[string]string
 	fallbacks map[string]ModelPricing
 	overrides *storage.ModelPriceOverrides
 	// overrideCache 价格覆盖整表缓存（计费每个请求都要查，表很小）；写入后随网关配置版本失效
 	overrideCacheOnce sync.Once
 	overrideCache     *cfgcache.Cache[string, priceOverrideSnapshot]
 
-	runMu  sync.Mutex
+	// firstTierFallback 只有分档定价的条目取最低一档（参考价目表用；网关计费不用，免得长上下文少算）
+	firstTierFallback bool
+
+	runMu sync.Mutex
+	// syncMu 后台定时同步与管理端手动同步（SyncNow）不同时下载
+	syncMu sync.Mutex
+	// ref 参考价目表（见 reference.go）
+	ref    referenceTable
 	stopCh chan struct{}
 	wg     sync.WaitGroup
 	cfg    config.PricingConfig
@@ -91,12 +132,24 @@ func (c *Catalog) loadDefaults(body []byte) error {
 		if err := json.Unmarshal(rawEntry, &e); err != nil {
 			continue
 		}
+		firstTierUpTo := 0
+		if e.InputCostPerToken == nil && e.OutputCostPerToken == nil && c.firstTierFallback {
+			if t := e.firstTier(); t != nil {
+				e.InputCostPerToken, e.OutputCostPerToken = t.InputCostPerToken, t.OutputCostPerToken
+				if e.CacheReadInputTokenCost == nil {
+					e.CacheReadInputTokenCost = t.CacheReadInputTokenCost
+				}
+				if len(t.Range) > 1 {
+					firstTierUpTo = int(t.Range[1])
+				}
+			}
+		}
 		// 没有 token 或按图价格的条目跳过。仅有图片价的模型仍需保留，
 		// 但 Resolve 的 token 路径不会把它当成 token 价使用。
 		if e.InputCostPerToken == nil && e.OutputCostPerToken == nil && e.OutputCostPerImage == nil {
 			continue
 		}
-		p := ModelPricing{BillingMode: normalizeBillingMode(e.Mode)}
+		p := ModelPricing{BillingMode: normalizeBillingMode(e.Mode), FirstTierUpTo: firstTierUpTo}
 		if e.InputCostPerToken != nil {
 			p.InputPricePerToken = *e.InputCostPerToken
 		}
@@ -149,10 +202,54 @@ func (c *Catalog) loadDefaults(body []byte) error {
 		p.ModelName = key
 		defaults[key] = p
 	}
+	prefixed := prefixedKeys(defaults)
 	c.mu.Lock()
 	c.defaults = defaults
+	c.prefixed = prefixed
 	c.mu.Unlock()
 	return nil
+}
+
+// officialProviders 模型厂商自己的渠道前缀。同一个模型挂在多个渠道下时优先用这些：
+// 转售渠道（azure_ai、openrouter、fireworks_ai……）的价格常和官方不同。
+var officialProviders = map[string]bool{
+	"openai": true, "anthropic": true, "gemini": true, "xai": true, "deepseek": true,
+	"moonshot": true, "zai": true, "dashscope": true, "mistral": true, "minimax": true,
+	"cohere": true, "perplexity": true, "volcengine": true, "tencent": true,
+}
+
+// prefixedKeys 价目表（LiteLLM 格式）里很多模型只以「渠道/模型」出现（如 zai/glm-4.5），
+// 网关收到的是裸模型名。为这些条目建「裸名 → 完整键」索引；裸名本身就有条目的不收（精确匹配优先）。
+// 同一个裸名出现在多个渠道下时：官方渠道优先，其次层级少的（moonshot/x 优先于 openrouter/moonshotai/x），
+// 最后按字典序，保证结果稳定。
+func prefixedKeys(defaults map[string]ModelPricing) map[string]string {
+	out := map[string]string{}
+	for key := range defaults {
+		i := strings.LastIndex(key, "/")
+		if i < 0 || i+1 >= len(key) {
+			continue
+		}
+		bare := key[i+1:]
+		if _, ok := defaults[bare]; ok {
+			continue
+		}
+		if cur, ok := out[bare]; !ok || prefixedKeyLess(key, cur) {
+			out[bare] = key
+		}
+	}
+	return out
+}
+
+// prefixedKeyLess a 是否比 b 更适合作为裸名的价格来源。
+func prefixedKeyLess(a, b string) bool {
+	oa, ob := officialProviders[strings.SplitN(a, "/", 2)[0]], officialProviders[strings.SplitN(b, "/", 2)[0]]
+	if oa != ob {
+		return oa
+	}
+	if na, nb := strings.Count(a, "/"), strings.Count(b, "/"); na != nb {
+		return na < nb
+	}
+	return a < b
 }
 
 // Start 启动远程价目同步。启动失败不会影响内置价目表；后续定时任务会继续重试。
@@ -253,6 +350,8 @@ func (c *Catalog) loadCached() error {
 }
 
 func (c *Catalog) sync() error {
+	c.syncMu.Lock()
+	defer c.syncMu.Unlock()
 	c.runMu.Lock()
 	cfg, client := c.cfg, c.client
 	c.runMu.Unlock()
@@ -280,6 +379,56 @@ func (c *Catalog) sync() error {
 		return nil
 	}
 	return c.download(client, "")
+}
+
+// ErrSyncDisabled 远程价目同步关闭（pricing.enabled=false 或没配 remoteURL）。
+var ErrSyncDisabled = errors.New("remote pricing sync is disabled")
+
+// SyncResult 一次手动同步的结果。
+type SyncResult struct {
+	Models   int       `json:"models"`  // 同步后价目表里的模型条目数
+	Changed  bool      `json:"changed"` // 远程有新版本并已下载
+	Hash     string    `json:"hash"`
+	SyncedAt time.Time `json:"synced_at"`
+}
+
+// SyncNow 立即检查远程价目表：哈希变了（或拿不到哈希）就下载并热更新，没变就沿用当前表。
+// 管理端「从远程同步」调用；不用等下一次定时检查。
+func (c *Catalog) SyncNow() (SyncResult, error) {
+	c.syncMu.Lock()
+	defer c.syncMu.Unlock()
+	c.runMu.Lock()
+	cfg, client := c.cfg, c.client
+	c.runMu.Unlock()
+	if !cfg.Enabled || strings.TrimSpace(cfg.RemoteURL) == "" {
+		return SyncResult{}, ErrSyncDisabled
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	c.mu.RLock()
+	before := c.hash
+	c.mu.RUnlock()
+
+	remoteHash := ""
+	if strings.TrimSpace(cfg.HashURL) != "" {
+		if h, err := c.fetchText(client, cfg.HashURL, 10*time.Second); err == nil {
+			remoteHash = firstField(h)
+		}
+	}
+	if remoteHash == "" || !strings.EqualFold(remoteHash, before) {
+		if err := c.download(client, remoteHash); err != nil {
+			return SyncResult{}, err
+		}
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return SyncResult{
+		Models:   len(c.defaults),
+		Changed:  !strings.EqualFold(c.hash, before),
+		Hash:     c.hash,
+		SyncedAt: time.Now(),
+	}, nil
 }
 
 func (c *Catalog) download(client *http.Client, remoteHash string) error {
@@ -484,13 +633,20 @@ func (c *Catalog) ListDefaults(query string) []DefaultPriceItem {
 // Resolve 优先 override，再 LiteLLM 默认表（模糊匹配），再硬编码家族回退。
 // 对齐 sub2api：BillingService.GetModelPricing → PricingService → fallbackPrices。
 func (c *Catalog) Resolve(model string) ModelPricing {
+	p, _ := c.Lookup(model)
+	return p
+}
+
+// Lookup 同 Resolve，另外返回是否找到了价格：false 表示覆盖、价目表与家族回退里都没有这个模型，
+// 按它计费的费用会是 0。管理员在覆盖里显式设成 0 的算找到（有意免费）。
+func (c *Catalog) Lookup(model string) (ModelPricing, bool) {
 	model = strings.TrimSpace(model)
 	if model == "" {
-		return ModelPricing{}
+		return ModelPricing{}, false
 	}
 	// DB 覆盖（内存快照）：原名与小写都试
 	if item, ok := c.lookupOverride(model); ok && item.Enabled {
-		return pricingFromOverride(&item)
+		return pricingFromOverride(&item), true
 	}
 
 	c.mu.RLock()
@@ -498,7 +654,7 @@ func (c *Catalog) Resolve(model string) ModelPricing {
 
 	for _, candidate := range modelLookupCandidates(model) {
 		if p, ok := c.defaults[candidate]; ok && (p.HasTokenPrice() || p.OutputPricePerImage > 0) {
-			return p
+			return p, true
 		}
 	}
 
@@ -507,7 +663,7 @@ func (c *Catalog) Resolve(model string) ModelPricing {
 		if i := strings.LastIndex(candidate, "-20"); i > 0 && len(candidate)-i >= 9 {
 			base := candidate[:i]
 			if p, ok := c.defaults[base]; ok && (p.HasTokenPrice() || p.OutputPricePerImage > 0) {
-				return p
+				return p, true
 			}
 		}
 		// 4-5 ↔ 4.5 变体
@@ -515,16 +671,25 @@ func (c *Catalog) Resolve(model string) ModelPricing {
 		alt = strings.ReplaceAll(alt, "-4-5", "-4.5")
 		if alt != candidate {
 			if p, ok := c.defaults[alt]; ok && (p.HasTokenPrice() || p.OutputPricePerImage > 0) {
-				return p
+				return p, true
+			}
+		}
+	}
+
+	// 价目表里只有「渠道/模型」形式的条目
+	for _, candidate := range modelLookupCandidates(model) {
+		if key, ok := c.prefixed[candidate]; ok {
+			if p, ok := c.defaults[key]; ok && (p.HasTokenPrice() || p.OutputPricePerImage > 0) {
+				return p, true
 			}
 		}
 	}
 
 	// 硬编码家族回退（含 grok-4.5）
 	if p := c.fallbackForModel(model); p.HasTokenPrice() {
-		return p
+		return p, true
 	}
-	return ModelPricing{}
+	return ModelPricing{}, false
 }
 
 func pricingFromOverride(item *storage.ModelPriceOverride) ModelPricing {

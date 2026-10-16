@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bejix/upstream-ops/backend/gateway/pricing"
@@ -25,7 +26,11 @@ func (rt *Runtime) recordUsage(c *gin.Context, u usageRecord) {
 	if protocol.IsOpenAIFamily(u.upstreamKind) {
 		tokens = pricing.SplitOpenAIUsageBuckets(tokens)
 	}
-	price := rt.Pricing.Resolve(priceModel)
+	price, priced := rt.Pricing.Lookup(priceModel)
+	unpriced := !priced && priceModel != ""
+	if unpriced && u.success {
+		rt.warnUnpricedModel(priceModel, u)
+	}
 	if price.BillingMode == pricing.BillingModeToken && u.meta.BillingInput.EndpointMode != "" {
 		price.BillingMode = u.meta.BillingInput.EndpointMode
 	}
@@ -118,6 +123,7 @@ func (rt *Runtime) recordUsage(c *gin.Context, u usageRecord) {
 		ServiceTier:           u.meta.ServiceTier,
 		ReasoningEffort:       u.meta.ReasoningEffort,
 		BillingMode:           billingMode,
+		Unpriced:              unpriced,
 		InputTokens:           tokens.InputTokens,
 		OutputTokens:          tokens.OutputTokens,
 		CacheCreationTokens:   tokens.CacheCreationTokens,
@@ -160,3 +166,40 @@ func (rt *Runtime) recordUsage(c *gin.Context, u usageRecord) {
 }
 
 // buildUpstreamErrorInfo 从转发失败结果拼装可落库的详细错误（截断上限用默认值，便于单测）。
+
+// unpricedWarnEvery 同一个模型的「找不到价格」告警最多这么久打一次，避免日志刷屏。
+const unpricedWarnEvery = 10 * time.Minute
+
+// unpricedWarner 记录每个模型上次告警的时间。
+type unpricedWarner struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}
+
+// shouldWarn 距上次告警超过 unpricedWarnEvery 时返回 true 并记下这次。
+func (w *unpricedWarner) shouldWarn(model string, now time.Time) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if at, ok := w.last[model]; ok && now.Sub(at) < unpricedWarnEvery {
+		return false
+	}
+	if w.last == nil {
+		w.last = map[string]time.Time{}
+	}
+	w.last[model] = now
+	return true
+}
+
+// warnUnpricedModel 成功的请求找不到模型价格：费用按 0 记、不扣额度，打告警提醒补价格。
+func (rt *Runtime) warnUnpricedModel(model string, u usageRecord) {
+	if rt.Log == nil || !rt.unpricedWarn.shouldWarn(model, time.Now()) {
+		return
+	}
+	rt.Log.Warn("gateway model has no price; usage is recorded with zero cost — add a price override",
+		"model", model,
+		"requested_model", u.requestedModel,
+		"group_id", u.group.ID,
+		"route_id", u.route.ID,
+		"request_id", u.requestID,
+	)
+}

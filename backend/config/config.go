@@ -199,11 +199,15 @@ type PricingConfig struct {
 	FallbackFile             string `mapstructure:"fallbackFile" yaml:"fallbackFile" json:"fallbackFile"`
 	UpdateIntervalHours      int    `mapstructure:"updateIntervalHours" yaml:"updateIntervalHours" json:"updateIntervalHours"`
 	HashCheckIntervalMinutes int    `mapstructure:"hashCheckIntervalMinutes" yaml:"hashCheckIntervalMinutes" json:"hashCheckIntervalMinutes"`
+	// ReferenceURL 参考价目表：网关价目表里找不到的模型到这里查参考价，管理员确认后采用为价格覆盖（不直接参与计费）
+	ReferenceURL string `mapstructure:"referenceURL" yaml:"referenceURL" json:"referenceURL"`
 }
 
 const (
 	DefaultPricingRemoteURL = "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json"
 	DefaultPricingHashURL   = "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256"
+	// DefaultPricingReferenceURL LiteLLM 的全量价目表（四千多条，覆盖各家国产模型）
+	DefaultPricingReferenceURL = "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 )
 
 func (p PricingConfig) WithDefaults() PricingConfig {
@@ -212,6 +216,9 @@ func (p PricingConfig) WithDefaults() PricingConfig {
 	}
 	if strings.TrimSpace(p.HashURL) == "" {
 		p.HashURL = DefaultPricingHashURL
+	}
+	if strings.TrimSpace(p.ReferenceURL) == "" {
+		p.ReferenceURL = DefaultPricingReferenceURL
 	}
 	if strings.TrimSpace(p.DataDir) == "" {
 		p.DataDir = "./data"
@@ -596,6 +603,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("pricing.enabled", true)
 	v.SetDefault("pricing.remoteURL", DefaultPricingRemoteURL)
 	v.SetDefault("pricing.hashURL", DefaultPricingHashURL)
+	v.SetDefault("pricing.referenceURL", DefaultPricingReferenceURL)
 	v.SetDefault("pricing.dataDir", "./data")
 	v.SetDefault("pricing.fallbackFile", "./backend/gateway/pricing/default_prices.json")
 	v.SetDefault("pricing.updateIntervalHours", 24)

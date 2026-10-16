@@ -5,6 +5,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -71,6 +72,8 @@ func registerGatewayAdmin(g *gin.RouterGroup, d *Deps) {
 		// prices
 		gp.GET("/prices", func(c *gin.Context) { listGatewayPrices(c, d) })
 		gp.GET("/prices/defaults", func(c *gin.Context) { listGatewayDefaultPrices(c, d) })
+		gp.GET("/prices/unpriced", func(c *gin.Context) { listGatewayUnpricedModels(c, d) })
+		gp.POST("/prices/sync", func(c *gin.Context) { syncGatewayRemotePrices(c, d) })
 		gp.PUT("/prices", func(c *gin.Context) { upsertGatewayPrice(c, d) })
 		gp.DELETE("/prices/:id", func(c *gin.Context) { deleteGatewayPrice(c, d) })
 	}
@@ -694,6 +697,104 @@ func listGatewayDefaultPrices(c *gin.Context, d *Deps) {
 	}
 	items := d.Gateway.ListDefaultPrices(c.Query("q"))
 	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+// unpricedModelItem 找不到价格的模型：近期用量 + 现在补上价格了没有。
+type unpricedModelItem struct {
+	storage.UnpricedModelStat
+	// PricedNow 现在已经能找到价格（比如刚加了覆盖）；之前的记录仍按 0 记
+	PricedNow bool `json:"priced_now"`
+	// Reference 参考价目表里查到的价格（只在「从远程同步」时查），管理员确认后采用为价格覆盖
+	Reference *pricing.ReferencePrice `json:"reference,omitempty"`
+}
+
+// unpricedDays 未定价模型统计的时间窗：days 参数，默认 30，最多 365。
+func unpricedDays(c *gin.Context) int {
+	days, _ := strconv.Atoi(c.DefaultQuery("days", "30"))
+	if days <= 0 || days > 365 {
+		days = 30
+	}
+	return days
+}
+
+// unpricedModelItems 最近 days 天计费时找不到价格的模型，并用当前价目重新查一遍。
+func unpricedModelItems(d *Deps, days int) ([]unpricedModelItem, error) {
+	stats, err := d.GatewayUsage.ListUnpricedModels(time.Now().AddDate(0, 0, -days), 200)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]unpricedModelItem, 0, len(stats))
+	for _, s := range stats {
+		_, priced := d.Gateway.Pricing.Lookup(s.Model)
+		items = append(items, unpricedModelItem{UnpricedModelStat: s, PricedNow: priced})
+	}
+	return items, nil
+}
+
+// listGatewayUnpricedModels 最近一段时间计费时找不到价格的模型。
+func listGatewayUnpricedModels(c *gin.Context, d *Deps) {
+	if d.GatewayUsage == nil || d.Gateway == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "gateway unavailable"})
+		return
+	}
+	days := unpricedDays(c)
+	items, err := unpricedModelItems(d, days)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items, "days": days})
+}
+
+// syncGatewayRemotePrices 「从远程同步价格」：先立即同步网关价目表，再给仍找不到价格的模型到参考价目表查参考价。
+// 两步互不依赖，一步失败另一步照做，错误分别放在 sync_error / reference_error 里。
+func syncGatewayRemotePrices(c *gin.Context, d *Deps) {
+	if d.GatewayUsage == nil || d.Gateway == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "gateway unavailable"})
+		return
+	}
+	result, syncErr := d.Gateway.Pricing.SyncNow()
+	days := unpricedDays(c)
+	items, err := unpricedModelItems(d, days)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	var pending []string
+	for _, it := range items {
+		if !it.PricedNow {
+			pending = append(pending, it.Model)
+		}
+	}
+	var refErr error
+	if len(pending) > 0 {
+		var refs map[string]pricing.ReferencePrice
+		if refs, refErr = d.Gateway.Pricing.ReferencePrices(pending); refErr == nil {
+			for i := range items {
+				if ref, ok := refs[items[i].Model]; ok && !items[i].PricedNow {
+					items[i].Reference = &ref
+				}
+			}
+		}
+	}
+	if errors.Is(syncErr, pricing.ErrSyncDisabled) && (len(pending) == 0 || errors.Is(refErr, pricing.ErrReferenceDisabled)) {
+		c.JSON(http.StatusConflict, gin.H{"error": "远程价目同步已关闭（pricing.enabled / pricing.remoteURL / pricing.referenceURL）"})
+		return
+	}
+	if syncErr != nil && refErr != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "同步远程价目表失败：" + syncErr.Error() + "；查参考价失败：" + refErr.Error()})
+		return
+	}
+	resp := gin.H{"items": items, "days": days}
+	if syncErr != nil {
+		resp["sync_error"] = syncErr.Error()
+	} else {
+		resp["sync"] = result
+	}
+	if refErr != nil {
+		resp["reference_error"] = refErr.Error()
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func upsertGatewayPrice(c *gin.Context, d *Deps) {

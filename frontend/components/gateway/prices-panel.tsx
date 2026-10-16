@@ -1,4 +1,4 @@
-import { Pencil, Plus, Trash2 } from "lucide-react"
+import { AlertTriangle, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -28,7 +28,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import type { ModelPriceOverride } from "@/lib/api-types"
+import type { ModelPriceOverride, ReferencePrice, UnpricedModel } from "@/lib/api-types"
+import { dateTime, formatTokens } from "@/lib/format"
+import { cn } from "@/lib/utils"
 import {
   parsePriceTiers,
   perTokenToMTok,
@@ -39,6 +41,16 @@ import {
 type PricesPanelProps = {
   busy: boolean
   prices: ModelPriceOverride[]
+  /** 最近计费时找不到价格的模型 */
+  unpriced: UnpricedModel[]
+  unpricedDays: number
+  onPriceUnpriced: (model: string) => void
+  /** 立即从远程同步价目表 */
+  syncingPrices: boolean
+  onSyncPrices: () => void
+  /** 最近一次同步查到的参考价（按模型名）；null 表示还没同步过 */
+  references: Record<string, ReferencePrice> | null
+  onApplyReferences: (models: string[]) => void
   priceDialogOpen: boolean
   editingPrice: ModelPriceOverride | null
   priceForm: PriceFormState
@@ -88,6 +100,155 @@ function PriceSummary({ price }: { price: ModelPriceOverride }) {
         </div>
       )
   }
+}
+
+function SyncPricesButton({
+  syncing,
+  disabled,
+  onSync,
+  label,
+}: {
+  syncing: boolean
+  disabled: boolean
+  onSync: () => void
+  label: string
+}) {
+  return (
+    <Button variant="outline" onClick={onSync} disabled={disabled || syncing}>
+      <RefreshCw className={cn("size-4", syncing && "animate-spin")} /> {syncing ? "同步中…" : label}
+    </Button>
+  )
+}
+
+/** 参考价能否一键采用：按 token 或按张有价格 */
+function referenceApplicable(ref?: ReferencePrice) {
+  return !!ref && (ref.input_price_per_token > 0 || ref.output_price_per_token > 0 || (ref.output_price_per_image ?? 0) > 0)
+}
+
+function ReferenceSummary({ reference }: { reference: ReferencePrice }) {
+  const perImage = reference.output_price_per_image ?? 0
+  const tokenPriced = reference.input_price_per_token > 0 || reference.output_price_per_token > 0
+  return (
+    <div className="space-y-0.5 text-xs tabular-nums">
+      <div className="break-all text-muted-foreground">{reference.source_key}</div>
+      {tokenPriced ? (
+        <div>
+          输入 ${perTokenToMTok(reference.input_price_per_token)} · 输出 ${perTokenToMTok(reference.output_price_per_token)} / MTok
+          {reference.cache_read_price_per_token > 0
+            ? ` · 缓存读 $${perTokenToMTok(reference.cache_read_price_per_token)}`
+            : ""}
+        </div>
+      ) : perImage > 0 ? (
+        <div>${perImage} / 张</div>
+      ) : null}
+      {reference.first_tier_up_to ? (
+        <div className="text-warning">
+          分档定价，这是 ≤{formatTokens(reference.first_tier_up_to)} 输入的最低档；采用后更长的请求也按这一档计
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function UnpricedModelsCard({
+  items,
+  days,
+  busy,
+  syncing,
+  references,
+  onPrice,
+  onSync,
+  onApply,
+}: {
+  items: UnpricedModel[]
+  days: number
+  busy: boolean
+  syncing: boolean
+  references: Record<string, ReferencePrice> | null
+  onPrice: (model: string) => void
+  onSync: () => void
+  onApply: (models: string[]) => void
+}) {
+  const pending = items.filter((m) => !m.priced_now)
+  if (pending.length === 0) return null
+  const applicable = pending.filter((m) => referenceApplicable(references?.[m.model])).map((m) => m.model)
+  return (
+    <Card className="overflow-hidden border-warning/40 bg-warning/5 shadow-none">
+      <CardContent className="space-y-3 p-4 sm:p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="flex min-w-0 flex-1 items-start gap-2">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
+            <div className="space-y-1">
+              <p className="text-sm font-medium">{pending.length} 个模型找不到价格</p>
+              <p className="text-xs leading-5 text-muted-foreground">
+                最近 {days} 天里，这些模型的请求在计费时找不到价格，费用按 0 记、不扣额度。「从远程同步价格」会先更新网关价目表，再到 LiteLLM 全量价目表查参考价（官方渠道优先），采用后存为价格覆盖，可再编辑。新的价格只对之后的请求生效，已有的记录不会补算。
+              </p>
+            </div>
+          </div>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <SyncPricesButton syncing={syncing} disabled={busy} onSync={onSync} label="从远程同步价格" />
+            {applicable.length > 0 ? (
+              <Button onClick={() => onApply(applicable)} disabled={busy || syncing}>
+                全部采用参考价（{applicable.length}）
+              </Button>
+            ) : null}
+          </div>
+        </div>
+        <div className="overflow-x-auto rounded-md border bg-background">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>模型</TableHead>
+                <TableHead className="text-right">成功请求</TableHead>
+                <TableHead className="text-right">输入 / 输出</TableHead>
+                <TableHead>最近一次</TableHead>
+                <TableHead>远程参考价</TableHead>
+                <TableHead className="w-[176px] text-right">操作</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {pending.map((m) => (
+                <TableRow key={m.model}>
+                  <TableCell className="max-w-72 break-all text-xs font-medium">{m.model}</TableCell>
+                  <TableCell className="text-right text-xs tabular-nums">
+                    {m.success_requests.toLocaleString("zh-CN")}
+                  </TableCell>
+                  <TableCell
+                    className="text-right text-xs tabular-nums"
+                    title={`缓存读 ${formatTokens(m.cache_read_tokens)} · 缓存写 ${formatTokens(m.cache_creation_tokens)}`}
+                  >
+                    {formatTokens(m.input_tokens)} / {formatTokens(m.output_tokens)}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{dateTime(m.last_seen_at)}</TableCell>
+                  <TableCell className="min-w-56">
+                    {references?.[m.model] ? (
+                      <ReferenceSummary reference={references[m.model]} />
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        {references ? "参考表里也没有" : "同步后显示"}
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1.5">
+                      {referenceApplicable(references?.[m.model]) ? (
+                        <Button size="sm" onClick={() => onApply([m.model])} disabled={busy || syncing}>
+                          采用
+                        </Button>
+                      ) : null}
+                      <Button size="sm" variant="outline" onClick={() => onPrice(m.model)} disabled={busy}>
+                        <Plus className="size-3.5" /> 设置价格
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
+  )
 }
 
 function PricingTierRow({
@@ -164,6 +325,13 @@ function PricingTierRow({
 export function PricesPanel({
   busy,
   prices,
+  unpriced,
+  unpricedDays,
+  onPriceUnpriced,
+  syncingPrices,
+  onSyncPrices,
+  references,
+  onApplyReferences,
   priceDialogOpen,
   editingPrice,
   priceForm,
@@ -179,13 +347,24 @@ export function PricesPanel({
 
   return (
     <div className="space-y-4">
+      <UnpricedModelsCard
+        items={unpriced}
+        days={unpricedDays}
+        busy={busy}
+        syncing={syncingPrices}
+        references={references}
+        onPrice={onPriceUnpriced}
+        onSync={onSyncPrices}
+        onApply={onApplyReferences}
+      />
       <Card className="overflow-hidden border-border shadow-none">
         <CardContent className="space-y-4 p-4 sm:p-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <p className="text-sm leading-6 text-muted-foreground">
               已启用的覆盖价优先于系统内置价。Token 按 <strong>$/MTok</strong> 输入，图片按 $/张，视频按 $/秒。
             </p>
-            <div className="flex shrink-0 gap-2">
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <SyncPricesButton syncing={syncingPrices} disabled={busy} onSync={onSyncPrices} label="同步远程价目" />
               <Button variant="outline" onClick={onOpenDefaults} disabled={busy}>
                 查看系统默认价
               </Button>

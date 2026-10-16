@@ -1,9 +1,12 @@
 package gateway
 
 import (
+	"bytes"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -181,5 +184,38 @@ func TestE2E_StreamBrokenAfterCommitNotCharged(t *testing.T) {
 	}
 	if key, _ := h.svc.Keys.FindByHash(HashAPIKey(h.key)); key.QuotaUsed != 0 {
 		t.Fatalf("key charged %v for a broken stream", key.QuotaUsed)
+	}
+}
+
+// 找不到价格的模型：用量日志标记未定价、费用为 0；告警日志同一模型限频只打一次。有价格的模型不标记。
+func TestE2E_UnpricedModelMarkedAndWarned(t *testing.T) {
+	up := newMockUpstream(t, func(w http.ResponseWriter, r *http.Request, body []byte) {
+		_, _ = io.WriteString(w, chatCompletionJSON)
+	})
+	h := newE2E(t, nil, e2eRouteSpec{Upstream: up, Protocol: "openai_chat"})
+	var logBuf bytes.Buffer
+	h.svc.Log = slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	for i := 0; i < 3; i++ {
+		if w := h.do(http.MethodPost, "/v1/chat/completions", `{"model":"totally-unknown-model-x","messages":[{"role":"user","content":"hi"}]}`, nil); w.Code != http.StatusOK {
+			t.Fatalf("status %d", w.Code)
+		}
+	}
+	got := latestUsage(t, h)
+	if !got.Unpriced || got.TotalCost != 0 || got.ActualCost != 0 || got.InputTokens == 0 {
+		t.Fatalf("unpriced usage = %+v", got)
+	}
+	if n := strings.Count(logBuf.String(), "has no price"); n != 1 {
+		t.Fatalf("warnings = %d, want 1 (rate limited)\n%s", n, logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "model=totally-unknown-model-x") {
+		t.Fatalf("warning lacks model: %s", logBuf.String())
+	}
+
+	if w := h.do(http.MethodPost, "/v1/chat/completions", `{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`, nil); w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	if got := latestUsage(t, h); got.Unpriced || got.TotalCost <= 0 {
+		t.Fatalf("priced model usage = %+v", got)
 	}
 }

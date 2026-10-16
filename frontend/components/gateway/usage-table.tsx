@@ -1111,6 +1111,14 @@ function CostCell({ u }: { u: GatewayUsageLog }) {
         >
           {money6(actual)}
         </span>
+        {u.unpriced ? (
+          <span
+            className="rounded bg-warning/10 px-1.5 py-0.5 text-[11px] font-medium text-warning"
+            title="计费时找不到这个模型的价格，费用按 0 记、不扣额度。在「模型价格」里设置价格后，新的请求才会计费。"
+          >
+            未定价
+          </span>
+        ) : null}
         <Tooltip>
           <TooltipTrigger asChild>
             <button
