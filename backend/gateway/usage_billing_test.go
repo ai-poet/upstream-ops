@@ -167,14 +167,16 @@ func TestE2E_FailedAttemptsNotCharged(t *testing.T) {
 
 // 流已经写给客户端后上游中途断开：按 token 记下已消耗的标准价（对账上游用），但不向密钥收费。
 func TestE2E_StreamBrokenAfterCommitNotCharged(t *testing.T) {
+	// Anthropic 流已带出用量，但在 message_stop 之前断开（Chat 流带了 usage 块就算讲完了，见 chatChunkFinished）
 	up := newMockUpstream(t, func(w http.ResponseWriter, r *http.Request, body []byte) {
 		writeSSE(w,
-			`data: {"id":"c","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}`+"\n\n",
-			`data: {"id":"c","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":50}}`+"\n\n",
-		) // 没有 finish_reason / [DONE] 就断开
+			"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":1000,\"output_tokens\":1}}}\n\n",
+			"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n",
+			"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":null},\"usage\":{\"output_tokens\":50}}\n\n",
+		) // 没有 message_stop 就断开
 	})
-	h := newE2E(t, nil, e2eRouteSpec{Upstream: up, Protocol: "openai_chat"})
-	_ = h.do(http.MethodPost, "/v1/chat/completions", `{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}]}`, nil)
+	h := newE2E(t, nil, e2eRouteSpec{Upstream: up, Protocol: "anthropic"})
+	_ = h.do(http.MethodPost, "/v1/messages", `{"model":"claude-sonnet-4-5","stream":true,"max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`, nil)
 	got := latestUsage(t, h)
 	if got.Success || got.OutputTokens != 50 {
 		t.Fatalf("usage = %+v", got)

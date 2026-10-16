@@ -213,3 +213,21 @@ func streamDisconnectCause(err error) string {
 	}
 	return "upstream connection error"
 }
+
+// chatChunkFinished Chat Completions 块带了终止信号：任一 choice 有 finish_reason，或带 usage 对象（末尾用量块）。
+// 与 sub2api openAIRawStreamTerminalState 一致（[DONE] 由 upstreamSSETerminal 处理）。
+func chatChunkFinished(data string) bool {
+	data = strings.TrimSpace(data)
+	if data == "" || data == "[DONE]" || !gjson.Valid(data) {
+		return false
+	}
+	if usage := gjson.Get(data, "usage"); usage.IsObject() {
+		return true
+	}
+	for _, choice := range gjson.Get(data, "choices").Array() {
+		if strings.TrimSpace(choice.Get("finish_reason").String()) != "" {
+			return true
+		}
+	}
+	return false
+}

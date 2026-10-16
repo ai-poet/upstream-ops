@@ -38,12 +38,15 @@ type streamRelay struct {
 	geminiArray        *geminiArrayEncoder      // Gemini 客户端未带 alt=sse 时按 JSON 数组逐元素写出
 
 	// 上游侧
-	lastReadAt             atomic.Int64      // 最近一次读到上游数据（UnixNano，读协程写）
-	pendingLines           []string          // 当前 SSE event 已读到的行
-	sawUpstreamData        bool              // 收到过有效载荷（ping / 注释不算）
-	geminiUpstreamFinished bool              // Gemini 上游没有 [DONE]：见过 finishReason 后 EOF 才算正常结束
-	usageBuf               boundedLineBuffer // 旁路保留上游原始 data 的头尾，结束时补算用量（见 stream_usage_buffer.go）
-	tokens                 pricing.UsageTokens
+	lastReadAt             atomic.Int64 // 最近一次读到上游数据（UnixNano，读协程写）
+	pendingLines           []string     // 当前 SSE event 已读到的行
+	sawUpstreamData        bool         // 收到过有效载荷（ping / 注释不算）
+	geminiUpstreamFinished bool         // Gemini 上游没有 [DONE]：见过 finishReason 后 EOF 才算正常结束
+	// chatUpstreamFinished Chat Completions 上游见过 finish_reason 或 usage 块：之后不带 [DONE] 直接 EOF 也算讲完了
+	// （sub2api openai_raw_stream_truncation.go：只认 [DONE] 会误伤跑完最后一帧就关连接的兼容上游）
+	chatUpstreamFinished bool
+	usageBuf             boundedLineBuffer // 旁路保留上游原始 data 的头尾，结束时补算用量（见 stream_usage_buffer.go）
+	tokens               pricing.UsageTokens
 
 	// 客户端侧
 	geminiFinishSent bool // 数组模式下已写出带 finishReason 的元素（数组本身可能还没闭合）
@@ -268,6 +271,17 @@ func (s *streamRelay) onLine(line string) (finished bool) {
 		}
 	}
 	eventName, eventData := parseSSEEventLines(s.pendingLines)
+	// 首个可见输出之前上游在流里报错：可重试的记为本次尝试失败（走重试 / 换路由），客户端什么都没收到
+	if !s.result.Committed {
+		if status, body, ok := preOutputStreamFailure(eventName, eventData, s.upKind); ok {
+			s.usageBuf.WriteLine(eventData)
+			mergeStreamUsage(&s.tokens, eventData, s.upKind)
+			s.pendingLines, s.held = s.pendingLines[:0], nil
+			s.collectUsage()
+			s.result.Status, s.result.Body = status, body
+			return true
+		}
+	}
 	terminal, success, terminalMessage := upstreamSSETerminal(eventName, eventData, s.upKind)
 	// 写出失败已标记客户端断开，这里不用再处理
 	_ = s.processEvent(s.pendingLines, eventName, eventData)
@@ -308,7 +322,7 @@ func (s *streamRelay) onUpstreamEOF() streamAttemptResult {
 		return *r
 	}
 	s.collectUsage()
-	if s.geminiUpstreamFinished && r.Committed && !r.DownstreamComplete {
+	if (s.geminiUpstreamFinished || s.chatUpstreamFinished) && r.Committed && !r.DownstreamComplete {
 		// Gemini 上游以 EOF 结束：补齐客户端终态（转换器收尾 / 数组闭合）
 		s.closeConverters()
 		if s.conv == nil && s.geminiArray == nil {
@@ -463,6 +477,9 @@ func (s *streamRelay) processEvent(lines []string, eventName, data string) error
 	}
 	if s.upKind == protocol.KindGemini && geminiChunkFinished(data) {
 		s.geminiUpstreamFinished = true
+	}
+	if s.upKind == protocol.KindOpenAIChat && chatChunkFinished(data) {
+		s.chatUpstreamFinished = true
 	}
 	if s.conv != nil {
 		return s.emit(s.conv.Feed(eventName, data), eventName, data)
