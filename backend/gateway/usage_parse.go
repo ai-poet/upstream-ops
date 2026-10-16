@@ -136,6 +136,15 @@ func parseUsageMapSub2API(u map[string]any) pricing.UsageTokens {
 
 	c5 := max0(mapInt(u, "cache_creation_5m_input_tokens", "cache_creation_5m_tokens"))
 	c1h := max0(mapInt(u, "cache_creation_1h_input_tokens", "cache_creation_1h_tokens"))
+	// Anthropic 把缓存写入按 TTL 拆在 cache_creation 里：1 小时缓存的单价比 5 分钟的高
+	if cc, ok := u["cache_creation"].(map[string]any); ok {
+		if c5 == 0 {
+			c5 = max0(mapInt(cc, "ephemeral_5m_input_tokens"))
+		}
+		if c1h == 0 {
+			c1h = max0(mapInt(cc, "ephemeral_1h_input_tokens"))
+		}
+	}
 	out.CacheCreation5mTokens = c5
 	out.CacheCreation1hTokens = c1h
 	if out.CacheCreationTokens == 0 && (c5 > 0 || c1h > 0) {

@@ -342,18 +342,17 @@ func TestTruncateBytesForLog(t *testing.T) {
 }
 
 func TestInjectUpstreamOpsRequestID(t *testing.T) {
-	in := []byte(`{"error":{"message":"boom","type":"api_error"}}`)
+	// JSON 对象：只在末尾加字段，其余字节不动（键顺序、大整数、未转义的 < & 都保留）
+	in := []byte(`{"error":{"type":"api_error","message":"a <b> & c","code":1234567890123456789}}`)
 	out := injectUpstreamOpsRequestID(in, "req_test_123")
-	if !strings.Contains(string(out), `"upstream_ops_request_id":"req_test_123"`) {
-		t.Fatalf("%s", out)
+	if want := `{"error":{"type":"api_error","message":"a <b> & c","code":1234567890123456789},"upstream_ops_request_id":"req_test_123"}`; string(out) != want {
+		t.Fatalf("got  %s\nwant %s", out, want)
 	}
-	if !strings.Contains(string(out), `"message":"boom"`) {
-		t.Fatalf("lost original error: %s", out)
-	}
-	// non-json
-	out2 := injectUpstreamOpsRequestID([]byte("plain fail"), "rid2")
-	if !strings.Contains(string(out2), `"upstream_ops_request_id":"rid2"`) {
-		t.Fatalf("%s", out2)
+	// 不是 JSON 对象：原样返回（request id 只在响应头）
+	for _, raw := range []string{"plain fail", `[{"error":{"code":400}}]`, "", `{"broken":`} {
+		if out := injectUpstreamOpsRequestID([]byte(raw), "rid2"); string(out) != raw {
+			t.Fatalf("%q changed to %q", raw, out)
+		}
 	}
 }
 

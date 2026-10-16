@@ -2,9 +2,9 @@
 //
 // 两种来源：
 //   - 网关自己产生的（鉴权失败、没有路由、请求不合法、协议转换失败……）：按客户端协议渲染；
-//   - 上游返回的错误体：先用 convertErrorBody 转成客户端协议，再原样回显，可带上游响应头。
+//   - 上游返回的错误体：先用 convertErrorBody 转成客户端协议（同协议不动），再原样回显，可带上游响应头。
 //
-// 两种都附上网关 request id（响应头 + JSON 字段）。流式已提交后的错误帧见 writeStreamTerminalError，
+// 两种都附上网关 request id：响应头一定有；JSON 对象错误体再在末尾加一个字段（见 injectUpstreamOpsRequestID）。流式已提交后的错误帧见 writeStreamTerminalError，
 // WebSocket 会话里的错误见 writeWSResponsesFailed；写进用量日志的错误详情是另一回事，见 usageErrorInfo。
 package gateway
 
@@ -16,16 +16,22 @@ import (
 
 	"github.com/bejix/upstream-ops/backend/gateway/protocol"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
+
+// maxUpstreamErrorBodyBytes 上游错误体最多读多少：要原样回给客户端，不能按日志上限（默认 32KB）截断；
+// 写进用量日志时另按 usageErrorBodyBytes 截断。
+const maxUpstreamErrorBodyBytes = 4 << 20
 
 // gatewayError 回给客户端的一个错误。
 type gatewayError struct {
 	status int
 	typ    string // OpenAI 风格的 error.type；Gemini 客户端换算成 RPC status
 	msg    string
-	// body 上游错误体（已转成客户端协议）；非空时原样回显，typ / msg 不用
-	body   []byte
-	header http.Header // 回显上游错误时一并带回的上游响应头（可为 nil）
+	// upstream 回显上游错误：body（已转成客户端协议）原样写出（可以为空），typ / msg 不用
+	upstream bool
+	body     []byte
+	header   http.Header // 回显上游错误时一并带回的上游响应头（可为 nil）
 }
 
 // newGatewayError 网关自己产生的错误。
@@ -40,18 +46,24 @@ func authError(msg string) *gatewayError {
 
 // upstreamError 回显上游错误体（body 已转成客户端协议）。
 func upstreamError(status int, body []byte, header http.Header) *gatewayError {
-	return &gatewayError{status: status, body: body, header: header}
+	return &gatewayError{status: status, upstream: true, body: body, header: header}
 }
 
 // writeError 向客户端写错误响应：数据面所有非流式错误都从这里出去。
 func writeError(c *gin.Context, kind protocolKind, e *gatewayError) {
 	reqID := ensureGatewayRequestID(c)
-	if len(e.body) > 0 {
+	if e.upstream {
 		if e.header != nil {
 			copyResponseHeaders(c.Writer.Header(), e.header)
 		}
 		c.Writer.Header().Del("Content-Length")
-		c.Header("Content-Type", "application/json")
+		switch {
+		case gjson.ValidBytes(e.body):
+			c.Header("Content-Type", "application/json")
+		case c.Writer.Header().Get("Content-Type") == "":
+			// 纯文本等非 JSON 错误体：保留上游的 Content-Type，没有就按纯文本
+			c.Header("Content-Type", "text/plain; charset=utf-8")
+		}
 		c.Status(e.status)
 		_, _ = c.Writer.Write(injectUpstreamOpsRequestID(e.body, reqID))
 		return

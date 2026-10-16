@@ -253,9 +253,9 @@ func (rt *Runtime) forwardOnce(ctx context.Context, call upstreamCall) (status i
 	}
 	defer closeBody()
 
-	// 非 2xx 错误体整包读，不受首字超时约束
+	// 非 2xx 错误体整包读（可能原样回给客户端，所以不按日志上限截断），不受首字超时约束
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, readErr := io.ReadAll(io.LimitReader(resp.Body, int64(rt.gatewayRuntime().UsageErrorBodyBytes)+1))
+		data, readErr := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodyBytes))
 		if readErr != nil && len(data) == 0 {
 			return resp.StatusCode, resp.Header.Clone(), nil, nil, readErr
 		}

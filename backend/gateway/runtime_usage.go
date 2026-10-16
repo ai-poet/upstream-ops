@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bejix/upstream-ops/backend/gateway/pricing"
+	"github.com/bejix/upstream-ops/backend/gateway/protocol"
 	"github.com/bejix/upstream-ops/backend/storage"
 	"github.com/gin-gonic/gin"
 )
@@ -18,13 +19,25 @@ func (rt *Runtime) recordUsage(c *gin.Context, u usageRecord) {
 	if priceModel == "" {
 		priceModel = u.requestedModel
 	}
-	// 对齐 sub2api RecordUsage：OpenAI 总输入含 cache 明细 → 拆互斥桶再计费/落库
-	tokens := pricing.SplitOpenAIUsageBuckets(u.tokens)
+	// 拆成互斥桶再计费 / 落库：OpenAI（Chat / Responses）的输入 token 含缓存读写，要扣掉（对齐 sub2api）；
+	// Anthropic 的 input_tokens 本来就不含缓存，Gemini 解析时已扣过，再扣一次输入就少算了
+	tokens := u.tokens
+	if protocol.IsOpenAIFamily(u.upstreamKind) {
+		tokens = pricing.SplitOpenAIUsageBuckets(tokens)
+	}
 	price := rt.Pricing.Resolve(priceModel)
 	if price.BillingMode == pricing.BillingModeToken && u.meta.BillingInput.EndpointMode != "" {
 		price.BillingMode = u.meta.BillingInput.EndpointMode
 	}
 	cost := pricing.CalculateCostWithBillingInput(price, tokens, u.rate, u.billingRate, u.meta.ServiceTier, u.meta.BillingInput)
+	if !u.success {
+		// 没成功不向密钥收费：实际费用记 0，与额度累加一致。按次 / 按张 / 按时长的价格只在成功时成立，
+		// 失败尝试连标准价也记 0；按 token 计价的失败（如流中途出错）保留已消耗 token 的标准价，便于对账上游消耗
+		if cost.BillingMode != string(pricing.BillingModeToken) {
+			cost = pricing.CostBreakdown{BillingMode: cost.BillingMode}
+		}
+		cost.ActualCost = 0
+	}
 	reqType := storage.GatewayRequestTypeSync
 	if u.stream {
 		reqType = storage.GatewayRequestTypeStream

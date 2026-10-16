@@ -164,7 +164,7 @@ func (rt *Runtime) forwardStreamPlan(ctx context.Context, c *gin.Context, call u
 	}
 	// 非 2xx：整包读错误体，不 commit，供 retry/failover（错误体不受首字超时约束）
 	if s.result.Status < 200 || s.result.Status >= 300 {
-		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, int64(gwCfg.UsageErrorBodyBytes)+1))
+		errBody, readErr := io.ReadAll(io.LimitReader(resp.Body, maxUpstreamErrorBodyBytes))
 		if readErr != nil && len(errBody) == 0 {
 			s.result.Err = readErr
 		} else {

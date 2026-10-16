@@ -2,14 +2,14 @@
 package gateway
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 // newRequestID 生成 24 位小写 hex 的网关 request id（12 字节随机）。
@@ -87,31 +87,15 @@ func isGatewayGeneratedRequestID(id string) bool {
 	return true
 }
 
-// injectUpstreamOpsRequestID 把网关 request id 写入 JSON 错误体（非 JSON 则包一层）。
+// injectUpstreamOpsRequestID 在 JSON 对象错误体末尾加上网关 request id，其余字节原样保留
+// （不重新序列化：键顺序、大整数精度、转义都不变）。不是 JSON 对象（纯文本、数组、空）时原样返回，
+// request id 只在响应头 X-Upstream-Ops-Request-Id 里。
 func injectUpstreamOpsRequestID(body []byte, reqID string) []byte {
 	reqID = strings.TrimSpace(reqID)
-	if reqID == "" {
+	if reqID == "" || !looksLikeJSONObject(body) || !gjson.ValidBytes(body) {
 		return body
 	}
-	trim := bytes.TrimSpace(body)
-	if len(trim) == 0 {
-		raw, _ := json.Marshal(gin.H{jsonKeyUpstreamOpsRequestID: reqID})
-		return raw
-	}
-	var m map[string]any
-	if err := json.Unmarshal(trim, &m); err != nil {
-		// 非 JSON 错误体：包一层，保留原文
-		raw, _ := json.Marshal(gin.H{
-			"error": gin.H{
-				"message": string(trim),
-				"type":    "upstream_error",
-			},
-			jsonKeyUpstreamOpsRequestID: reqID,
-		})
-		return raw
-	}
-	m[jsonKeyUpstreamOpsRequestID] = reqID
-	out, err := json.Marshal(m)
+	out, err := sjson.SetBytes(body, jsonKeyUpstreamOpsRequestID, reqID)
 	if err != nil {
 		return body
 	}

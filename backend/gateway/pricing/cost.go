@@ -7,9 +7,9 @@ import (
 // UsageTokens token 计数。
 //
 // 约定（对齐 sub2api RecordUsage）：
-//   - 从上游解析时，InputTokens 可能是「总输入」（含 cache 明细）
-//   - 落库 / 计费前应调用 SplitOpenAIUsageBuckets，使 InputTokens 与
-//     CacheRead / CacheCreation 互斥，避免双重计费
+//   - 从 OpenAI（Chat / Responses）解析时 InputTokens 是「总输入」（含 cache 明细），
+//     落库 / 计费前要调用 SplitOpenAIUsageBuckets，使 InputTokens 与 CacheRead / CacheCreation 互斥；
+//   - 从 Anthropic / Gemini 解析出来的已经互斥，不能再拆（否则输入被少算）
 type UsageTokens struct {
 	InputTokens           int
 	OutputTokens          int

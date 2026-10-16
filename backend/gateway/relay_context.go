@@ -220,7 +220,9 @@ type usageRecord struct {
 	rate           float64
 	billingRate    float64
 	stream         bool
-	meta           usageRecordMeta
+	// upstreamKind 上游协议：决定用量要不要拆桶（见 recordUsage）；目标解析失败时为空
+	upstreamKind protocolKind
+	meta         usageRecordMeta
 	usageOutcome
 }
 
@@ -238,6 +240,7 @@ func (rt *Runtime) recordAttempt(req *relayRequest, at *relayAttempt, out usageO
 		rate:           at.rate,
 		billingRate:    at.billingRate,
 		stream:         req.stream,
+		upstreamKind:   at.upstreamKind,
 		meta:           at.meta,
 		usageOutcome:   out,
 	})
