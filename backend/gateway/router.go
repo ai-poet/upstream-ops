@@ -117,7 +117,7 @@ func registerAllGatewayRoutes(r *gin.Engine, s *Service) {
 		return func(c *gin.Context) {
 			for _, p := range c.Params {
 				if !validTaskPathParam(p.Value) {
-					writeGatewayError(c, chat, http.StatusBadRequest, "invalid_request_error", "invalid "+p.Key)
+					writeError(c, chat, newGatewayError(http.StatusBadRequest, "invalid_request_error", "invalid "+p.Key))
 					return
 				}
 			}

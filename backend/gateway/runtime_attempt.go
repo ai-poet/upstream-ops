@@ -40,7 +40,7 @@ func (rt *Runtime) runAttempt(req *relayRequest, at *relayAttempt, st *failoverS
 }
 
 // prepareAttempt 解析上游目标、定上游协议、按协议转换请求。
-// 路由配置有误或协议接不住时记一条配置错误并换路由；请求本身有误时直接回 400。
+// 路由配置有误或协议接不住时记一条配置错误并换路由；请求本身有误时结束请求、回 400。
 func (rt *Runtime) prepareAttempt(req *relayRequest, at *relayAttempt, st *failoverState) attemptNext {
 	c, kind, path := req.c, req.in.Kind, req.in.Path
 	target, err := rt.resolveUpstreamTarget(&at.route)
@@ -67,9 +67,8 @@ func (rt *Runtime) prepareAttempt(req *relayRequest, at *relayAttempt, st *failo
 	// legacy completions 不跨协议
 	if protocol.IsOpenAIFamily(kind) && strings.Contains(path, "/completions") && !strings.Contains(path, "/chat/") {
 		if at.upstreamKind == protocolAnthropic || at.upstreamKind == protocol.KindOpenAIResponses || at.upstreamKind == protocol.KindGemini {
-			writeGatewayError(c, kind, http.StatusBadRequest, "invalid_request_error",
-				"protocol conversion for /v1/completions is not supported; use /v1/chat/completions")
-			return attemptDone
+			return st.fail(newGatewayError(http.StatusBadRequest, "invalid_request_error",
+				"protocol conversion for /v1/completions is not supported; use /v1/chat/completions"))
 		}
 		at.upstreamKind = protocol.KindOpenAIChat
 	}
@@ -92,8 +91,7 @@ func (rt *Runtime) prepareAttempt(req *relayRequest, at *relayAttempt, st *failo
 		}})
 		// 请求里的图片 / 文件下载失败：换哪条路由都一样，直接回 400
 		if mediaErr := mediaFetchFailure(req.convCtx); mediaErr != nil {
-			writeGatewayError(c, kind, http.StatusBadRequest, "invalid_request_error", "failed to load media from the request: "+mediaErr.Error())
-			return attemptDone
+			return st.fail(newGatewayError(http.StatusBadRequest, "invalid_request_error", "failed to load media from the request: "+mediaErr.Error()))
 		}
 		return attemptNextRoute
 	}
@@ -279,15 +277,8 @@ func (rt *Runtime) handleAttemptFailure(req *relayRequest, at *relayAttempt, st 
 
 	// 不可重试的错误（默认 4xx、上下文超长等）：直接回显给客户端
 	if decision.Action == failStop && !clientCanceled && out.Err == nil {
-		clientBody := injectUpstreamOpsRequestID(st.lastBody, req.id)
-		copyResponseHeaders(c.Writer.Header(), out.Headers)
-		c.Writer.Header().Del("Content-Length")
-		c.Header("Content-Type", "application/json")
-		setGatewayRequestIDHeaders(c, req.id)
-		c.Status(out.Status)
-		_, _ = c.Writer.Write(clientBody)
 		rt.recordAttempt(req, at, failed)
-		return attemptDone
+		return st.fail(upstreamError(out.Status, st.lastBody, out.Headers))
 	}
 
 	if !clientCanceled { // 客户端取消不冷却

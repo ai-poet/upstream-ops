@@ -40,46 +40,46 @@ func (rt *Runtime) HandleTaskForward(c *gin.Context, path string, kind protocolK
 	rt.handleForward(c, forwardRequest{Path: path, Kind: kind, TaskID: taskID})
 }
 
+// handleForward 准备请求、按路由尝试；任何一步失败都返回错误，在这里统一回给客户端。
 func (rt *Runtime) handleForward(c *gin.Context, in forwardRequest) {
-	req := rt.prepareRelay(c, in)
-	if req == nil {
-		return
+	req, gerr := rt.prepareRelay(c, in)
+	if gerr == nil {
+		gerr = rt.relayWithFailover(req)
 	}
-	rt.relayWithFailover(req)
+	if gerr != nil {
+		writeError(c, in.Kind, gerr)
+	}
 }
 
-// prepareRelay 请求级准备：鉴权 → 读 body → 准备候选路由。出错时已向客户端写好错误并返回 nil。
-func (rt *Runtime) prepareRelay(c *gin.Context, in forwardRequest) *relayRequest {
+// prepareRelay 请求级准备：鉴权 → 读 body → 准备候选路由。
+func (rt *Runtime) prepareRelay(c *gin.Context, in forwardRequest) (*relayRequest, *gatewayError) {
 	// 尽早生成/透传 request id，保证后续任意错误体都可带上
 	req := &relayRequest{c: c, in: in, id: ensureGatewayRequestID(c)}
 	auth, err := rt.Authenticate(c)
 	if err != nil {
-		writeAuthError(c, in.Kind, err.Error())
-		return nil
+		return nil, authError(err.Error())
 	}
 	req.key, req.group = auth.Key, auth.Group
-	if !rt.readRelayBody(req) {
-		return nil
+	if gerr := rt.readRelayBody(req); gerr != nil {
+		return nil, gerr
 	}
 	rt.touchKey(req.key.ID, time.Now())
-	if !rt.prepareRelayRoutes(req) {
-		return nil
+	if gerr := rt.prepareRelayRoutes(req); gerr != nil {
+		return nil, gerr
 	}
-	return req
+	return req, nil
 }
 
 // readRelayBody 读 body、注入系统提示词、扫一遍字段、应用服务等级规则。
-func (rt *Runtime) readRelayBody(req *relayRequest) bool {
+func (rt *Runtime) readRelayBody(req *relayRequest) *gatewayError {
 	c, kind, path := req.c, req.in.Kind, req.in.Path
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		writeGatewayError(c, kind, http.StatusBadRequest, "invalid_request_error", "failed to read body")
-		return false
+		return newGatewayError(http.StatusBadRequest, "invalid_request_error", "failed to read body")
 	}
 	body, err = rt.applySystemPrompt(req.group, req.key, path, kind, body)
 	if err != nil {
-		writeGatewayError(c, kind, http.StatusBadRequest, "invalid_request_error", "system prompt injection failed: "+err.Error())
-		return false
+		return newGatewayError(http.StatusBadRequest, "invalid_request_error", "system prompt injection failed: "+err.Error())
 	}
 
 	req.contentType = c.GetHeader("Content-Type")
@@ -96,8 +96,7 @@ func (rt *Runtime) readRelayBody(req *relayRequest) bool {
 	beforeTier := body
 	body, err = rt.applyServiceTierRules(req.group, req.key, kind, req.model, body)
 	if err != nil {
-		writeGatewayError(c, kind, http.StatusForbidden, "permission_error", err.Error())
-		return false
+		return newGatewayError(http.StatusForbidden, "permission_error", err.Error())
 	}
 	if !sameBuffer(beforeTier, body) {
 		// 服务等级规则改写了 body（去掉或强制 service_tier）：按改写后的重新取
@@ -113,24 +112,21 @@ func (rt *Runtime) readRelayBody(req *relayRequest) bool {
 	// thinking 是否开启：国产模型无 effort 档位时，按上游映射模型补默认 high（对齐 sub2api）
 	req.thinkingEnabled = facts.thinkingEnabled
 	req.billing = facts.billing
-	return true
+	return nil
 }
 
 // prepareRelayRoutes 候选路由（按转发模型过滤）、源分组倍率、选路偏好与重试策略。
-func (rt *Runtime) prepareRelayRoutes(req *relayRequest) bool {
+func (rt *Runtime) prepareRelayRoutes(req *relayRequest) *gatewayError {
 	c, kind := req.c, req.in.Kind
 	routes, err := rt.cachedRoutes(req.group.ID)
 	if err != nil || len(routes) == 0 {
-		writeGatewayError(c, kind, http.StatusServiceUnavailable, "api_error", "no routes configured")
-		return false
+		return newGatewayError(http.StatusServiceUnavailable, "api_error", "no routes configured")
 	}
 	req.groupMapping = cachedModelMapping(req.group.ModelMappingJSON)
 	groupMappedModel, _ := ResolveModel(req.model, req.groupMapping)
 	// 转发模型：只留下接这个模型的路由（同 new-api 渠道的模型列表）
 	if routes = filterRoutesForModel(routes, req.model, groupMappedModel); len(routes) == 0 {
-		writeGatewayError(c, kind, http.StatusNotFound, "invalid_request_error",
-			fmt.Sprintf("model %q is not available: no route in this group forwards it", req.model))
-		return false
+		return newGatewayError(http.StatusNotFound, "invalid_request_error", fmt.Sprintf("model %q is not available: no route in this group forwards it", req.model))
 	}
 	req.routes = routes
 	req.groupsByChannel = rt.loadGroupsByChannel(c.Request.Context(), routes)
@@ -145,12 +141,12 @@ func (rt *Runtime) prepareRelayRoutes(req *relayRequest) bool {
 	req.policy = rt.retryPolicyFor(req.group)
 	req.convCtx = withMediaFetchState(c.Request.Context())
 	req.geminiPassthrough = protocol.IsPassthroughEndpoint(req.in.Path) && protocol.NormalizeKind(kind) == protocol.KindGemini
-	return true
+	return nil
 }
 
 // relayWithFailover 按候选顺序逐条路由尝试：同路由重试、换路由顺延，
-// 直到成功、遇到不可重试的错误或次数用尽；都失败时回最后一次失败。
-func (rt *Runtime) relayWithFailover(req *relayRequest) {
+// 直到成功、遇到不可重试的错误或次数用尽。成功时已回包并返回 nil；否则返回要回给客户端的错误。
+func (rt *Runtime) relayWithFailover(req *relayRequest) *gatewayError {
 	st := &failoverState{exclude: map[uint]struct{}{}}
 	for {
 		candidates := orderCandidates(req.routes, req.groupsByChannel, req.group, time.Now(), st.exclude, req.prefs)
@@ -182,17 +178,16 @@ func (rt *Runtime) relayWithFailover(req *relayRequest) {
 
 		switch rt.tryRoute(req, choice, st) {
 		case attemptDone:
-			return
+			return st.reply
 		case attemptGiveUp:
-			rt.writeLastFailure(req, st)
-			return
+			return st.lastFailure()
 		}
 		// 同路由结束：判断能否顺延
 		if !req.policy.enabled || !st.canFailover(req.policy) {
 			break
 		}
 	}
-	rt.writeLastFailure(req, st)
+	return st.lastFailure()
 }
 
 // routeFirstTokenTimeout 当前路由的首字超时。当前路由已进 exclude：失败后还有没有可顺延的其它路由；
@@ -224,30 +219,6 @@ func (rt *Runtime) tryRoute(req *relayRequest, choice *routeChoice, st *failover
 		}
 	}
 	return attemptNextRoute
-}
-
-// writeLastFailure 所有尝试都没成功：有上游错误体就原样回（已转成客户端协议），否则按最后的错误回网关错误。
-func (rt *Runtime) writeLastFailure(req *relayRequest, st *failoverState) {
-	c := req.c
-	if st.lastStatus > 0 && len(st.lastBody) > 0 {
-		out := injectUpstreamOpsRequestID(st.lastBody, req.id)
-		setGatewayRequestIDHeaders(c, req.id)
-		c.Header("Content-Type", "application/json")
-		c.Writer.Header().Del("Content-Length")
-		c.Status(st.lastStatus)
-		_, _ = c.Writer.Write(out)
-		return
-	}
-	msg := "all upstream routes failed"
-	status := http.StatusBadGateway
-	errType := "api_error"
-	if st.lastErr != nil {
-		msg = st.lastErr.Error()
-		if isProtocolConvertError(st.lastErr) {
-			status, errType = http.StatusBadRequest, "invalid_request_error"
-		}
-	}
-	writeGatewayError(c, req.in.Kind, status, errType, msg)
 }
 
 // forwardOnce 非流式转发一次（流式请求在 stream=true 时整包读完，供探测等场景）。

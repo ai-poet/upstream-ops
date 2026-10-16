@@ -38,7 +38,7 @@ func (rt *Runtime) HandleGeminiGenerate(c *gin.Context) {
 	_ = ensureGatewayRequestID(c)
 	model, action := parseGeminiModelAction(c.Param("modelAction"))
 	if !geminiModelSegment.MatchString(model) {
-		writeGatewayError(c, protocol.KindGemini, http.StatusBadRequest, "invalid_request_error", "invalid model name")
+		writeError(c, protocol.KindGemini, newGatewayError(http.StatusBadRequest, "invalid_request_error", "invalid model name"))
 		return
 	}
 	path := "/v1beta/models/" + model + ":" + action
@@ -57,7 +57,7 @@ func (rt *Runtime) HandleGeminiGenerate(c *gin.Context) {
 	case "embedcontent", "batchembedcontents":
 		rt.handleForward(c, forwardRequest{Path: path, Kind: protocol.KindGemini, Model: model})
 	default:
-		writeGatewayError(c, protocol.KindGemini, http.StatusNotFound, "not_found_error", fmt.Sprintf("unsupported action %q", action))
+		writeError(c, protocol.KindGemini, newGatewayError(http.StatusNotFound, "not_found_error", fmt.Sprintf("unsupported action %q", action)))
 	}
 }
 
@@ -67,7 +67,7 @@ func (rt *Runtime) HandleGeminiCachedContents(c *gin.Context) {
 	path := "/v1beta/cachedContents"
 	if id != "" {
 		if !geminiModelSegment.MatchString(id) {
-			writeGatewayError(c, protocol.KindGemini, http.StatusBadRequest, "invalid_request_error", "invalid cached content id")
+			writeError(c, protocol.KindGemini, newGatewayError(http.StatusBadRequest, "invalid_request_error", "invalid cached content id"))
 			return
 		}
 		path += "/" + id
@@ -79,12 +79,12 @@ func (rt *Runtime) HandleGeminiCachedContents(c *gin.Context) {
 func (rt *Runtime) handleGeminiCountTokens(c *gin.Context, model string) {
 	auth, err := rt.Authenticate(c)
 	if err != nil {
-		writeAuthError(c, protocol.KindGemini, err.Error())
+		writeError(c, protocol.KindGemini, authError(err.Error()))
 		return
 	}
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		writeGatewayError(c, protocol.KindGemini, http.StatusBadRequest, "invalid_request_error", "failed to read body")
+		writeError(c, protocol.KindGemini, newGatewayError(http.StatusBadRequest, "invalid_request_error", "failed to read body"))
 		return
 	}
 	routes, _ := rt.cachedRoutes(auth.Group.ID)
@@ -161,12 +161,12 @@ func (rt *Runtime) HandleGeminiModels(c *gin.Context) {
 	_ = ensureGatewayRequestID(c)
 	auth, err := rt.Authenticate(c)
 	if err != nil {
-		writeAuthError(c, protocol.KindGemini, err.Error())
+		writeError(c, protocol.KindGemini, authError(err.Error()))
 		return
 	}
 	ids, err := rt.groupModelIDs(c, auth.Group)
 	if err != nil {
-		writeGatewayError(c, protocol.KindGemini, http.StatusInternalServerError, "api_error", err.Error())
+		writeError(c, protocol.KindGemini, newGatewayError(http.StatusInternalServerError, "api_error", err.Error()))
 		return
 	}
 	describe := func(id string) gin.H {
@@ -185,7 +185,7 @@ func (rt *Runtime) HandleGeminiModels(c *gin.Context) {
 				return
 			}
 		}
-		writeGatewayError(c, protocol.KindGemini, http.StatusNotFound, "not_found_error", fmt.Sprintf("model %q not found", want))
+		writeError(c, protocol.KindGemini, newGatewayError(http.StatusNotFound, "not_found_error", fmt.Sprintf("model %q not found", want)))
 		return
 	}
 	models := make([]gin.H, 0, len(ids))

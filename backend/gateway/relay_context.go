@@ -148,7 +148,7 @@ type attemptNext int
 
 const (
 	attemptProceed   attemptNext = iota // 准备完成，继续发请求（仅 prepareAttempt 返回）
-	attemptDone                         // 已向客户端回包（成功或不可重试的失败），请求结束
+	attemptDone                         // 请求结束：成功已回包，或要回的错误在 failoverState.reply
 	attemptRetry                        // 同一路由再试一次
 	attemptNextRoute                    // 本路由结束，看能否顺延
 	attemptGiveUp                       // 不再尝试，回最后一次失败
@@ -164,6 +164,32 @@ type failoverState struct {
 	lastStatus int
 	lastBody   []byte // 已转成客户端协议的上游错误体
 	lastErr    error
+
+	// reply 尝试以 attemptDone 结束且需要回错误时（不可重试的上游错误、请求本身有误）要回的错误；成功时为 nil
+	reply *gatewayError
+}
+
+// fail 结束请求并回 e。
+func (st *failoverState) fail(e *gatewayError) attemptNext {
+	st.reply = e
+	return attemptDone
+}
+
+// lastFailure 所有尝试都没成功时回什么：有上游错误体就原样回（已转成客户端协议），否则按最后的错误回网关错误。
+func (st *failoverState) lastFailure() *gatewayError {
+	if st.lastStatus > 0 && len(st.lastBody) > 0 {
+		return upstreamError(st.lastStatus, st.lastBody, nil)
+	}
+	msg := "all upstream routes failed"
+	status := http.StatusBadGateway
+	errType := "api_error"
+	if st.lastErr != nil {
+		msg = st.lastErr.Error()
+		if isProtocolConvertError(st.lastErr) {
+			status, errType = http.StatusBadRequest, "invalid_request_error"
+		}
+	}
+	return newGatewayError(status, errType, msg)
 }
 
 // canFailover 还能换到下一条路由。

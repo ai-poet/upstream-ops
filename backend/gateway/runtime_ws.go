@@ -37,11 +37,11 @@ func (rt *Runtime) HandleResponsesWebSocket(c *gin.Context) {
 
 	auth, err := rt.Authenticate(c)
 	if err != nil {
-		writeAuthError(c, protocolOpenAI, err.Error())
+		writeError(c, protocolOpenAI, authError(err.Error()))
 		return
 	}
 	if rt.Routes == nil {
-		writeGatewayError(c, protocolOpenAI, http.StatusServiceUnavailable, "api_error", "routes not configured")
+		writeError(c, protocolOpenAI, newGatewayError(http.StatusServiceUnavailable, "api_error", "routes not configured"))
 		return
 	}
 

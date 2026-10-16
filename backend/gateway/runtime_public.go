@@ -19,13 +19,13 @@ func (rt *Runtime) HandleModels(c *gin.Context) {
 	_ = ensureGatewayRequestID(c)
 	auth, err := rt.Authenticate(c)
 	if err != nil {
-		writeAuthError(c, protocolOpenAI, err.Error())
+		writeError(c, protocolOpenAI, authError(err.Error()))
 		return
 	}
 	rt.touchKey(auth.Key.ID, time.Now())
 	payload, err := rt.groupModelsPayload(c, auth.Group)
 	if err != nil {
-		writeGatewayError(c, protocolOpenAI, http.StatusInternalServerError, "api_error", err.Error())
+		writeError(c, protocolOpenAI, newGatewayError(http.StatusInternalServerError, "api_error", err.Error()))
 		return
 	}
 	c.Data(http.StatusOK, "application/json", payload)
@@ -36,13 +36,13 @@ func (rt *Runtime) HandleModel(c *gin.Context) {
 	_ = ensureGatewayRequestID(c)
 	auth, err := rt.Authenticate(c)
 	if err != nil {
-		writeAuthError(c, protocolOpenAI, err.Error())
+		writeError(c, protocolOpenAI, authError(err.Error()))
 		return
 	}
 	id := strings.TrimPrefix(strings.TrimSpace(c.Param("model")), "/")
 	ids, err := rt.groupModelIDs(c, auth.Group)
 	if err != nil {
-		writeGatewayError(c, protocolOpenAI, http.StatusInternalServerError, "api_error", err.Error())
+		writeError(c, protocolOpenAI, newGatewayError(http.StatusInternalServerError, "api_error", err.Error()))
 		return
 	}
 	for _, m := range ids {
@@ -51,7 +51,7 @@ func (rt *Runtime) HandleModel(c *gin.Context) {
 			return
 		}
 	}
-	writeGatewayError(c, protocolOpenAI, http.StatusNotFound, "invalid_request_error", fmt.Sprintf("model %q not found", id))
+	writeError(c, protocolOpenAI, newGatewayError(http.StatusNotFound, "invalid_request_error", fmt.Sprintf("model %q not found", id)))
 }
 
 // groupModelIDs 组对外的模型 id 列表（与 /v1/models 同源、同缓存）。
@@ -203,17 +203,17 @@ func (rt *Runtime) HandleCountTokens(c *gin.Context) {
 	_ = ensureGatewayRequestID(c)
 	auth, err := rt.Authenticate(c)
 	if err != nil {
-		writeAuthError(c, protocolAnthropic, err.Error())
+		writeError(c, protocolAnthropic, authError(err.Error()))
 		return
 	}
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		writeGatewayError(c, protocolAnthropic, http.StatusBadRequest, "invalid_request_error", "failed to read body")
+		writeError(c, protocolAnthropic, newGatewayError(http.StatusBadRequest, "invalid_request_error", "failed to read body"))
 		return
 	}
 	body, err = rt.applySystemPrompt(auth.Group, auth.Key, "/v1/messages/count_tokens", protocol.KindAnthropic, body)
 	if err != nil {
-		writeGatewayError(c, protocolAnthropic, http.StatusBadRequest, "invalid_request_error", "system prompt injection failed: "+err.Error())
+		writeError(c, protocolAnthropic, newGatewayError(http.StatusBadRequest, "invalid_request_error", "system prompt injection failed: "+err.Error()))
 		return
 	}
 	// 尝试转发到第一条可用路由的 /v1/messages/count_tokens（只看转发模型接这个模型的路由）
@@ -253,7 +253,7 @@ func (rt *Runtime) HandleUsage(c *gin.Context) {
 	_ = ensureGatewayRequestID(c)
 	auth, err := rt.Authenticate(c)
 	if err != nil {
-		writeAuthError(c, protocolOpenAI, err.Error())
+		writeError(c, protocolOpenAI, authError(err.Error()))
 		return
 	}
 	if rt.Usage == nil {
@@ -266,7 +266,7 @@ func (rt *Runtime) HandleUsage(c *gin.Context) {
 		PageSize:     50,
 	})
 	if err != nil {
-		writeGatewayError(c, protocolOpenAI, http.StatusInternalServerError, "api_error", err.Error())
+		writeError(c, protocolOpenAI, newGatewayError(http.StatusInternalServerError, "api_error", err.Error()))
 		return
 	}
 	stats, _ := rt.Usage.Stats(storage.GatewayUsageQuery{GatewayKeyID: auth.Key.ID})
@@ -295,3 +295,43 @@ var clientRequestIDHeaders = []string{
 }
 
 // copyClientRequestIDHeaders 把入站请求相关 ID 原样写到上游请求；不碰 X-Upstream-Ops-Request-Id。
+
+// estimateTokenCount 上游 count_tokens 不可用时本地粗估（约 4 字符 / token）。
+func estimateTokenCount(body []byte) int {
+	var obj struct {
+		Messages []struct {
+			Content any `json:"content"`
+		} `json:"messages"`
+		System any `json:"system"`
+	}
+	_ = json.Unmarshal(body, &obj)
+	var text strings.Builder
+	appendContent := func(v any) {
+		switch t := v.(type) {
+		case string:
+			text.WriteString(t)
+		case []any:
+			for _, p := range t {
+				if m, ok := p.(map[string]any); ok {
+					if s, ok := m["text"].(string); ok {
+						text.WriteString(s)
+					}
+				}
+			}
+		}
+	}
+	appendContent(obj.System)
+	for _, m := range obj.Messages {
+		appendContent(m.Content)
+	}
+	n := len([]rune(text.String()))
+	if n == 0 {
+		n = len(body)
+	}
+	// 粗估：约 4 字符/token
+	tok := n / 4
+	if tok < 1 {
+		tok = 1
+	}
+	return tok
+}
