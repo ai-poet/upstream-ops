@@ -1,4 +1,4 @@
-package gateway
+package pricing
 
 import (
 	"context"
@@ -17,64 +17,15 @@ import (
 	"time"
 
 	"github.com/bejix/upstream-ops/backend/config"
+	"github.com/bejix/upstream-ops/backend/gateway/internal/cfgcache"
 	"github.com/bejix/upstream-ops/backend/storage"
 )
 
-//go:embed pricing/default_prices.json
+//go:embed default_prices.json
 var defaultPricesJSON []byte
 
-// ModelPricing per-token USD 单价。
-type ModelPricing struct {
-	ModelName                          string
-	BillingMode                        BillingMode
-	InputPricePerToken                 float64
-	InputPricePerTokenPriority         float64
-	OutputPricePerToken                float64
-	OutputPricePerTokenPriority        float64
-	CacheCreationPricePerToken         float64
-	CacheCreationPricePerTokenPriority float64
-	CacheCreation1hPricePerToken       float64
-	CacheReadPricePerToken             float64
-	CacheReadPricePerTokenPriority     float64
-	ImageInputPricePerToken            float64
-	ImageOutputPricePerToken           float64
-	LongContextInputThreshold          int
-	LongContextInputMultiplier         float64
-	LongContextOutputMultiplier        float64
-	PerRequestPrice                    float64
-	RequestTiers                       []PricingTier
-	ImagePrice1K                       float64
-	ImagePrice2K                       float64
-	ImagePrice4K                       float64
-	VideoPrice480P                     float64
-	VideoPrice720P                     float64
-	VideoPrice1080P                    float64
-	OutputPricePerImage                float64
-}
-
-type BillingMode string
-
-const (
-	BillingModeToken      BillingMode = "token"
-	BillingModePerRequest BillingMode = "per_request"
-	BillingModeImage      BillingMode = "image"
-	BillingModeVideo      BillingMode = "video"
-)
-
-// PricingTier 是按次计费的尺寸标签或上下文窗口分层价格。
-// MaxTokens 为 nil 时表示无上限；TierLabel 优先用于图片/视频尺寸匹配。
-type PricingTier struct {
-	TierLabel       string  `json:"tier_label"`
-	MinTokens       int     `json:"min_tokens"`
-	MaxTokens       *int    `json:"max_tokens,omitempty"`
-	PerRequestPrice float64 `json:"per_request_price"`
-}
-
-// HasTokenPrice 是否具备 token 计费单价（对齐 sub2api TokenPricingAbsent 语义）。
-func (p ModelPricing) HasTokenPrice() bool {
-	return p.InputPricePerToken > 0 || p.OutputPricePerToken > 0 ||
-		p.CacheCreationPricePerToken > 0 || p.CacheReadPricePerToken > 0
-}
+// overrideCacheTTL 价格覆盖整表缓存的兜底过期时间（本进程写入时随网关配置版本立即失效）。
+const overrideCacheTTL = 10 * time.Second
 
 // LiteLLM 原始条目（字段可选；与 sub2api model_prices_and_context_window.json 一致）。
 type defaultPriceEntry struct {
@@ -96,15 +47,15 @@ type defaultPriceEntry struct {
 	LongContextOutputCostMultiplier     *float64 `json:"long_context_output_cost_multiplier"`
 }
 
-// PricingCatalog 内置价 + DB 覆盖 + 硬编码家族回退（对齐 sub2api BillingService）。
-type PricingCatalog struct {
+// Catalog 内置价 + DB 覆盖 + 硬编码家族回退（对齐 sub2api BillingService）。
+type Catalog struct {
 	mu        sync.RWMutex
 	defaults  map[string]ModelPricing
 	fallbacks map[string]ModelPricing
 	overrides *storage.ModelPriceOverrides
 	// overrideCache 价格覆盖整表缓存（计费每个请求都要查，表很小）；写入后随网关配置版本失效
 	overrideCacheOnce sync.Once
-	overrideCache     *configCache[string, priceOverrideSnapshot]
+	overrideCache     *cfgcache.Cache[string, priceOverrideSnapshot]
 
 	runMu  sync.Mutex
 	stopCh chan struct{}
@@ -115,8 +66,8 @@ type PricingCatalog struct {
 	hash   string
 }
 
-func NewPricingCatalog(overrides *storage.ModelPriceOverrides) *PricingCatalog {
-	c := &PricingCatalog{
+func NewCatalog(overrides *storage.ModelPriceOverrides) *Catalog {
+	c := &Catalog{
 		defaults:  map[string]ModelPricing{},
 		fallbacks: map[string]ModelPricing{},
 		overrides: overrides,
@@ -126,7 +77,7 @@ func NewPricingCatalog(overrides *storage.ModelPriceOverrides) *PricingCatalog {
 	return c
 }
 
-func (c *PricingCatalog) loadDefaults(body []byte) error {
+func (c *Catalog) loadDefaults(body []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return err
@@ -205,7 +156,7 @@ func (c *PricingCatalog) loadDefaults(body []byte) error {
 }
 
 // Start 启动远程价目同步。启动失败不会影响内置价目表；后续定时任务会继续重试。
-func (c *PricingCatalog) Start(cfg config.PricingConfig, log *slog.Logger) {
+func (c *Catalog) Start(cfg config.PricingConfig, log *slog.Logger) {
 	if c == nil {
 		return
 	}
@@ -254,7 +205,7 @@ func (c *PricingCatalog) Start(cfg config.PricingConfig, log *slog.Logger) {
 }
 
 // Stop 停止远程同步任务；可安全重复调用。
-func (c *PricingCatalog) Stop() {
+func (c *Catalog) Stop() {
 	if c == nil {
 		return
 	}
@@ -268,15 +219,15 @@ func (c *PricingCatalog) Stop() {
 	}
 }
 
-func (c *PricingCatalog) pricingFilePath() string {
+func (c *Catalog) pricingFilePath() string {
 	return filepath.Join(c.cfg.DataDir, "model_prices_and_context_window.json")
 }
 
-func (c *PricingCatalog) hashFilePath() string {
+func (c *Catalog) hashFilePath() string {
 	return filepath.Join(c.cfg.DataDir, "model_prices_and_context_window.sha256")
 }
 
-func (c *PricingCatalog) loadCached() error {
+func (c *Catalog) loadCached() error {
 	c.runMu.Lock()
 	cfg := c.cfg
 	c.runMu.Unlock()
@@ -301,7 +252,7 @@ func (c *PricingCatalog) loadCached() error {
 	return nil
 }
 
-func (c *PricingCatalog) sync() error {
+func (c *Catalog) sync() error {
 	c.runMu.Lock()
 	cfg, client := c.cfg, c.client
 	c.runMu.Unlock()
@@ -331,7 +282,7 @@ func (c *PricingCatalog) sync() error {
 	return c.download(client, "")
 }
 
-func (c *PricingCatalog) download(client *http.Client, remoteHash string) error {
+func (c *Catalog) download(client *http.Client, remoteHash string) error {
 	c.runMu.Lock()
 	cfg := c.cfg
 	c.runMu.Unlock()
@@ -366,7 +317,7 @@ func (c *PricingCatalog) download(client *http.Client, remoteHash string) error 
 	return nil
 }
 
-func (c *PricingCatalog) fetchBytes(client *http.Client, rawURL string, timeout time.Duration) ([]byte, error) {
+func (c *Catalog) fetchBytes(client *http.Client, rawURL string, timeout time.Duration) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
@@ -384,7 +335,7 @@ func (c *PricingCatalog) fetchBytes(client *http.Client, rawURL string, timeout 
 	return io.ReadAll(resp.Body)
 }
 
-func (c *PricingCatalog) fetchText(client *http.Client, rawURL string, timeout time.Duration) (string, error) {
+func (c *Catalog) fetchText(client *http.Client, rawURL string, timeout time.Duration) (string, error) {
 	body, err := c.fetchBytes(client, rawURL, timeout)
 	return string(body), err
 }
@@ -397,7 +348,7 @@ func firstField(s string) string {
 	return fields[0]
 }
 
-func (c *PricingCatalog) logError(msg string, err error) {
+func (c *Catalog) logError(msg string, err error) {
 	if c.log == nil {
 		return
 	}
@@ -410,7 +361,7 @@ func (c *PricingCatalog) logError(msg string, err error) {
 
 // seedFallbackPrices 对齐 sub2api billing_service.go 硬编码回退价。
 // LiteLLM JSON 未必覆盖全部在用模型（如 grok-4.5），无表项时靠此表计费。
-func (c *PricingCatalog) seedFallbackPrices() {
+func (c *Catalog) seedFallbackPrices() {
 	// xAI Grok 4.5: $2 / $6 / cached $0.50 per MTok
 	c.fallbacks["grok-4.5"] = ModelPricing{
 		InputPricePerToken:     2e-6,
@@ -490,7 +441,7 @@ type DefaultPriceItem struct {
 }
 
 // ListDefaults 返回内置价目表（含硬编码 fallback），可选子串过滤。
-func (c *PricingCatalog) ListDefaults(query string) []DefaultPriceItem {
+func (c *Catalog) ListDefaults(query string) []DefaultPriceItem {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	q := strings.ToLower(strings.TrimSpace(query))
@@ -532,7 +483,7 @@ func (c *PricingCatalog) ListDefaults(query string) []DefaultPriceItem {
 
 // Resolve 优先 override，再 LiteLLM 默认表（模糊匹配），再硬编码家族回退。
 // 对齐 sub2api：BillingService.GetModelPricing → PricingService → fallbackPrices。
-func (c *PricingCatalog) Resolve(model string) ModelPricing {
+func (c *Catalog) Resolve(model string) ModelPricing {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return ModelPricing{}
@@ -637,7 +588,7 @@ func modelLookupCandidates(model string) []string {
 
 // fallbackForModel 对齐 sub2api getFallbackPricing 中与网关相关的关键分支。
 // 调用方须已持有 c.mu 读锁（或单线程初始化后只读）。
-func (c *PricingCatalog) fallbackForModel(model string) ModelPricing {
+func (c *Catalog) fallbackForModel(model string) ModelPricing {
 	modelLower := strings.ToLower(strings.TrimSpace(model))
 	switch modelLower {
 	case "grok", "grok-latest", "grok-4.5", "grok-4.5-latest", "grok-build-latest":
@@ -694,7 +645,7 @@ func (c *PricingCatalog) fallbackForModel(model string) ModelPricing {
 }
 
 // priceOrFallback 优先 defaults 表，其次 seed fallbacks。
-func (c *PricingCatalog) priceOrFallback(name string) ModelPricing {
+func (c *Catalog) priceOrFallback(name string) ModelPricing {
 	if p, ok := c.defaults[name]; ok && p.HasTokenPrice() {
 		return p
 	}
@@ -704,334 +655,6 @@ func (c *PricingCatalog) priceOrFallback(name string) ModelPricing {
 	return ModelPricing{}
 }
 
-// UsageTokens token 计数。
-//
-// 约定（对齐 sub2api RecordUsage）：
-//   - 从上游解析时，InputTokens 可能是「总输入」（含 cache 明细）
-//   - 落库 / 计费前应调用 SplitOpenAIUsageBuckets，使 InputTokens 与
-//     CacheRead / CacheCreation 互斥，避免双重计费
-type UsageTokens struct {
-	InputTokens           int
-	OutputTokens          int
-	CacheCreationTokens   int
-	CacheReadTokens       int
-	CacheCreation5mTokens int
-	CacheCreation1hTokens int
-	ImageOutputTokens     int
-	// ReasoningTokens 来自 completion_tokens_details.reasoning_tokens（展示用，不单独计费）
-	ReasoningTokens int
-}
-
-// SplitOpenAIUsageBuckets 对齐 sub2api：
-//
-//	OpenAI 的 prompt_tokens / input_tokens 是总输入，通常已包含 cache_read / cache_creation。
-//	拆成互斥桶后再计费与落库，避免缓存部分既算「输入」又算「读/写缓存」。
-//
-//	actualInput = max(0, totalInput - cacheRead - cacheCreation)
-func SplitOpenAIUsageBuckets(raw UsageTokens) UsageTokens {
-	out := raw
-	actual := raw.InputTokens - raw.CacheReadTokens - raw.CacheCreationTokens
-	if actual < 0 {
-		actual = 0
-	}
-	out.InputTokens = actual
-	return out
-}
-
-// CostBreakdown 费用拆分。
-type CostBreakdown struct {
-	InputCost         float64
-	ImageInputCost    float64
-	OutputCost        float64
-	CacheCreationCost float64
-	CacheReadCost     float64
-	ImageOutputCost   float64
-	TotalCost         float64
-	ActualCost        float64
-	BillingMode       string
-}
-
-// Cost 按本价目与 token 桶计算费用；见 CalculateCost。
-func (p ModelPricing) Cost(tokens UsageTokens, rateMultiplier, billingRateMultiplier float64) CostBreakdown {
-	return CalculateCost(p, tokens, rateMultiplier, billingRateMultiplier)
-}
-
-// CalculateCost base = tokens * unit_price；actual = base × 账号计费倍率。
-//
-// tokens 应为已 SplitOpenAIUsageBuckets 的互斥桶：
-// 输入 / 缓存读 / 缓存写 / 输出 各自乘单价，不再把 cache 算进普通输入。
-//
-// rateMultiplier / billingRateMultiplier 语义：二者均为源分组倍率换算结果
-// （原值时即源 ratio，不是强制 1）。优先用 billingRateMultiplier 作为账号计费倍率；
-// 无效时回退 rateMultiplier。只乘一次，避免「有效倍率 × 计费倍率」双重放大。
-func CalculateCost(p ModelPricing, tokens UsageTokens, rateMultiplier, billingRateMultiplier float64) CostBreakdown {
-	return CalculateCostWithServiceTier(p, tokens, rateMultiplier, billingRateMultiplier, "")
-}
-
-// CalculateCostWithServiceTier 对齐 sub2api：priority 优先使用表中专属价格，
-// 没有专属价格时 priority ×2、flex ×0.5；长上下文对输入侧和输出侧分别加价。
-func CalculateCostWithServiceTier(p ModelPricing, tokens UsageTokens, rateMultiplier, billingRateMultiplier float64, serviceTier string) CostBreakdown {
-	return CalculateCostWithBillingInput(p, tokens, rateMultiplier, billingRateMultiplier, serviceTier, BillingInput{})
-}
-
-// BillingInput 携带按次、图片、视频模式需要的请求参数。
-type BillingInput struct {
-	RequestCount         int
-	SizeTier             string
-	VideoDurationSeconds int
-	EndpointMode         BillingMode
-}
-
-// CalculateCostWithBillingInput 统一覆盖 token / per_request / image / video 四种计费模式。
-func CalculateCostWithBillingInput(p ModelPricing, tokens UsageTokens, rateMultiplier, billingRateMultiplier float64, serviceTier string, input BillingInput) CostBreakdown {
-	accountRate := billingRateMultiplier
-	if accountRate <= 0 {
-		accountRate = rateMultiplier
-	}
-	if accountRate <= 0 {
-		accountRate = 1
-	}
-	count := input.RequestCount
-	if count <= 0 {
-		count = 1
-	}
-	switch p.BillingMode {
-	case BillingModePerRequest:
-		unit := requestUnitPrice(p, input.SizeTier, tokens.InputTokens+tokens.CacheCreationTokens+tokens.CacheReadTokens)
-		return fixedCost(unit*float64(count), accountRate, BillingModePerRequest)
-	case BillingModeImage:
-		return fixedCost(imageUnitPrice(p, input.SizeTier)*float64(count), accountRate, BillingModeImage)
-	case BillingModeVideo:
-		duration := normalizeVideoDuration(input.VideoDurationSeconds)
-		return fixedCost(videoUnitPrice(p, input.SizeTier)*float64(duration)*float64(count), accountRate, BillingModeVideo)
-	}
-
-	inPrice, outPrice := p.InputPricePerToken, p.OutputPricePerToken
-	cacheCreatePrice, cacheReadPrice := p.CacheCreationPricePerToken, p.CacheReadPricePerToken
-	tierMultiplier := 1.0
-	if strings.EqualFold(strings.TrimSpace(serviceTier), "priority") &&
-		(p.InputPricePerTokenPriority > 0 || p.OutputPricePerTokenPriority > 0 ||
-			p.CacheCreationPricePerTokenPriority > 0 || p.CacheReadPricePerTokenPriority > 0) {
-		if p.InputPricePerTokenPriority > 0 {
-			inPrice = p.InputPricePerTokenPriority
-		}
-		if p.OutputPricePerTokenPriority > 0 {
-			outPrice = p.OutputPricePerTokenPriority
-		}
-		if p.CacheCreationPricePerTokenPriority > 0 {
-			cacheCreatePrice = p.CacheCreationPricePerTokenPriority
-		}
-		if p.CacheReadPricePerTokenPriority > 0 {
-			cacheReadPrice = p.CacheReadPricePerTokenPriority
-		}
-	} else {
-		switch strings.ToLower(strings.TrimSpace(serviceTier)) {
-		case "priority":
-			tierMultiplier = 2
-		case "flex":
-			tierMultiplier = .5
-		}
-	}
-
-	longContext := p.LongContextInputThreshold > 0 &&
-		tokens.InputTokens+tokens.CacheCreationTokens+tokens.CacheReadTokens > p.LongContextInputThreshold &&
-		(p.LongContextInputMultiplier > 1 || p.LongContextOutputMultiplier > 1)
-	cacheMultiplier := 1.0
-	if longContext {
-		if p.LongContextInputMultiplier > 0 {
-			inPrice *= p.LongContextInputMultiplier
-			cacheReadPrice *= p.LongContextInputMultiplier
-			cacheMultiplier = p.LongContextInputMultiplier
-		}
-		if p.LongContextOutputMultiplier > 0 {
-			outPrice *= p.LongContextOutputMultiplier
-		}
-	}
-
-	imageOutputTokens := tokens.ImageOutputTokens
-	textOutputTokens := tokens.OutputTokens - imageOutputTokens
-	if textOutputTokens < 0 {
-		textOutputTokens = 0
-	}
-	in := float64(tokens.InputTokens) * inPrice
-	out := float64(textOutputTokens) * outPrice
-	imgPrice := p.ImageOutputPricePerToken
-	if imgPrice <= 0 {
-		imgPrice = outPrice
-	}
-	img := float64(imageOutputTokens) * imgPrice
-	cc := cacheCreationCost(tokens, cacheCreatePrice, p.CacheCreation1hPricePerToken, cacheMultiplier)
-	cr := float64(tokens.CacheReadTokens) * cacheReadPrice
-	in *= tierMultiplier
-	out *= tierMultiplier
-	img *= tierMultiplier
-	cc *= tierMultiplier
-	cr *= tierMultiplier
-	total := in + out + cc + cr + img
-	return CostBreakdown{
-		InputCost:         in,
-		OutputCost:        out,
-		CacheCreationCost: cc,
-		CacheReadCost:     cr,
-		ImageOutputCost:   img,
-		TotalCost:         total,
-		ActualCost:        total * accountRate,
-		BillingMode:       string(BillingModeToken),
-	}
-}
-
-func fixedCost(total, rate float64, mode BillingMode) CostBreakdown {
-	return CostBreakdown{TotalCost: total, ActualCost: total * rate, BillingMode: string(mode)}
-}
-
-func requestUnitPrice(p ModelPricing, tier string, contextTokens int) float64 {
-	for _, item := range p.RequestTiers {
-		if item.PerRequestPrice <= 0 || !strings.EqualFold(strings.TrimSpace(item.TierLabel), strings.TrimSpace(tier)) || strings.TrimSpace(tier) == "" {
-			continue
-		}
-		return item.PerRequestPrice
-	}
-	for _, item := range p.RequestTiers {
-		if item.PerRequestPrice > 0 && contextTokens > item.MinTokens && (item.MaxTokens == nil || contextTokens <= *item.MaxTokens) {
-			return item.PerRequestPrice
-		}
-	}
-	return p.PerRequestPrice
-}
-
-func imageUnitPrice(p ModelPricing, tier string) float64 {
-	switch normalizeImageTier(tier) {
-	case "4K":
-		if p.ImagePrice4K > 0 {
-			return p.ImagePrice4K
-		}
-	case "2K":
-		if p.ImagePrice2K > 0 {
-			return p.ImagePrice2K
-		}
-	default:
-		if p.ImagePrice1K > 0 {
-			return p.ImagePrice1K
-		}
-	}
-	if price, ok := defaultGrokImagePrice(p.ModelName, normalizeImageTier(tier)); ok {
-		return price
-	}
-	modelPrice := p.OutputPricePerImage
-	if modelPrice <= 0 {
-		modelPrice = .134
-	}
-	switch normalizeImageTier(tier) {
-	case "4K":
-		return modelPrice * 2
-	case "2K":
-		return modelPrice * 1.5
-	default:
-		return modelPrice
-	}
-}
-
-func videoUnitPrice(p ModelPricing, resolution string) float64 {
-	switch normalizeVideoResolution(resolution) {
-	case "1080p":
-		if p.VideoPrice1080P > 0 {
-			return p.VideoPrice1080P
-		}
-	case "720p":
-		if p.VideoPrice720P > 0 {
-			return p.VideoPrice720P
-		}
-	default:
-		if p.VideoPrice480P > 0 {
-			return p.VideoPrice480P
-		}
-	}
-	if price, ok := defaultGrokVideoPrice(p.ModelName, normalizeVideoResolution(resolution)); ok {
-		return price
-	}
-	return imageUnitPrice(p, "2K")
-}
-
-func defaultGrokImagePrice(model, tier string) (float64, bool) {
-	model = strings.ToLower(strings.TrimSpace(model))
-	quality := model == "grok-imagine-image-quality"
-	if !quality && model != "grok-imagine" && model != "grok-imagine-image" && model != "grok-imagine-edit" {
-		return 0, false
-	}
-	if quality {
-		if tier == "1K" {
-			return .05, true
-		}
-		return .07, true
-	}
-	return .02, true
-}
-
-func defaultGrokVideoPrice(model, resolution string) (float64, bool) {
-	model = strings.ToLower(strings.TrimSpace(model))
-	if strings.HasPrefix(model, "grok-imagine-video-1.5") {
-		switch resolution {
-		case "1080p":
-			return .25, true
-		case "720p":
-			return .14, true
-		default:
-			return .08, true
-		}
-	}
-	if strings.HasPrefix(model, "grok-imagine-video") {
-		if resolution == "480p" {
-			return .05, true
-		}
-		return .07, true
-	}
-	return 0, false
-}
-
-func normalizeImageTier(raw string) string {
-	v := strings.ToLower(strings.TrimSpace(raw))
-	switch {
-	case strings.Contains(v, "4k"), strings.Contains(v, "4096"):
-		return "4K"
-	case strings.Contains(v, "2k"), strings.Contains(v, "1536"), strings.Contains(v, "2048"):
-		return "2K"
-	default:
-		return "1K"
-	}
-}
-
-func normalizeVideoResolution(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "1080", "1080p", "fhd", "full_hd", "full-hd":
-		return "1080p"
-	case "720", "720p", "hd":
-		return "720p"
-	default:
-		return "480p"
-	}
-}
-
-func normalizeVideoDuration(seconds int) int {
-	if seconds <= 0 {
-		return 8
-	}
-	if seconds > 15 {
-		return 15
-	}
-	return seconds
-}
-
-func cacheCreationCost(tokens UsageTokens, price5m, price1h, multiplier float64) float64 {
-	if price1h <= price5m || price1h <= 0 {
-		return float64(tokens.CacheCreationTokens) * price5m * multiplier
-	}
-	if tokens.CacheCreation5mTokens == 0 && tokens.CacheCreation1hTokens == 0 {
-		return float64(tokens.CacheCreationTokens) * price5m * multiplier
-	}
-	return (float64(tokens.CacheCreation5mTokens)*price5m +
-		float64(tokens.CacheCreation1hTokens)*price1h) * multiplier
-}
-
 // priceOverrideSnapshot 价格覆盖表快照：原名索引 + 小写索引。
 type priceOverrideSnapshot struct {
 	exact map[string]storage.ModelPriceOverride
@@ -1039,14 +662,14 @@ type priceOverrideSnapshot struct {
 }
 
 // lookupOverride 按原名、再按小写名找价格覆盖（与以前逐条查库的顺序一致）。
-func (c *PricingCatalog) lookupOverride(model string) (storage.ModelPriceOverride, bool) {
+func (c *Catalog) lookupOverride(model string) (storage.ModelPriceOverride, bool) {
 	if c.overrides == nil {
 		return storage.ModelPriceOverride{}, false
 	}
 	c.overrideCacheOnce.Do(func() {
-		c.overrideCache = newConfigCache[string, priceOverrideSnapshot](configCacheTTL, true)
+		c.overrideCache = cfgcache.New[string, priceOverrideSnapshot](overrideCacheTTL, true)
 	})
-	snap, err := c.overrideCache.get("all", func() (priceOverrideSnapshot, error) {
+	snap, err := c.overrideCache.Get("all", func() (priceOverrideSnapshot, error) {
 		list, err := c.overrides.List()
 		if err != nil {
 			return priceOverrideSnapshot{}, err

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/bejix/upstream-ops/backend/gateway/pricing"
 	"github.com/bejix/upstream-ops/backend/gateway/protocol"
 )
 
@@ -222,7 +223,7 @@ func wrapAsOpenAISSE(chatJSON []byte) []byte {
 	return []byte(b.String())
 }
 
-func parseUsageByKind(body []byte, stream bool, kind protocolKind) UsageTokens {
+func parseUsageByKind(body []byte, stream bool, kind protocolKind) pricing.UsageTokens {
 	return ParseUsage(body, stream, kind)
 }
 

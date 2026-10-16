@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bejix/upstream-ops/backend/config"
+	"github.com/bejix/upstream-ops/backend/gateway/pricing"
 )
 
 type usageRecordMeta struct {
@@ -26,7 +27,7 @@ type usageRecordMeta struct {
 	Attempt           int
 	AttemptKind       string
 	CooldownUntil     *time.Time
-	BillingInput      BillingInput
+	BillingInput      pricing.BillingInput
 }
 
 // usageErrorInfo 失败请求的结构化错误信息（摘要 + 上游原文）。

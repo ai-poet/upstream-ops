@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/bejix/upstream-ops/backend/connector"
+	"github.com/bejix/upstream-ops/backend/gateway/pricing"
 	"github.com/bejix/upstream-ops/backend/storage"
 	"github.com/gin-gonic/gin"
 )
@@ -35,7 +36,7 @@ type relayRequest struct {
 	serviceTier     string
 	reasoningEffort string
 	thinkingEnabled bool
-	billing         BillingInput
+	billing         pricing.BillingInput
 
 	routes            []storage.GatewayRoute // 已按转发模型过滤
 	groupsByChannel   map[uint][]connector.APIKeyGroup
@@ -172,7 +173,7 @@ func (st *failoverState) canFailover(p retryPolicy) bool {
 
 // usageOutcome 一条用量记录的结果部分。
 type usageOutcome struct {
-	tokens       UsageTokens
+	tokens       pricing.UsageTokens
 	status       int
 	success      bool
 	errInfo      usageErrorInfo

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bejix/upstream-ops/backend/gateway/pricing"
 	"github.com/bejix/upstream-ops/backend/storage"
 	"github.com/gin-gonic/gin"
 )
@@ -18,19 +19,19 @@ func (rt *Runtime) recordUsage(c *gin.Context, u usageRecord) {
 		priceModel = u.requestedModel
 	}
 	// 对齐 sub2api RecordUsage：OpenAI 总输入含 cache 明细 → 拆互斥桶再计费/落库
-	tokens := SplitOpenAIUsageBuckets(u.tokens)
-	pricing := rt.Pricing.Resolve(priceModel)
-	if pricing.BillingMode == BillingModeToken && u.meta.BillingInput.EndpointMode != "" {
-		pricing.BillingMode = u.meta.BillingInput.EndpointMode
+	tokens := pricing.SplitOpenAIUsageBuckets(u.tokens)
+	price := rt.Pricing.Resolve(priceModel)
+	if price.BillingMode == pricing.BillingModeToken && u.meta.BillingInput.EndpointMode != "" {
+		price.BillingMode = u.meta.BillingInput.EndpointMode
 	}
-	cost := CalculateCostWithBillingInput(pricing, tokens, u.rate, u.billingRate, u.meta.ServiceTier, u.meta.BillingInput)
+	cost := pricing.CalculateCostWithBillingInput(price, tokens, u.rate, u.billingRate, u.meta.ServiceTier, u.meta.BillingInput)
 	reqType := storage.GatewayRequestTypeSync
 	if u.stream {
 		reqType = storage.GatewayRequestTypeStream
 	}
 	billingMode := cost.BillingMode
 	if billingMode == "" {
-		billingMode = string(BillingModeToken)
+		billingMode = string(pricing.BillingModeToken)
 	}
 	sourceGroupName := strings.TrimSpace(u.route.SourceGroupName)
 	if sourceGroupName == "" || isSourceGroupIDPlaceholder(sourceGroupName) {

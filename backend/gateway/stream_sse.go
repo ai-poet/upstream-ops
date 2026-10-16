@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/bejix/upstream-ops/backend/gateway/pricing"
 	"github.com/bejix/upstream-ops/backend/gateway/protocol"
 	"github.com/gin-gonic/gin"
 )
@@ -277,11 +278,11 @@ func writeStreamTerminalError(c *gin.Context, kind protocolKind, errType, messag
 	return nil
 }
 
-func mergeStreamUsage(dst *UsageTokens, data string, kind protocolKind) {
+func mergeStreamUsage(dst *pricing.UsageTokens, data string, kind protocolKind) {
 	if dst == nil || data == "" {
 		return
 	}
-	var u UsageTokens
+	var u pricing.UsageTokens
 	if protocol.NormalizeKind(kind) == protocol.KindGemini {
 		u = ParseGeminiUsage([]byte(data))
 	} else if protocol.NormalizeKind(kind) == protocol.KindAnthropic {
@@ -310,7 +311,7 @@ func mergeStreamUsage(dst *UsageTokens, data string, kind protocolKind) {
 	}
 }
 
-func finalizeStreamTokens(live UsageTokens, raw []byte, kind protocolKind) UsageTokens {
+func finalizeStreamTokens(live pricing.UsageTokens, raw []byte, kind protocolKind) pricing.UsageTokens {
 	if usageNonEmpty(live) {
 		// 再用整包兜底补 cache 等字段
 		if len(raw) > 0 {

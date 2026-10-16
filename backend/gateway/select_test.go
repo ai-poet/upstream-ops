@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/bejix/upstream-ops/backend/connector"
+	"github.com/bejix/upstream-ops/backend/gateway/pricing"
 	"github.com/bejix/upstream-ops/backend/storage"
 )
 
@@ -121,35 +122,35 @@ func TestResolveModel(t *testing.T) {
 }
 
 func TestCalculateCost(t *testing.T) {
-	p := ModelPricing{InputPricePerToken: 0.001, OutputPricePerToken: 0.002}
+	p := pricing.ModelPricing{InputPricePerToken: 0.001, OutputPricePerToken: 0.002}
 	// 原值倍率 0.06：actual = base × 0.06（只乘一次账号计费倍率）
-	c := CalculateCost(p, UsageTokens{InputTokens: 10, OutputTokens: 5}, 0.06, 0.06)
+	c := pricing.CalculateCost(p, pricing.UsageTokens{InputTokens: 10, OutputTokens: 5}, 0.06, 0.06)
 	// base = 10*0.001 + 5*0.002 = 0.02; actual = 0.0012
 	if c.TotalCost != 0.02 || c.ActualCost != 0.0012 {
 		t.Fatalf("%+v", c)
 	}
 	// billing 无效时回退 rate
-	c2 := CalculateCost(p, UsageTokens{InputTokens: 10, OutputTokens: 5}, 2, 0)
+	c2 := pricing.CalculateCost(p, pricing.UsageTokens{InputTokens: 10, OutputTokens: 5}, 2, 0)
 	if c2.ActualCost != 0.04 {
 		t.Fatalf("fallback actual=%v want 0.04", c2.ActualCost)
 	}
 }
 
 func TestPricingCatalog_Grok45Fallback(t *testing.T) {
-	cat := NewPricingCatalog(nil)
+	cat := pricing.NewCatalog(nil)
 	p := cat.Resolve("grok-4.5")
 	// sub2api: $2 / $6 per MTok
 	if p.InputPricePerToken != 2e-6 || p.OutputPricePerToken != 6e-6 {
 		t.Fatalf("grok-4.5 pricing = %+v", p)
 	}
-	cost := CalculateCost(p, UsageTokens{InputTokens: 2693, OutputTokens: 49}, 0.05, 0.05)
+	cost := pricing.CalculateCost(p, pricing.UsageTokens{InputTokens: 2693, OutputTokens: 49}, 0.05, 0.05)
 	if cost.TotalCost <= 0 || cost.ActualCost <= 0 {
 		t.Fatalf("expected non-zero cost, got %+v", cost)
 	}
 }
 
 func TestPricingCatalog_KnownLiteLLMModel(t *testing.T) {
-	cat := NewPricingCatalog(nil)
+	cat := pricing.NewCatalog(nil)
 	p := cat.Resolve("claude-sonnet-4-5")
 	if !p.HasTokenPrice() {
 		t.Fatalf("expected litellm price for claude-sonnet-4-5, got %+v", p)
@@ -157,7 +158,7 @@ func TestPricingCatalog_KnownLiteLLMModel(t *testing.T) {
 }
 
 func TestPricingCatalog_DeepSeekModule(t *testing.T) {
-	cat := NewPricingCatalog(nil)
+	cat := pricing.NewCatalog(nil)
 	// 系统默认价应覆盖官方 DeepSeek 主型号
 	for _, name := range []string{
 		"deepseek-chat",

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/bejix/upstream-ops/backend/gateway/pricing"
 	"github.com/bejix/upstream-ops/backend/gateway/protocol"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -20,21 +21,21 @@ import (
 //     (extractCCStreamUsage：末帧 usage 覆盖)
 
 // ParseOpenAIUsage 从 OpenAI 兼容 JSON（含 stream chunk）解析 usage。
-func ParseOpenAIUsage(body []byte) UsageTokens {
+func ParseOpenAIUsage(body []byte) pricing.UsageTokens {
 	body = bytes.TrimSpace(body)
 	if len(body) == 0 {
-		return UsageTokens{}
+		return pricing.UsageTokens{}
 	}
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return UsageTokens{}
+		return pricing.UsageTokens{}
 	}
 	usageObj, toolUsage := openAIUsageObjects(raw)
 	if usageObj == nil {
 		if hasAnyTokenField(raw) {
 			usageObj = raw
 		} else {
-			return UsageTokens{}
+			return pricing.UsageTokens{}
 		}
 	}
 	out := parseUsageMapSub2API(usageObj)
@@ -76,7 +77,7 @@ func openAIUsageObjects(raw map[string]any) (usage, imageToolUsage map[string]an
 	return usage, imageToolUsage
 }
 
-func mergeOpenAIImageToolUsage(out *UsageTokens, imageToolUsage map[string]any) {
+func mergeOpenAIImageToolUsage(out *pricing.UsageTokens, imageToolUsage map[string]any) {
 	if out == nil || imageToolUsage == nil || out.ImageOutputTokens > 0 {
 		return
 	}
@@ -100,8 +101,8 @@ func hasAnyTokenField(m map[string]any) bool {
 }
 
 // parseUsageMapSub2API 对齐 sub2api openAIUsageFromGJSON。
-func parseUsageMapSub2API(u map[string]any) UsageTokens {
-	out := UsageTokens{}
+func parseUsageMapSub2API(u map[string]any) pricing.UsageTokens {
+	out := pricing.UsageTokens{}
 
 	// input: 优先 input_tokens，否则 prompt_tokens
 	if v := mapInt(u, "input_tokens"); v != 0 {
@@ -224,14 +225,14 @@ func firstPositiveInt(m map[string]any, keys ...string) int {
 }
 
 // ParseAnthropicUsage 从 Anthropic messages JSON 解析 usage。
-func ParseAnthropicUsage(body []byte) UsageTokens {
+func ParseAnthropicUsage(body []byte) pricing.UsageTokens {
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return UsageTokens{}
+		return pricing.UsageTokens{}
 	}
 	usageObj, _ := raw["usage"].(map[string]any)
 	if usageObj == nil {
-		return UsageTokens{}
+		return pricing.UsageTokens{}
 	}
 	u := parseUsageMapSub2API(usageObj)
 	if u.InputTokens == 0 {
@@ -250,8 +251,8 @@ func ParseAnthropicUsage(body []byte) UsageTokens {
 }
 
 // ParseOpenAISSEUsage 从 OpenAI SSE 提取 usage（按事件块解析，末次 usage 覆盖）。
-func ParseOpenAISSEUsage(stream []byte) UsageTokens {
-	var last UsageTokens
+func ParseOpenAISSEUsage(stream []byte) pricing.UsageTokens {
+	var last pricing.UsageTokens
 	var has bool
 
 	// 先按标准 SSE 事件（空行分隔）解析
@@ -303,7 +304,7 @@ func ParseOpenAISSEUsage(stream []byte) UsageTokens {
 	return last
 }
 
-func usageNonEmpty(u UsageTokens) bool {
+func usageNonEmpty(u pricing.UsageTokens) bool {
 	return u.InputTokens > 0 || u.OutputTokens > 0 || u.CacheReadTokens > 0 ||
 		u.CacheCreationTokens > 0 || u.ImageOutputTokens > 0 || u.ReasoningTokens > 0
 }
@@ -360,25 +361,25 @@ func chunkHasUsage(payload []byte) bool {
 }
 
 // extractLastUsageObject 从原始流里找最后一个 "usage":{...} 并解析（容错异常 SSE）。
-func extractLastUsageObject(stream []byte) UsageTokens {
+func extractLastUsageObject(stream []byte) pricing.UsageTokens {
 	key := []byte(`"usage"`)
 	idx := bytes.LastIndex(stream, key)
 	if idx < 0 {
-		return UsageTokens{}
+		return pricing.UsageTokens{}
 	}
 	// 找到 usage 后的 {
 	rest := stream[idx+len(key):]
 	brace := bytes.IndexByte(rest, '{')
 	if brace < 0 {
-		return UsageTokens{}
+		return pricing.UsageTokens{}
 	}
 	obj, ok := extractJSONObject(rest[brace:])
 	if !ok {
-		return UsageTokens{}
+		return pricing.UsageTokens{}
 	}
 	var usage map[string]any
 	if err := json.Unmarshal(obj, &usage); err != nil {
-		return UsageTokens{}
+		return pricing.UsageTokens{}
 	}
 	return parseUsageMapSub2API(usage)
 }
@@ -421,7 +422,7 @@ func extractJSONObject(b []byte) ([]byte, bool) {
 	return nil, false
 }
 
-func mergeUsagePreferNewer(prev, next UsageTokens) UsageTokens {
+func mergeUsagePreferNewer(prev, next pricing.UsageTokens) pricing.UsageTokens {
 	out := prev
 	if next.InputTokens > 0 {
 		out.InputTokens = next.InputTokens
@@ -454,8 +455,8 @@ func mergeUsagePreferNewer(prev, next UsageTokens) UsageTokens {
 }
 
 // ParseAnthropicSSEUsage 从 Anthropic SSE 解析 usage。
-func ParseAnthropicSSEUsage(stream []byte) UsageTokens {
-	var out UsageTokens
+func ParseAnthropicSSEUsage(stream []byte) pricing.UsageTokens {
+	var out pricing.UsageTokens
 	for _, payload := range splitSSEDataPayloads(stream) {
 		if payload == "" {
 			continue
@@ -490,7 +491,7 @@ func ParseAnthropicSSEUsage(stream []byte) UsageTokens {
 }
 
 // ParseUsage 按协议与是否 SSE 统一解析 usage（gateway 转发落库入口）。
-func ParseUsage(body []byte, stream bool, kind protocol.Kind) UsageTokens {
+func ParseUsage(body []byte, stream bool, kind protocol.Kind) pricing.UsageTokens {
 	k := protocol.NormalizeKind(kind)
 	if k == protocol.KindGemini {
 		return ParseGeminiUsage(body)
@@ -546,7 +547,7 @@ func EnsureStreamUsageOption(body []byte, stream bool) []byte {
 //	input  = promptTokenCount + toolUsePromptTokenCount - cachedContentTokenCount
 //	output = candidatesTokenCount + thoughtsTokenCount（思考按输出计费）
 //	cache_read = cachedContentTokenCount
-func ParseGeminiUsage(body []byte) UsageTokens {
+func ParseGeminiUsage(body []byte) pricing.UsageTokens {
 	var last map[string]any
 	consider := func(raw []byte) {
 		var m map[string]any
@@ -562,7 +563,7 @@ func ParseGeminiUsage(body []byte) UsageTokens {
 	trim := bytes.TrimSpace(body)
 	switch {
 	case len(trim) == 0:
-		return UsageTokens{}
+		return pricing.UsageTokens{}
 	case trim[0] == '{':
 		consider(trim)
 	case trim[0] == '[':
@@ -578,12 +579,12 @@ func ParseGeminiUsage(body []byte) UsageTokens {
 		}
 	}
 	if last == nil {
-		return UsageTokens{}
+		return pricing.UsageTokens{}
 	}
 	prompt := firstPositiveInt(last, "promptTokenCount", "prompt_token_count") +
 		firstPositiveInt(last, "toolUsePromptTokenCount", "tool_use_prompt_token_count")
 	cached := firstPositiveInt(last, "cachedContentTokenCount", "cached_content_token_count")
-	out := UsageTokens{
+	out := pricing.UsageTokens{
 		InputTokens:     max0(prompt - cached),
 		OutputTokens:    firstPositiveInt(last, "candidatesTokenCount", "candidates_token_count") + firstPositiveInt(last, "thoughtsTokenCount", "thoughts_token_count"),
 		CacheReadTokens: cached,

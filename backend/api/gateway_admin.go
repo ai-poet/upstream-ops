@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bejix/upstream-ops/backend/gateway"
+	"github.com/bejix/upstream-ops/backend/gateway/pricing"
 	"github.com/bejix/upstream-ops/backend/storage"
 	"github.com/gin-gonic/gin"
 )
@@ -707,10 +708,10 @@ func upsertGatewayPrice(c *gin.Context, d *Deps) {
 	}
 	item.BillingMode = strings.ToLower(strings.TrimSpace(item.BillingMode))
 	if item.BillingMode == "" {
-		item.BillingMode = string(gateway.BillingModeToken)
+		item.BillingMode = string(pricing.BillingModeToken)
 	}
-	switch gateway.BillingMode(item.BillingMode) {
-	case gateway.BillingModeToken, gateway.BillingModePerRequest, gateway.BillingModeImage, gateway.BillingModeVideo:
+	switch pricing.BillingMode(item.BillingMode) {
+	case pricing.BillingModeToken, pricing.BillingModePerRequest, pricing.BillingModeImage, pricing.BillingModeVideo:
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid billing_mode"})
 		return
@@ -726,7 +727,7 @@ func upsertGatewayPrice(c *gin.Context, d *Deps) {
 		}
 	}
 	if strings.TrimSpace(item.PricingTiersJSON) != "" {
-		var tiers []gateway.PricingTier
+		var tiers []pricing.Tier
 		if err := json.Unmarshal([]byte(item.PricingTiersJSON), &tiers); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid pricing_tiers_json"})
 			return

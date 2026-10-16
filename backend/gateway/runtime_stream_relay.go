@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/bejix/upstream-ops/backend/gateway/pricing"
 	"github.com/bejix/upstream-ops/backend/gateway/protocol"
 	"github.com/gin-gonic/gin"
 )
@@ -43,7 +44,7 @@ type streamRelay struct {
 	sawUpstreamData        bool         // 收到过有效载荷（ping / 注释不算）
 	geminiUpstreamFinished bool         // Gemini 上游没有 [DONE]：见过 finishReason 后 EOF 才算正常结束
 	usageBuf               bytes.Buffer // 旁路累积上游原始 data，结束时补算用量
-	tokens                 UsageTokens
+	tokens                 pricing.UsageTokens
 
 	// 客户端侧
 	geminiFinishSent bool // 数组模式下已写出带 finishReason 的元素（数组本身可能还没闭合）

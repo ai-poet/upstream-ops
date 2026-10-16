@@ -1,6 +1,10 @@
 package gateway
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/bejix/upstream-ops/backend/gateway/pricing"
+)
 
 func TestRewriteModelInBody(t *testing.T) {
 	in := []byte(`{"model":"a","stream":true}`)
@@ -29,7 +33,7 @@ func TestParseOpenAIUsage_PromptTokensDetailsCached(t *testing.T) {
 		t.Fatalf("%+v", u)
 	}
 	// 拆桶后 input 不含 cache
-	split := SplitOpenAIUsageBuckets(u)
+	split := pricing.SplitOpenAIUsageBuckets(u)
 	if split.InputTokens != 3333-1536 || split.CacheReadTokens != 1536 {
 		t.Fatalf("split=%+v", split)
 	}
@@ -37,13 +41,13 @@ func TestParseOpenAIUsage_PromptTokensDetailsCached(t *testing.T) {
 
 func TestSplitOpenAIUsageBuckets(t *testing.T) {
 	// sub2api: actualInput = total - cacheRead - cacheCreate
-	raw := UsageTokens{InputTokens: 100, CacheReadTokens: 30, CacheCreationTokens: 10, OutputTokens: 5}
-	s := SplitOpenAIUsageBuckets(raw)
+	raw := pricing.UsageTokens{InputTokens: 100, CacheReadTokens: 30, CacheCreationTokens: 10, OutputTokens: 5}
+	s := pricing.SplitOpenAIUsageBuckets(raw)
 	if s.InputTokens != 60 || s.CacheReadTokens != 30 || s.CacheCreationTokens != 10 || s.OutputTokens != 5 {
 		t.Fatalf("%+v", s)
 	}
 	// 不过度扣成负数
-	s2 := SplitOpenAIUsageBuckets(UsageTokens{InputTokens: 10, CacheReadTokens: 20})
+	s2 := pricing.SplitOpenAIUsageBuckets(pricing.UsageTokens{InputTokens: 10, CacheReadTokens: 20})
 	if s2.InputTokens != 0 {
 		t.Fatalf("%+v", s2)
 	}

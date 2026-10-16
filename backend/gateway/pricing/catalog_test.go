@@ -1,4 +1,4 @@
-package gateway
+package pricing
 
 import (
 	"crypto/sha256"
@@ -28,7 +28,7 @@ func TestPricingCatalogSyncsRemoteByHash(t *testing.T) {
 	}))
 	defer server.Close()
 
-	catalog := NewPricingCatalog(nil)
+	catalog := NewCatalog(nil)
 	catalog.Start(config.PricingConfig{
 		Enabled:                  true,
 		RemoteURL:                server.URL + "/prices.json",
@@ -80,7 +80,7 @@ func TestCalculateCostWithBillingModes(t *testing.T) {
 	perRequest := CalculateCostWithBillingInput(ModelPricing{
 		BillingMode:     BillingModePerRequest,
 		PerRequestPrice: .01,
-		RequestTiers:    []PricingTier{{TierLabel: "HD", PerRequestPrice: .03}, {MinTokens: 0, MaxTokens: &max, PerRequestPrice: .02}},
+		RequestTiers:    []Tier{{TierLabel: "HD", PerRequestPrice: .03}, {MinTokens: 0, MaxTokens: &max, PerRequestPrice: .02}},
 	}, UsageTokens{InputTokens: 80}, 1, 2, "", BillingInput{RequestCount: 2, SizeTier: "HD"})
 	if !closePrice(perRequest.TotalCost, .06) || !closePrice(perRequest.ActualCost, .12) || perRequest.BillingMode != "per_request" {
 		t.Fatalf("per request cost = %+v", perRequest)
@@ -98,4 +98,11 @@ func TestCalculateCostWithBillingModes(t *testing.T) {
 func closePrice(got, want float64) bool {
 	diff := got - want
 	return diff <= 1e-12 && diff >= -1e-12
+}
+
+func TestDefaultImageGenerationPricingMode(t *testing.T) {
+	price := NewCatalog(nil).Resolve("gemini-2.0-flash-exp-image-generation")
+	if price.BillingMode != BillingModeImage || price.OutputPricePerImage != 0.034 {
+		t.Fatalf("pricing=%+v", price)
+	}
 }

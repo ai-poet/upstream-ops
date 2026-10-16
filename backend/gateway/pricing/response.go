@@ -1,16 +1,13 @@
-package gateway
+package pricing
 
 import (
 	"encoding/json"
 	"strings"
 )
 
-// billingInputFromRequest 请求里的计费参数（张数、尺寸、视频时长、是否 Responses 生图）。
-func billingInputFromRequest(path string, body []byte) BillingInput {
-	return scanRequestFacts(path, body).billing
-}
-
-func billingInputWithResponse(input BillingInput, body []byte) BillingInput {
+// WithResponse 用上游响应补全计费参数：图片张数（data 数组、Responses 生图调用、tool_usage）与尺寸。
+// body 可以是整包 JSON，也可以是 SSE 流（逐行解析 data:）。
+func (input BillingInput) WithResponse(body []byte) BillingInput {
 	for _, raw := range responseJSONObjects(body) {
 		if data, ok := raw["data"].([]any); ok && len(data) > 0 {
 			input.RequestCount = len(data)

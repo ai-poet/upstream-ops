@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"strings"
 
+	"github.com/bejix/upstream-ops/backend/gateway/pricing"
 	"github.com/tidwall/gjson"
 )
 
@@ -19,7 +20,7 @@ type requestFacts struct {
 	serviceTier     string
 	reasoningEffort string
 	thinkingEnabled bool
-	billing         BillingInput
+	billing         pricing.BillingInput
 }
 
 // looksLikeJSONObject body 第一个非空白字符是 '{'（multipart 等非 JSON 请求直接跳过）。
@@ -93,22 +94,22 @@ func scanRequestFacts(path string, body []byte) requestFacts {
 	f.reasoningEffort = reasoningEffortFrom(f.model, reasoning.Get("effort").String(), reasoningEffort,
 		outputConfig.Get("effort").String(), f.thinkingEnabled)
 
-	if f.billing.EndpointMode == BillingModeVideo && f.billing.SizeTier == "" {
+	if f.billing.EndpointMode == pricing.BillingModeVideo && f.billing.SizeTier == "" {
 		f.billing.SizeTier = "480p"
 	}
 	if strings.Contains(path, "/responses") && responsesRequestHasImageGenerationJSON(tools, input) {
-		f.billing.EndpointMode = BillingModeImage
+		f.billing.EndpointMode = pricing.BillingModeImage
 	}
 	return f
 }
 
-func baseBillingInput(path string) BillingInput {
-	input := BillingInput{RequestCount: 1}
+func baseBillingInput(path string) pricing.BillingInput {
+	input := pricing.BillingInput{RequestCount: 1}
 	if strings.Contains(path, "/images/") {
-		input.EndpointMode = BillingModeImage
+		input.EndpointMode = pricing.BillingModeImage
 	}
 	if strings.Contains(path, "/videos/") {
-		input.EndpointMode = BillingModeVideo
+		input.EndpointMode = pricing.BillingModeVideo
 	}
 	return input
 }

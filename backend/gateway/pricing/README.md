@@ -8,7 +8,7 @@
   `https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json`
 - 本地缓存：`pricing.dataDir/model_prices_and_context_window.json`
 - 内置回退：本目录 `default_prices.json`
-- 硬编码回退：`pricing.go` 中 `seedFallbackPrices` / `fallbackForModel`，对齐
+- 硬编码回退：`catalog.go` 中 `seedFallbackPrices` / `fallbackForModel`，对齐
   `tmp/sub2api/backend/internal/service/billing_service.go`（如 `grok-4.5` 不在 LiteLLM 表中）
 
 ## 解析顺序
@@ -21,7 +21,7 @@
 
 官方 `litellm_provider=deepseek` 条目（含 `deepseek/…` 前缀）与常见裸名别名
 （`deepseek-v3`、`deepseek-r1`、`deepseek-v4-flash` 等）已写入本表。
-无精确表项时，`pricing.go` 的 DeepSeek 家族前缀回退会落到对应主型号。
+无精确表项时，`catalog.go` 的 DeepSeek 家族前缀回退会落到对应主型号。
 
 ## 更新
 

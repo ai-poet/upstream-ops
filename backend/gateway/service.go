@@ -21,6 +21,7 @@ import (
 	"github.com/bejix/upstream-ops/backend/config"
 	"github.com/bejix/upstream-ops/backend/connector"
 	"github.com/bejix/upstream-ops/backend/crypto"
+	"github.com/bejix/upstream-ops/backend/gateway/pricing"
 	"github.com/bejix/upstream-ops/backend/gateway/protocol"
 	"github.com/bejix/upstream-ops/backend/storage"
 )
@@ -52,7 +53,7 @@ type core struct {
 	Channels   *storage.Channels
 	ChannelAPI ChannelAPI
 	Cipher     *crypto.Cipher
-	Pricing    *PricingCatalog
+	Pricing    *pricing.Catalog
 	Log        *slog.Logger
 
 	mu          sync.RWMutex
@@ -130,7 +131,7 @@ func NewService(
 		Channels:           channels,
 		ChannelAPI:         channelAPI,
 		Cipher:             cipher,
-		Pricing:            NewPricingCatalog(prices),
+		Pricing:            pricing.NewCatalog(prices),
 		Log:                log,
 		gatewayCfg:         config.GatewayConfig{}.WithDefaults(),
 		gatewayCfgReady:    true,
@@ -149,7 +150,7 @@ func (s *Service) SetProviders(p *storage.GatewayProviders) {
 }
 
 // ListDefaultPrices 返回内置模型价目（管理端只读）。
-func (s *Service) ListDefaultPrices(query string) []DefaultPriceItem {
+func (s *Service) ListDefaultPrices(query string) []pricing.DefaultPriceItem {
 	if s.Pricing == nil {
 		return nil
 	}

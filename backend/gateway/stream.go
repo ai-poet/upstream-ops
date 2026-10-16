@@ -1,7 +1,11 @@
 // 流式转发结果类型。
 package gateway
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/bejix/upstream-ops/backend/gateway/pricing"
+)
 
 // streamAttemptResult 单次流式转发结果。
 // Committed=true 表示已向客户端写出有效 SSE，禁止 retry/failover。
@@ -12,7 +16,7 @@ type streamAttemptResult struct {
 	Headers            http.Header
 	Body               []byte
 	FirstTokenMS       *int64
-	Tokens             UsageTokens
+	Tokens             pricing.UsageTokens
 	Committed          bool
 	ClientDisconnected bool
 	DownstreamComplete bool

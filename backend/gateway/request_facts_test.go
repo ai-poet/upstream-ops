@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/bejix/upstream-ops/backend/connector"
+	"github.com/bejix/upstream-ops/backend/gateway/pricing"
 	"github.com/bejix/upstream-ops/backend/storage"
 )
 
@@ -18,7 +19,7 @@ func TestScanRequestFacts(t *testing.T) {
 		t.Fatalf("facts %+v", f)
 	}
 	// size 优先于 resolution，与字段顺序无关
-	if f.billing.RequestCount != 3 || f.billing.SizeTier != "2048x2048" || f.billing.EndpointMode != BillingModeImage {
+	if f.billing.RequestCount != 3 || f.billing.SizeTier != "2048x2048" || f.billing.EndpointMode != pricing.BillingModeImage {
 		t.Fatalf("billing %+v", f.billing)
 	}
 	if got := scanRequestFacts("", []byte(`{"resolution":"720p"}`)).billing.SizeTier; got != "720p" {
@@ -26,7 +27,7 @@ func TestScanRequestFacts(t *testing.T) {
 	}
 	// Responses：input 里的 additional_tools 带生图工具也按图片计费
 	resp := scanRequestFacts("/v1/responses", []byte(`{"model":"gpt-5","input":[{"role":"user","content":"draw"},{"type":"additional_tools","tools":[{"type":"image_generation"}]}]}`))
-	if resp.billing.EndpointMode != BillingModeImage {
+	if resp.billing.EndpointMode != pricing.BillingModeImage {
 		t.Fatalf("responses image tool not detected: %+v", resp.billing)
 	}
 	// thinking 开启 + 国产模型：推理档位按 high 记

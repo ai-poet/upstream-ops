@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bejix/upstream-ops/backend/gateway/pricing"
 	"github.com/bejix/upstream-ops/backend/gateway/protocol"
 	"github.com/coder/websocket"
 	"github.com/gin-gonic/gin"
@@ -174,7 +175,7 @@ type wsRelay struct {
 
 	started            time.Time
 	body               bytes.Buffer // 上游原始事件（计费与补算用量）
-	tokens             UsageTokens
+	tokens             pricing.UsageTokens
 	clientDisconnected bool
 }
 
@@ -258,7 +259,7 @@ func (rt *Runtime) relayResponsesWebSocket(ctx context.Context, ws *wsRelay) {
 }
 
 // endResponsesWebSocket 客户端一侧出错结束会话：记账，客户端还在时回一个 response.failed。
-func (rt *Runtime) endResponsesWebSocket(ctx context.Context, ws *wsRelay, tokens UsageTokens, success bool, errType, errText, clientMsg string) {
+func (rt *Runtime) endResponsesWebSocket(ctx context.Context, ws *wsRelay, tokens pricing.UsageTokens, success bool, errType, errText, clientMsg string) {
 	rt.recordResponsesWebSocket(ws, tokens, success, errType, errText)
 	if !ws.clientDisconnected {
 		writeWSResponsesFailed(ctx, ws.client, errType, clientMsg)
@@ -266,11 +267,11 @@ func (rt *Runtime) endResponsesWebSocket(ctx context.Context, ws *wsRelay, token
 }
 
 // recordResponsesWebSocket 记一条会话用量（会话结束时调用一次）。
-func (rt *Runtime) recordResponsesWebSocket(ws *wsRelay, tokens UsageTokens, success bool, errType, errText string) {
+func (rt *Runtime) recordResponsesWebSocket(ws *wsRelay, tokens pricing.UsageTokens, success bool, errType, errText string) {
 	if rt.Usage == nil {
 		return
 	}
-	ws.at.meta.BillingInput = billingInputWithResponse(ws.at.meta.BillingInput, ws.body.Bytes())
+	ws.at.meta.BillingInput = ws.at.meta.BillingInput.WithResponse(ws.body.Bytes())
 	status := http.StatusOK
 	if !success {
 		status = http.StatusBadGateway

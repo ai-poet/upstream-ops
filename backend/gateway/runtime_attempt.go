@@ -140,7 +140,7 @@ func (rt *Runtime) sendAttempt(req *relayRequest, at *relayAttempt) attemptOutco
 func (rt *Runtime) writeAttemptSuccess(req *relayRequest, at *relayAttempt, out attemptOutcome) {
 	c := req.c
 	tokens := parseUsageByKind(out.Body, false, at.upstreamKind)
-	at.meta.BillingInput = billingInputWithResponse(req.billing, out.Body)
+	at.meta.BillingInput = req.billing.WithResponse(out.Body)
 	clientBody := rt.convertResponseWithPlan(c.Request.Context(), out.Body, at.plan)
 	if at.plan.Converted && rt.Log != nil && len(clientBody) == 0 && len(out.Body) > 0 {
 		rt.Log.Warn("response convert produced empty body")
@@ -167,7 +167,7 @@ func (rt *Runtime) writeAttemptSuccess(req *relayRequest, at *relayAttempt, out 
 // 客户端在 commit 后、终端帧交付前断开：记 success=true + error_type=client。
 // 若已写出 [DONE]/message_stop 后客户端才关连接，forwardStream 会清掉 client 标记，记普通成功。
 func (rt *Runtime) finishCommittedStream(req *relayRequest, at *relayAttempt, out attemptOutcome) {
-	at.meta.BillingInput = billingInputWithResponse(req.billing, out.Body)
+	at.meta.BillingInput = req.billing.WithResponse(out.Body)
 	onlyClientDisconnect := isClientDisconnectAfterCommit(out.ClientDisconnected, out.StreamErr)
 	// 仅客户端断开仍算业务成功；真实 stream 错误才算失败。
 	success := out.StreamErr == nil || onlyClientDisconnect
