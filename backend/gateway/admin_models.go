@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bejix/upstream-ops/backend/gateway/protocol"
 	"github.com/bejix/upstream-ops/backend/storage"
 )
 
@@ -282,6 +281,11 @@ func (a *AdminService) TestGroupModel(ctx context.Context, groupID uint, in Test
 	if model == "" {
 		return nil, errors.New("model is required")
 	}
+	endpoint, err := normalizeProbeEndpoint(in.Endpoint)
+	if err != nil {
+		return nil, err
+	}
+	opts := probeOptions{Endpoint: endpoint, Stream: in.Stream}
 	group, err := a.Groups.FindByID(groupID)
 	if err != nil {
 		return nil, err
@@ -300,10 +304,7 @@ func (a *AdminService) TestGroupModel(ctx context.Context, groupID uint, in Test
 			if r.ID != *in.RouteID {
 				continue
 			}
-			// 单测时允许已暂停路由，便于手动验证
-			if !r.Enabled {
-				return nil, errors.New("route is disabled")
-			}
+			// 单测指定路由时不看启用 / 暂停 / 自动禁用：启用前先测、排查暂停原因都要用（同 new-api 可测禁用渠道）
 			if r.NormalizeSourceKind() == storage.GatewayRouteSourceMonitor &&
 				strings.TrimSpace(r.SourceAPIKeyCipher) == "" {
 				return nil, errors.New("route missing upstream api key; run ensure-keys")
@@ -335,7 +336,7 @@ func (a *AdminService) TestGroupModel(ctx context.Context, groupID uint, in Test
 	// 限制并发避免瞬时打爆上游或本机连接池。
 	results := make([]ModelTestResult, len(targets))
 	if len(targets) == 1 {
-		results[0] = a.probeRouteModel(ctx, group, targets[0], model, groupMapping)
+		results[0] = a.probeRouteModel(ctx, group, targets[0], model, groupMapping, opts)
 		return results, nil
 	}
 	sem := make(chan struct{}, a.gatewayRuntime().RouteBatchConcurrency)
@@ -360,7 +361,7 @@ func (a *AdminService) TestGroupModel(ctx context.Context, groupID uint, in Test
 				}
 				return
 			}
-			results[i] = a.probeRouteModel(ctx, group, route, model, groupMapping)
+			results[i] = a.probeRouteModel(ctx, group, route, model, groupMapping, opts)
 		}()
 	}
 	wg.Wait()
@@ -373,6 +374,7 @@ func (a *AdminService) probeRouteModel(
 	route storage.GatewayRoute,
 	requestedModel string,
 	groupMapping map[string]string,
+	opts probeOptions,
 ) ModelTestResult {
 	routeMapping := ParseModelMapping(route.ModelMappingJSON)
 	upstreamModel, _ := ResolveModel(requestedModel, routeMapping, groupMapping)
@@ -407,67 +409,57 @@ func (a *AdminService) probeRouteModel(
 		res.Label = formatChannelGroupLabel(target.Channel.Name, route.SourceGroupName, route.SourceChannelID)
 	}
 
-	// 默认按 OpenAI Chat 入站协议探测
-	inbound := protocol.KindOpenAIChat
-	routeProto := normalizeUpstreamProtocol(route.UpstreamProtocol)
-	if kind == storage.GatewayRouteSourceProvider && target.Provider != nil &&
-		routeProto == storage.GatewayUpstreamProtocolAuto {
-		if p := normalizeProviderProtocol(target.Provider.UpstreamProtocol); p != storage.GatewayUpstreamProtocolAuto {
-			routeProto = p
-		}
+	// 端点：选了用选的，没选按模型猜客户端怎么调（见 model_probe.go）
+	endpoint := opts.Endpoint
+	if endpoint == "" {
+		endpoint = defaultProbeEndpoint(requestedModel)
 	}
-	upstreamKind := protocol.ResolveUpstream(routeProto, inbound, upstreamModel)
-	// 探测 body 统一用 chat 形态，再按上游协议转换
-	chatBody := []byte(fmt.Sprintf(
-		`{"model":%q,"max_tokens":1,"messages":[{"role":"user","content":"ping"}],"stream":false}`,
-		upstreamModel,
-	))
-	body, path, _, convErr := prepareUpstreamRequest(chatBody, inbound, upstreamKind, upstreamModel, false, "/v1/chat/completions")
+	stream := endpoint != probeEndpointImages
+	if opts.Stream != nil {
+		stream = *opts.Stream && endpoint != probeEndpointImages
+	}
+	res.Endpoint = endpoint
+	res.Stream = stream
+
+	inbound, inboundPath := probeInbound(endpoint, upstreamModel, stream)
+	// 上游协议与真实转发同一套规则：路由显式协议优先，auto 时直连渠道用它的默认协议，再按模型 / 入站推断。
+	// 生图是透传端点，上游跟随入站
+	upstreamKind := routeUpstreamKind(&route, target, inbound, upstreamModel)
+	if endpoint == probeEndpointImages {
+		upstreamKind = inbound
+	}
+	res.UpstreamProtocol = string(upstreamKind)
+	body, path, _, convErr := planUpstreamRequest(parent, buildProbeBody(endpoint, upstreamModel, stream),
+		inbound, upstreamKind, requestedModel, upstreamModel, stream, inboundPath)
 	if convErr != nil {
 		res.Error = "protocol convert: " + convErr.Error()
 		return res
 	}
 	res.UpstreamPath = path
 
-	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	timeout := probeTextTimeout
+	if endpoint == probeEndpointImages {
+		timeout = probeImageTimeout
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	start := time.Now()
 	// 探测不带客户端请求头（UA 由 target.UserAgentOverride 注入）
-	status, _, respBody, _, fwdErr := a.rt.forwardOnce(ctx, upstreamCall{
-		target: target, path: path, method: http.MethodPost, header: http.Header{}, body: body, kind: upstreamKind,
-	})
+	status, out := a.rt.probeSend(ctx, upstreamCall{
+		target: target, path: path, method: http.MethodPost, header: http.Header{}, body: body, kind: upstreamKind, stream: stream,
+	}, endpoint, start)
 	res.LatencyMS = time.Since(start).Milliseconds()
 	res.StatusCode = status
-	if fwdErr != nil {
-		res.Error = fwdErr.Error()
-		return res
+	res.FirstTokenMS = out.firstTokenMS
+	res.Reply = out.reply
+	res.ResponseModel = out.responseModel
+	res.OK = out.ok
+	if !out.ok {
+		res.Error = out.err
+		if res.Error == "" {
+			res.Error = fmt.Sprintf("upstream status %d", status)
+		}
 	}
-	// 2xx 视为可用；部分上游对 max_tokens=1 仍可能 400（参数限制），但 401/403/404/5xx 明确不可用
-	if status >= 200 && status < 300 {
-		res.OK = true
-		return res
-	}
-	// 业务层错误：尽量截取上游 message
-	msg := truncateProbeError(respBody, 240)
-	if msg == "" {
-		msg = fmt.Sprintf("upstream status %d", status)
-	}
-	// 少数上游对探测 payload 不兼容但模型实际存在：4xx 且非鉴权/找不到模型时标注
-	res.Error = msg
-	if status == http.StatusUnauthorized || status == http.StatusForbidden {
-		res.OK = false
-		return res
-	}
-	if status == http.StatusNotFound {
-		res.OK = false
-		return res
-	}
-	if status >= 500 {
-		res.OK = false
-		return res
-	}
-	// 其它 4xx：仍记失败，但错误信息保留供排查
-	res.OK = false
 	return res
 }
 

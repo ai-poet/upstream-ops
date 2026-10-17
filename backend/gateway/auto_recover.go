@@ -73,7 +73,7 @@ func (s *Service) RecoverAutoDisabledRoutes(ctx context.Context) int {
 			}
 			continue
 		}
-		res := s.Admin.probeRouteModel(ctx, group, route, model, ParseModelMapping(group.ModelMappingJSON))
+		res := s.Admin.probeRouteModel(ctx, group, route, model, ParseModelMapping(group.ModelMappingJSON), probeOptions{})
 		if !res.OK {
 			if s.Log != nil {
 				s.Log.Info("gateway auto-disabled route still failing", "route_id", route.ID, "model", model, "status", res.StatusCode, "err", res.Error)

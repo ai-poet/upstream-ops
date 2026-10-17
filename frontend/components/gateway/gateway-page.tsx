@@ -56,6 +56,7 @@ import { UsagePanel } from "./usage-panel"
 import { PricesPanel } from "./prices-panel"
 import { PromptInjectionPanel } from "./prompt-injection-panel"
 import { ServiceTierPolicyPanel } from "./service-tier-policy-panel"
+import { RouteTestDialog, type RouteTestOptions } from "./route-test-dialog"
 import {
   CreatedSecretDialog,
   DefaultsPriceDialog,
@@ -79,6 +80,7 @@ import {
   perTokenToMTok,
   routeAccountRate,
   routeSourceKind,
+  routeTestModels,
   serializePriceTiers,
   sortGatewayRouteRows,
   testBusyKey,
@@ -1509,6 +1511,65 @@ export function GatewayPage() {
     }
   }
 
+  // ---- 渠道测试：一条路由 × 它的每个模型（结果与「模型」页共用 modelTestResults） ----
+  const [routeTestTarget, setRouteTestTarget] = useState<{
+    route: Partial<GatewayRoute>
+    label: string
+  } | null>(null)
+
+  async function testRouteModel(
+    routeID: number,
+    model: string,
+    opts: RouteTestOptions,
+  ): Promise<GatewayModelTestResult | undefined> {
+    if (!selectedGroup) return undefined
+    const res = await apiFetch<GatewayModelTestResponse>(
+      `/gateway/groups/${selectedGroup.id}/models/test`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          model,
+          route_id: routeID,
+          endpoint: opts.endpoint,
+          stream: opts.stream,
+        }),
+      },
+    )
+    const item = res.items?.[0]
+    if (!item) return undefined
+    setModelTestResults((prev) => {
+      const existing = [...(prev[model] ?? [])]
+      const idx = existing.findIndex((x) => x.route_id === item.route_id)
+      if (idx >= 0) existing[idx] = item
+      else existing.push(item)
+      return { ...prev, [model]: existing }
+    })
+    return item
+  }
+
+  // 路由行上的「测试 成功/总数」
+  const routeTestSummary = useMemo(() => {
+    const out: Record<number, { ok: number; total: number }> = {}
+    for (const items of Object.values(modelTestResults)) {
+      for (const r of items) {
+        const s = (out[r.route_id] ??= { ok: 0, total: 0 })
+        s.total++
+        if (r.ok) s.ok++
+      }
+    }
+    return out
+  }, [modelTestResults])
+
+  const routeTestResults = useMemo(() => {
+    const id = routeTestTarget?.route.id
+    const out: Record<string, GatewayModelTestResult | undefined> = {}
+    if (id == null) return out
+    for (const [model, items] of Object.entries(modelTestResults)) {
+      out[model] = items.find((r) => r.route_id === id)
+    }
+    return out
+  }, [modelTestResults, routeTestTarget])
+
   async function runModelTest(routeID?: number) {
     if (!modelTestTarget) return
     await runModelTestFor(modelTestTarget.id, routeID)
@@ -1792,6 +1853,8 @@ export function GatewayPage() {
                         onEnsureKeys={() => void ensureKeys()}
                         onClearRoutePause={(id) => void clearRoutePause(id)}
                         onShowPauseError={setPauseErrorRoute}
+                        routeTestSummary={routeTestSummary}
+                        onOpenRouteTest={(route, label) => setRouteTestTarget({ route, label })}
                       />
                     </TabsContent>
 
@@ -1907,6 +1970,22 @@ export function GatewayPage() {
           />
         </TabsContent>
       </Tabs>
+
+      <RouteTestDialog
+        key={routeTestTarget?.route.id ?? "none"}
+        open={!!routeTestTarget}
+        onOpenChange={(open) => {
+          if (!open) setRouteTestTarget(null)
+        }}
+        label={routeTestTarget?.label ?? ""}
+        models={routeTestTarget ? routeTestModels(routeTestTarget.route, modelItems) : []}
+        results={routeTestResults}
+        onTest={(model, opts) =>
+          routeTestTarget?.route.id != null
+            ? testRouteModel(routeTestTarget.route.id, model, opts)
+            : Promise.resolve(undefined)
+        }
+      />
 
       <ModelTestDialog
         open={modelTestOpen}

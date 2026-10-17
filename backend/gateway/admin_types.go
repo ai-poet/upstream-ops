@@ -236,7 +236,11 @@ type SyncGroupModelsInput struct {
 // TestModelInput 模型可用性探测参数。
 type TestModelInput struct {
 	Model   string `json:"model"`
-	RouteID *uint  `json:"route_id"` // 指定则只测该路由；省略则测所有可调度路由
+	RouteID *uint  `json:"route_id"` // 指定则只测该路由（禁用 / 暂停的也测）；省略则测所有可调度路由
+	// Endpoint 测试用的入站端点：chat / responses / anthropic / gemini / images；空 = 按模型自动选
+	Endpoint string `json:"endpoint,omitempty"`
+	// Stream 是否流式；省略时生图非流式、其余流式
+	Stream *bool `json:"stream,omitempty"`
 }
 
 // ModelTestResult 单条路由探测结果。
@@ -254,6 +258,13 @@ type ModelTestResult struct {
 	UpstreamPath      string `json:"upstream_path,omitempty"`
 	OK                bool   `json:"ok"`
 	StatusCode        int    `json:"status_code"`
-	LatencyMS         int64  `json:"latency_ms"`
+	LatencyMS         int64  `json:"latency_ms"` // 总耗时
 	Error             string `json:"error,omitempty"`
+	// 以下为渠道测试的明细
+	Endpoint         string `json:"endpoint,omitempty"`          // 实际用的测试端点
+	UpstreamProtocol string `json:"upstream_protocol,omitempty"` // 上游协议（与入站不同即经过协议转换）
+	Stream           bool   `json:"stream"`
+	FirstTokenMS     *int64 `json:"first_token_ms,omitempty"` // 流式：到第一个输出事件的耗时
+	Reply            string `json:"reply,omitempty"`          // 回复摘要
+	ResponseModel    string `json:"response_model,omitempty"` // 上游响应里报的模型名
 }

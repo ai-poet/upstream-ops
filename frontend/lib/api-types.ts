@@ -761,9 +761,25 @@ export interface GatewayModelTestResult {
   upstream_path?: string
   ok: boolean
   status_code: number
+  /** 总耗时 */
   latency_ms: number
   error?: string
+  source_kind?: string
+  gateway_provider_id?: number
+  /** 测试用的入站端点：chat / responses / anthropic / gemini / images */
+  endpoint?: GatewayTestEndpoint
+  /** 上游协议；与入站不同即经过协议转换 */
+  upstream_protocol?: string
+  stream?: boolean
+  /** 流式：到第一个输出事件的耗时 */
+  first_token_ms?: number
+  /** 回复摘要 */
+  reply?: string
+  /** 上游响应里报的模型名 */
+  response_model?: string
 }
+
+export type GatewayTestEndpoint = "chat" | "responses" | "anthropic" | "gemini" | "images"
 
 export interface GatewayModelSyncRouteResult {
   route_id: number

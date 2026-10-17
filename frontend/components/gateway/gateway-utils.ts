@@ -680,3 +680,67 @@ export const emptyPriceForm = (): PriceFormState => ({
 export function testBusyKey(modelID: string, routeID?: number) {
   return routeID != null ? `${modelID}#${routeID}` : modelID
 }
+
+/** 转发模型条目是否匹配模型名（同后端 modelPatternMatch：不分大小写，末尾 * 为前缀匹配，去掉 models/ 前缀） */
+export function modelPatternMatch(pattern: string, model: string): boolean {
+  const norm = (v: string) => v.trim().replace(/^models\//, "").toLowerCase()
+  const p = norm(pattern)
+  const m = norm(model)
+  if (!p || !m) return false
+  if (p.endsWith("*")) return m.startsWith(p.slice(0, -1))
+  return p === m
+}
+
+/**
+ * 一条路由要测试的模型（同 new-api 渠道的模型列表）：
+ * - 配了转发模型：整名条目 + 组模型里被通配匹配到的；
+ * - 没配（不限模型）：组模型里从这条路由同步来的与自定义模型；一个都没有时用组的全部模型。
+ */
+export function routeTestModels(
+  route: Partial<GatewayRoute>,
+  models: GatewayModelListItem[],
+): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  const add = (id: string) => {
+    const v = id.trim()
+    const k = v.toLowerCase()
+    if (!v || seen.has(k)) return
+    seen.add(k)
+    out.push(v)
+  }
+  const patterns = (route.supported_models ?? []).map((p) => p.trim()).filter(Boolean)
+  if (patterns.length > 0) {
+    for (const p of patterns) if (!p.endsWith("*")) add(p)
+    for (const m of models) if (patterns.some((p) => modelPatternMatch(p, m.id))) add(m.id)
+    return out
+  }
+  const channelID = Number(route.source_channel_id) || 0
+  for (const m of models) {
+    if (m.source === "custom") {
+      add(m.id)
+      continue
+    }
+    if (m.sources?.length) {
+      if (route.id != null && m.sources.some((s) => s.route_id === route.id)) add(m.id)
+      continue
+    }
+    if (channelID > 0 && m.channel_ids?.includes(channelID)) add(m.id)
+  }
+  if (out.length === 0) for (const m of models) add(m.id)
+  return out
+}
+
+/** 测试延迟的颜色：总耗时沿用模型面板的 5s / 10s 档；首字按 3s / 8s 档 */
+export function latencyTone(ms: number, kind: "first" | "total"): string {
+  const [good, fair] = kind === "first" ? [3_000, 8_000] : [5_000, 10_000]
+  if (ms <= good) return "text-emerald-600 dark:text-emerald-400"
+  if (ms <= fair) return "text-amber-600 dark:text-amber-400"
+  return "text-orange-600 dark:text-orange-400"
+}
+
+export function formatLatency(ms?: number | null): string {
+  if (ms == null) return "—"
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(ms >= 10_000 ? 1 : 2)}s`
+}

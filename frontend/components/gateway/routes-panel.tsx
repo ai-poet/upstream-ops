@@ -1,5 +1,5 @@
 import { useEffect, useState, type Dispatch, type ReactNode, type SetStateAction } from "react"
-import { ArrowUpToLine, Check, ChevronDown, Minus, Play, Plus } from "lucide-react"
+import { ArrowUpToLine, Check, ChevronDown, Gauge, Minus, Play, Plus } from "lucide-react"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -343,6 +343,10 @@ type RoutesPanelProps = {
   onEnsureKeys: () => void
   onClearRoutePause: (routeID?: number) => void
   onShowPauseError: (route: Partial<GatewayRoute>) => void
+  /** 路由 id → 已测模型的成功数 / 总数（渠道测试与「模型」页的探测共用） */
+  routeTestSummary: Record<number, { ok: number; total: number }>
+  /** 打开渠道测试（只对已保存的路由） */
+  onOpenRouteTest: (route: Partial<GatewayRoute>, label: string) => void
 }
 
 export function RoutesPanel({
@@ -365,6 +369,8 @@ export function RoutesPanel({
   onEnsureKeys,
   onClearRoutePause,
   onShowPauseError,
+  routeTestSummary,
+  onOpenRouteTest,
 }: RoutesPanelProps) {
   // 正在编辑转发模型的路由（routeDrafts 下标）
   const [modelsEditIdx, setModelsEditIdx] = useState<number | null>(null)
@@ -893,7 +899,33 @@ export function RoutesPanel({
         </>
       ),
     }
-    return { r, idx, kind, provider, calculatedRate, setWeight, cells }
+    const summary = r.id != null ? routeTestSummary[r.id] : undefined
+    const testButton = (className?: string) => (
+      <Button
+        size="sm"
+        variant="outline"
+        className={cn("gap-1", className)}
+        disabled={r.id == null}
+        title={r.id == null ? "保存路由后可测试" : "测试这条路由的每个模型：连通性与延迟"}
+        onClick={() => onOpenRouteTest(r, routeLabel(r))}
+      >
+        <Gauge className="size-3.5" />
+        测试
+        {summary ? (
+          <span
+            className={cn(
+              "tabular-nums",
+              summary.ok === summary.total
+                ? "text-emerald-600 dark:text-emerald-400"
+                : "text-red-600 dark:text-red-400",
+            )}
+          >
+            {summary.ok}/{summary.total}
+          </span>
+        ) : null}
+      </Button>
+    )
+    return { r, idx, kind, provider, calculatedRate, setWeight, cells, testButton }
   })
 
   return (
@@ -989,7 +1021,7 @@ export function RoutesPanel({
               .map((i) => routeViews.find((v) => v.idx === i))
               .filter((v): v is (typeof routeViews)[number] => v !== undefined)
           : routeViews
-        ).map(({ r, idx, kind, calculatedRate, setWeight, cells }) => {
+        ).map(({ r, idx, kind, calculatedRate, setWeight, cells, testButton }) => {
           const changeWeight = (weight: number) => {
             if (!frozenOrder) setFrozenOrder(routeViews.map((v) => v.idx))
             setWeight(weight)
@@ -1024,6 +1056,7 @@ export function RoutesPanel({
               </div>
               {cells.pause}
               <PriorityStepper value={r.weight ?? 1} onChange={changeWeight} onTop={moveToTop} />
+              {testButton("h-9 w-full")}
               <details className="group rounded-lg border border-border">
                 <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2 text-sm">
                   更多设置
@@ -1087,7 +1120,7 @@ export function RoutesPanel({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {routeViews.map(({ r, idx, cells }) => (
+          {routeViews.map(({ r, idx, cells, testButton }) => (
             <TableRow key={r.id ?? `new-${idx}`}>
               <TableCell>{cells.kind}</TableCell>
               <TableCell>{cells.source}</TableCell>
@@ -1104,7 +1137,12 @@ export function RoutesPanel({
                 {cells.keyLabel}
                 {cells.pause}
               </TableCell>
-              <TableCell className="text-right">{cells.remove}</TableCell>
+              <TableCell className="text-right">
+                <div className="flex justify-end gap-1">
+                  {testButton()}
+                  {cells.remove}
+                </div>
+              </TableCell>
             </TableRow>
           ))}
           {routeDrafts.length === 0 && (
