@@ -1,7 +1,7 @@
 // 渠道（路由）模型测试：照 new-api 的 ChannelTestDialog——列出这条路由的模型，
 // 可单测、可批量（5 个一批并发、批间隔 100ms、可停止），可选端点与流式，显示首字 / 总耗时与失败原因。
-import { useMemo, useRef, useState } from "react"
-import { ChevronDown, Gauge, Loader2, Plus, Square } from "lucide-react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { ChevronDown, Gauge, Loader2, Plus, RefreshCw, Square } from "lucide-react"
 import { toast } from "sonner"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -24,8 +24,8 @@ import {
 } from "@/components/ui/select"
 import { Switch } from "@/components/ui/switch"
 import { cn } from "@/lib/utils"
-import type { GatewayModelTestResult, GatewayTestEndpoint } from "@/lib/api-types"
-import { formatLatency, latencyTone } from "./gateway-utils"
+import type { GatewayModelTestResult, GatewayRoute, GatewayTestEndpoint } from "@/lib/api-types"
+import { formatLatency, latencyTone, routeTestModelPlan, routeTestModels } from "./gateway-utils"
 
 const BATCH_TEST_CONCURRENCY = 5
 const BATCH_TEST_DELAY_MS = 100
@@ -72,24 +72,52 @@ type BatchProgress = { total: number; done: number; ok: number; failed: number }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
+type UpstreamState =
+  | { status: "skip" | "loading" }
+  | { status: "done"; models: string[] }
+  | { status: "error"; error: string }
+
 export function RouteTestDialog({
   open,
   onOpenChange,
+  route,
   label,
-  models,
+  loadUpstreamModels,
   results,
   onTest,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
+  route: Partial<GatewayRoute> | null
   /** 路由名（渠道 / 源分组或直连渠道名） */
   label: string
-  /** 这条路由的模型（见 routeTestModels） */
-  models: string[]
+  /** 拉这条路由上游的 /v1/models */
+  loadUpstreamModels: () => Promise<string[]>
   /** 模型 → 这条路由最近一次测试结果 */
   results: Record<string, GatewayModelTestResult | undefined>
   onTest: (model: string, opts: RouteTestOptions) => Promise<GatewayModelTestResult | undefined>
 }) {
+  // 模型清单同 new-api 渠道自己的模型：转发模型的整名条目直接用；没配转发模型或有通配时，打开就拉上游
+  const plan = useMemo(() => (route ? routeTestModelPlan(route) : { exact: [], needsUpstream: false }), [route])
+  const [upstream, setUpstream] = useState<UpstreamState>({ status: plan.needsUpstream ? "loading" : "skip" })
+  const loadRef = useRef(loadUpstreamModels)
+  loadRef.current = loadUpstreamModels
+  const fetchUpstream = useCallback(async () => {
+    setUpstream({ status: "loading" })
+    try {
+      setUpstream({ status: "done", models: await loadRef.current() })
+    } catch (e) {
+      setUpstream({ status: "error", error: e instanceof Error ? e.message : "拉取失败" })
+    }
+  }, [])
+  useEffect(() => {
+    if (open && plan.needsUpstream) void fetchUpstream()
+  }, [open, plan.needsUpstream, fetchUpstream])
+  const models = useMemo(
+    () => (route ? routeTestModels(route, upstream.status === "done" ? upstream.models : []) : []),
+    [route, upstream],
+  )
+
   const [endpoint, setEndpoint] = useState<EndpointChoice>("auto")
   const [stream, setStream] = useState(true)
   const [filter, setFilter] = useState("")
@@ -303,6 +331,27 @@ export function RouteTestDialog({
           )}
         </div>
 
+        {plan.needsUpstream && upstream.status !== "loading" ? (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+            {upstream.status === "error" ? (
+              <span className="min-w-0 break-all text-red-700 dark:text-red-300">拉取上游模型失败：{upstream.error}</span>
+            ) : (
+              <span>
+                {plan.exact.length > 0 ? "转发模型 + " : ""}上游 /v1/models 返回 {upstream.status === "done" ? upstream.models.length : 0} 个
+              </span>
+            )}
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 text-violet-700 hover:underline disabled:opacity-50 dark:text-violet-300"
+              disabled={busy}
+              onClick={() => void fetchUpstream()}
+            >
+              <RefreshCw className="size-3" />
+              {upstream.status === "error" ? "重试" : "重新拉取"}
+            </button>
+          </div>
+        ) : null}
+
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
           <label className="flex items-center gap-1.5">
             <Checkbox
@@ -356,9 +405,18 @@ export function RouteTestDialog({
               onTest={() => void testOne(m)}
             />
           ))}
-          {filtered.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-border py-6 text-center text-sm text-muted-foreground">
-              {allModels.length === 0 ? "这条路由还没有模型：先在「模型」里同步，或在下面输入模型名测试" : "没有匹配的模型"}
+          {upstream.status === "loading" && filtered.length === 0 ? (
+            <p className="flex items-center justify-center gap-2 rounded-lg border border-dashed border-border py-6 text-sm text-muted-foreground">
+              <Loader2 className="size-4 animate-spin" />
+              正在拉取这条路由上游的模型列表…
+            </p>
+          ) : filtered.length === 0 ? (
+            <p className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-sm text-muted-foreground">
+              {allModels.length > 0
+                ? "没有匹配的模型"
+                : upstream.status === "error"
+                  ? "没拿到模型列表，可点上面的重试，或在下面输入模型名测试"
+                  : "上游没有返回模型，可在下面输入模型名测试"}
             </p>
           ) : null}
         </div>

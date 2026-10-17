@@ -692,14 +692,21 @@ export function modelPatternMatch(pattern: string, model: string): boolean {
 }
 
 /**
- * 一条路由要测试的模型（同 new-api 渠道的模型列表）：
- * - 配了转发模型：整名条目 + 组模型里被通配匹配到的；
- * - 没配（不限模型）：组模型里从这条路由同步来的与自定义模型；一个都没有时用组的全部模型。
+ * 渠道测试的模型从哪来（同 new-api 渠道自己的模型列表）：
+ * - 转发模型里的整名条目直接测；
+ * - 没配转发模型（不限），或配了通配条目：要拉这条路由上游的 /v1/models。
  */
-export function routeTestModels(
-  route: Partial<GatewayRoute>,
-  models: GatewayModelListItem[],
-): string[] {
+export function routeTestModelPlan(route: Partial<GatewayRoute>): {
+  exact: string[]
+  needsUpstream: boolean
+} {
+  const patterns = (route.supported_models ?? []).map((p) => p.trim()).filter(Boolean)
+  const exact = patterns.filter((p) => !p.endsWith("*"))
+  return { exact, needsUpstream: patterns.length === 0 || exact.length < patterns.length }
+}
+
+/** 测试清单：整名条目 + 上游模型里转发模型允许的（没配转发模型时上游全部），按名字去重。 */
+export function routeTestModels(route: Partial<GatewayRoute>, upstream: string[]): string[] {
   const out: string[] = []
   const seen = new Set<string>()
   const add = (id: string) => {
@@ -710,24 +717,10 @@ export function routeTestModels(
     out.push(v)
   }
   const patterns = (route.supported_models ?? []).map((p) => p.trim()).filter(Boolean)
-  if (patterns.length > 0) {
-    for (const p of patterns) if (!p.endsWith("*")) add(p)
-    for (const m of models) if (patterns.some((p) => modelPatternMatch(p, m.id))) add(m.id)
-    return out
+  for (const p of patterns) if (!p.endsWith("*")) add(p)
+  for (const m of upstream) {
+    if (patterns.length === 0 || patterns.some((p) => modelPatternMatch(p, m))) add(m)
   }
-  const channelID = Number(route.source_channel_id) || 0
-  for (const m of models) {
-    if (m.source === "custom") {
-      add(m.id)
-      continue
-    }
-    if (m.sources?.length) {
-      if (route.id != null && m.sources.some((s) => s.route_id === route.id)) add(m.id)
-      continue
-    }
-    if (channelID > 0 && m.channel_ids?.includes(channelID)) add(m.id)
-  }
-  if (out.length === 0) for (const m of models) add(m.id)
   return out
 }
 

@@ -80,7 +80,6 @@ import {
   perTokenToMTok,
   routeAccountRate,
   routeSourceKind,
-  routeTestModels,
   serializePriceTiers,
   sortGatewayRouteRows,
   testBusyKey,
@@ -1977,8 +1976,11 @@ export function GatewayPage() {
         onOpenChange={(open) => {
           if (!open) setRouteTestTarget(null)
         }}
+        route={routeTestTarget?.route ?? null}
         label={routeTestTarget?.label ?? ""}
-        models={routeTestTarget ? routeTestModels(routeTestTarget.route, modelItems) : []}
+        loadUpstreamModels={() =>
+          routeTestTarget ? fetchRouteModels(routeTestTarget.route) : Promise.resolve([])
+        }
         results={routeTestResults}
         onTest={(model, opts) =>
           routeTestTarget?.route.id != null
