@@ -68,7 +68,7 @@ const defaultGatewayConfig: SystemGatewayConfig = {
   usageErrorHeaderValueRunes: 8192,
   usageErrorHeadersJSONBytes: 65536,
   streamKeepaliveSeconds: 15,
-  streamIdleTimeoutSeconds: 120,
+  streamIdleTimeoutSeconds: 180,
   streamMaxLineBytes: 8 * 1024 * 1024,
   maxRequestBodyBytes: 64 * 1024 * 1024,
   metricsToken: "",
@@ -994,7 +994,7 @@ export default function SettingsPage() {
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               <Field
                 label="转发超时（秒）"
-                description={`单次上游转发/流式 drain 超时，默认 ${defaultGatewayConfig.forwardTimeoutSeconds}。`}
+                description={`单次上游转发超时，默认 ${defaultGatewayConfig.forwardTimeoutSeconds}。流式请求只限制等到第一段数据的时间，之后由流空闲超时控制，不限总时长。`}
               >
                 <Input
                   type="number"
@@ -1024,7 +1024,7 @@ export default function SettingsPage() {
               </Field>
               <Field
                 label="流空闲超时（秒）"
-                description={`上游 SSE 在收到数据后允许的最长空闲时间，默认 ${defaultGatewayConfig.streamIdleTimeoutSeconds}。`}
+                description={`上游 SSE 在收到数据后允许的最长空闲时间，默认 ${defaultGatewayConfig.streamIdleTimeoutSeconds}。流式请求不设总时长，靠它断开卡住的流。`}
               >
                 <Input
                   type="number"

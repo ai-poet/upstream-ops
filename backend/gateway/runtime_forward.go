@@ -135,6 +135,16 @@ func (rt *Runtime) prepareRelayRoutes(req *relayRequest) *gatewayError {
 	req.prefs = routePreferences{
 		ModelRouteIDs: rt.modelRouteIDs(req.group, routes, req.model, groupMappedModel),
 	}
+	// 只有一条路由时没有可选的，不必认会话
+	if len(routes) > 1 {
+		ids := make([]uint, len(routes))
+		for i := range routes {
+			ids[i] = routes[i].ID
+		}
+		req.prefs.DemotedRouteIDs = rt.modelGaps.routesMissing(ids, req.model)
+		req.sessionKey = sessionKeyFor(c.Request.Header, req.body)
+		req.prefs.StickyRouteID = rt.sessions.lookup(req.group.ID, req.key.ID, req.sessionKey)
+	}
 	if req.in.TaskID != "" {
 		req.prefs.PinnedRouteID = rt.tasks.lookup(req.group.ID, req.in.TaskID)
 	}

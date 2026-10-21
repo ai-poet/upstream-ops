@@ -74,6 +74,9 @@ type core struct {
 
 	// 异步任务（图片 / 视频 / Seedance / 语音 / cachedContents）创建时的路由，供后续查询回到同一上游
 	tasks *taskAffinity
+	// 会话粘性：同一对话优先回到上次成功的路由；路由缺模型记忆（见 session_affinity.go）
+	sessions  *sessionAffinity
+	modelGaps *modelGaps
 
 	autoRecoverMu   sync.Mutex
 	autoRecoverStop chan struct{}
@@ -146,6 +149,8 @@ func NewService(
 		modelsCache:        map[uint]modelsCacheEntry{},
 		channelGroupsCache: map[uint]channelGroupsCacheEntry{},
 		tasks:              newTaskAffinity(),
+		sessions:           newSessionAffinity(),
+		modelGaps:          newModelGaps(),
 	}}
 	s.Runtime = &Runtime{core: &s.core}
 	s.Admin = &AdminService{core: &s.core, rt: s.Runtime}

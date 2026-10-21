@@ -82,6 +82,7 @@ func (s *Service) RecoverAutoDisabledRoutes(ctx context.Context) int {
 		}
 		if err := s.Routes.ClearAutoDisabled(route.ID); err == nil {
 			recovered++
+			s.routeHealth.clearAccountFailures(route.ID)
 			_ = s.Routes.NoteSuccessForPauseError(route.ID)
 			if s.Log != nil {
 				s.Log.Info("gateway auto-disabled route recovered", "route_id", route.ID, "model", model)

@@ -24,11 +24,47 @@ const (
 	transportFailuresBeforeCooldown = 3
 )
 
-// routeHealth 进程内的路由健康记忆：每条路由连续传输失败的次数，成功一次清零。
+// routeHealth 进程内的路由健康记忆：每条路由连续传输失败的次数（成功一次清零），
+// 以及窗口内的账号级失败次数（余额 / 鉴权 / 无权限，见 accountFailureKind）。
 type routeHealth struct {
 	mu      sync.Mutex
 	streak  map[uint]int
 	counted map[uint]time.Time // 上一次计入 streak 的时间（合并窗口用）
+	// accountStrikes 账号级失败的时间（只留 accountFailureWindow 内的）
+	accountStrikes map[uint][]time.Time
+}
+
+// noteAccountFailure 记一次账号级失败，返回窗口内的累计次数（含这次）。
+// 同一条路由在 transportFailureCollapse 内的多次只算一次：并发请求同时撞上同一个余额耗尽，不该一下就累计到停用。
+func (h *routeHealth) noteAccountFailure(routeID uint, now time.Time) int {
+	if routeID == 0 {
+		return 0
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.accountStrikes == nil {
+		h.accountStrikes = map[uint][]time.Time{}
+	}
+	kept := h.accountStrikes[routeID][:0]
+	for _, t := range h.accountStrikes[routeID] {
+		if now.Sub(t) < accountFailureWindow {
+			kept = append(kept, t)
+		}
+	}
+	if n := len(kept); n > 0 && now.Sub(kept[n-1]) < transportFailureCollapse {
+		h.accountStrikes[routeID] = kept
+		return n
+	}
+	kept = append(kept, now)
+	h.accountStrikes[routeID] = kept
+	return len(kept)
+}
+
+// clearAccountFailures 路由已停用或恢复：重新计数。
+func (h *routeHealth) clearAccountFailures(routeID uint) {
+	h.mu.Lock()
+	delete(h.accountStrikes, routeID)
+	h.mu.Unlock()
 }
 
 // noteTransportFailure 记一次传输失败；连续失败达到阈值时返回 true（该冷却了）并清零。

@@ -28,6 +28,8 @@ type streamRelay struct {
 	start             time.Time          // 发起上游请求的时间（首字超时与 first_token_ms 的起点）
 	firstTokenTimeout time.Duration
 	result            streamAttemptResult
+	// stopForwardDeadline 收到第一段有效上游数据时调用：结束转发总超时（之后只看数据间隔）
+	stopForwardDeadline func()
 
 	// 以下仅增量转发使用
 	clientKind, upKind protocolKind
@@ -272,6 +274,9 @@ func (s *streamRelay) onLine(line string) (finished bool) {
 	if !s.sawUpstreamData {
 		s.sawUpstreamData = true
 		s.stopFirstTimer()
+		if s.stopForwardDeadline != nil {
+			s.stopForwardDeadline()
+		}
 		if s.result.FirstTokenMS == nil {
 			s.markFirstToken()
 		}
@@ -393,7 +398,7 @@ func (s *streamRelay) onReadError(err error) streamAttemptResult {
 func (s *streamRelay) onUpstreamCanceled(upCtx context.Context) streamAttemptResult {
 	r := &s.result
 	if !r.Committed {
-		r.Err = upCtx.Err()
+		r.Err = context.Cause(upCtx)
 		s.abort()
 		return *r
 	}
@@ -404,7 +409,7 @@ func (s *streamRelay) onUpstreamCanceled(upCtx context.Context) streamAttemptRes
 		return *r
 	}
 	msg := "upstream stream canceled"
-	if err := upCtx.Err(); err != nil {
+	if err := context.Cause(upCtx); err != nil {
 		msg = err.Error()
 	}
 	s.sendTerminalError("stream_timeout", msg)

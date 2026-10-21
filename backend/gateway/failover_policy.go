@@ -139,14 +139,30 @@ const (
 	failSkipRoute
 	// failDisableRoute 鉴权 / 额度类错误：自动禁用路由并顺延
 	failDisableRoute
+	// failSwitchRoute 这条路由这次接不住、换一条可能行：不在本路由重试，直接顺延（受 4xx 顺延开关以外的
+	// 顺延次数约束）。Cooldown>0 时同时让路由冷却——账号级失败（余额 / 鉴权 / 无权限），见 accountFailureKind
+	failSwitchRoute
+)
+
+// 账号级失败（余额耗尽、密钥失效、无权限）的路由冷却，照 sub2api ratelimit_service.go handleOpenAI403：
+// 每次冷却 10 分钟；180 分钟内累计 3 次就自动禁用，交给后台恢复探测（auto_recover.go）。
+const (
+	accountFailureCooldown        = 10 * time.Minute
+	accountFailureWindow          = 180 * time.Minute
+	accountFailuresBeforeDisable  = 3
+	accountFailureReasonBalance   = "account_balance"
+	accountFailureReasonAuth      = "account_auth"
+	accountFailureReasonForbidden = "account_forbidden"
 )
 
 type failureDecision struct {
 	Action failureAction
-	// Cooldown >0 时覆盖组默认冷却（Retry-After）
+	// Cooldown >0 时覆盖组默认冷却（Retry-After）；failSwitchRoute 时是账号级失败的冷却时长
 	Cooldown time.Duration
 	// Reason 分类标签，写进用量明细
 	Reason string
+	// ChannelWide 余额耗尽：余额属于上游账号，同一监控渠道 / 直连渠道下的路由一起冷却
+	ChannelWide bool
 }
 
 // classifyFailure 判定一次失败尝试的走向。fwdErr 为传输层错误（已排除客户端取消）。
@@ -177,7 +193,26 @@ func (rt *Runtime) classifyFailure(group *storage.GatewayGroup, status int, head
 	if group != nil && group.AutoDisableEnabled && rt.matchesAutoDisable(status, body, echoes) {
 		return failureDecision{Action: failDisableRoute, Reason: "auto_disable"}
 	}
+	// 账号级失败：同一路由再试多少次都一样（线上 24h：余额不足 0/1082、无权访问分组 0/411 次重试成功），
+	// 换路由并让这条路由冷却；不看「4xx 顺延」开关——这类错误跟请求无关，别的路由能接（同 sub2api 403 换号）
+	if kind := accountFailureKind(status, body, echoes); kind != "" {
+		return failureDecision{
+			Action:      failSwitchRoute,
+			Reason:      kind,
+			Cooldown:    accountFailureCooldown,
+			ChannelWide: kind == accountFailureReasonBalance,
+		}
+	}
 	if isRetryableStatus(group, status) {
+		// 开了「4xx 顺延」只代表可以换路由：参数错误、签名错误、CDN 拦截页这类 4xx 在同一路由上重试不会变
+		// （线上 24h：thinking 签名 0/1900、安全策略屏蔽 0/194），直接换路由，不白打 N 次
+		if !sameRouteRetryable(group, status) {
+			reason := "http_" + strconv.Itoa(status)
+			if isHTMLErrorPage(body) {
+				reason += "_html"
+			}
+			return failureDecision{Action: failSwitchRoute, Reason: reason}
+		}
 		d := failureDecision{Action: failRetry, Reason: "http_" + strconv.Itoa(status)}
 		if status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable {
 			d.Cooldown = retryAfter(headers, time.Now())
@@ -185,6 +220,112 @@ func (rt *Runtime) classifyFailure(group *storage.GatewayGroup, status int, head
 		return d
 	}
 	return failureDecision{Action: failStop, Reason: "http_" + strconv.Itoa(status)}
+}
+
+// sameRouteRetryable 可重试的失败里，哪些值得在同一路由上再试：408 / 429 / 5xx（线上 502、429、524
+// 同路由重试分别有 66%、56%、90% 成功），以及管理员在 RetryStatusCodes 里显式写了的状态码。
+// 「4xx 顺延」带进来的其它 4xx 只换路由（sub2api 默认 HTTP 错误也只换号，不在原账号重试）。
+func sameRouteRetryable(group *storage.GatewayGroup, status int) bool {
+	if status == http.StatusRequestTimeout || status == http.StatusTooManyRequests || status >= 500 {
+		return true
+	}
+	if group != nil && strings.TrimSpace(group.RetryStatusCodes) != "" {
+		if ranges, err := parseStatusCodeRanges(group.RetryStatusCodes); err == nil && len(ranges) > 0 {
+			return statusInRanges(status, ranges)
+		}
+	}
+	return false
+}
+
+// isHTMLErrorPage 错误体是 CDN / WAF / 反代的 HTML 页（Cloudflare 403、nginx 503 等），不是上游 API 的结构化错误。
+func isHTMLErrorPage(body []byte) bool {
+	head := bytes.TrimSpace(body)
+	if len(head) > 512 {
+		head = head[:512]
+	}
+	lower := strings.ToLower(string(head))
+	return strings.HasPrefix(lower, "<!doctype html") || strings.HasPrefix(lower, "<html") ||
+		strings.Contains(lower, "<head>") || strings.Contains(lower, "<body")
+}
+
+// 余额 / 额度耗尽的提示（各家中转站与官方 API 的写法）。
+var accountBalancePhrases = []string{
+	"insufficient balance",
+	"insufficient account balance",
+	"insufficient user balance",
+	"insufficient_balance",
+	"insufficient_quota",
+	"insufficient_user_quota",
+	"exceeded your current quota",
+	"credit balance",
+	"quota insufficient",
+	"quota exhausted",
+	"tokenstatusexhausted",
+	"余额不足",
+	"额度不足",
+	"额度已用尽",
+	"预扣费额度失败",
+}
+
+// 请求级的拒绝（内容 / 安全策略、会话被屏蔽）：说明的是这个请求，不能拿来处罚路由——
+// 否则谁都能用一句敏感提示词把路由打下线。
+var requestLevelRejectPhrases = []string{
+	"cyber",
+	"网络安全",
+	"安全策略",
+	"moderation",
+	"content policy",
+	"content_policy",
+	"content management policy",
+	"safety",
+	"violat",
+	"违规",
+	"敏感",
+	"请开启新会话",
+	"session is blocked",
+}
+
+// accountFailureKind 4xx 是不是「上游账号」层面的失败（照 sub2api RateLimitService.HandleUpstreamError：
+// 401 / 402 / 403 与余额类 400 处罚账号；HTML 拦截页不处罚，见 handleOpenAI403）。返回分类标签，不是则返回空。
+// 错误信息先去掉回显的请求模型名与引号里的参数值（同 matchesAutoDisable），防止用户输入伪造。
+func accountFailureKind(status int, body []byte, echoes []string) string {
+	if status < 400 || status >= 500 || isHTMLErrorPage(body) {
+		return ""
+	}
+	ids, msg := sanitizedFailureFields(body, echoes)
+	text := ids + "\n" + msg
+	for _, p := range requestLevelRejectPhrases {
+		if strings.Contains(text, p) {
+			return ""
+		}
+	}
+	for _, p := range accountBalancePhrases {
+		if strings.Contains(text, p) {
+			return accountFailureReasonBalance
+		}
+	}
+	switch status {
+	case http.StatusUnauthorized:
+		return accountFailureReasonAuth
+	case http.StatusPaymentRequired:
+		return accountFailureReasonBalance
+	case http.StatusForbidden:
+		return accountFailureReasonForbidden
+	}
+	return ""
+}
+
+// sanitizedFailureFields 上游错误码 / 类型（小写）与去掉回显后的错误信息（小写）。
+func sanitizedFailureFields(body []byte, echoes []string) (ids, msg string) {
+	code, typ, m := upstreamErrorFields(body)
+	ids = strings.ToLower(code + "\n" + typ)
+	msg = strings.ToLower(m)
+	for _, e := range echoes {
+		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
+			msg = strings.ReplaceAll(msg, e, " ")
+		}
+	}
+	return ids, quotedSegment.ReplaceAllString(msg, " ")
 }
 
 // isRetryableStatus 组配置了 RetryStatusCodes 时按其判定；否则沿用默认：429、5xx，开 FailoverOn4xx 再加全部 4xx。
@@ -214,15 +355,7 @@ func (rt *Runtime) matchesAutoDisable(status int, body []byte, echoes []string) 
 			return true
 		}
 	}
-	code, typ, msg := upstreamErrorFields(body)
-	ids := strings.ToLower(code + "\n" + typ)
-	msg = strings.ToLower(msg)
-	for _, e := range echoes {
-		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
-			msg = strings.ReplaceAll(msg, e, " ")
-		}
-	}
-	msg = quotedSegment.ReplaceAllString(msg, " ")
+	ids, msg := sanitizedFailureFields(body, echoes)
 	msgEligible := status >= 400 && status < 500
 	for _, kw := range cfg.AutoDisableKeywords {
 		kw = strings.ToLower(strings.TrimSpace(kw))
@@ -405,13 +538,19 @@ type routePreferences struct {
 	ModelRouteIDs map[uint]struct{}
 	// PinnedRouteID 异步任务创建时所在的路由，查询 / 取消时优先回到它
 	PinnedRouteID uint
+	// StickyRouteID 这个会话上次成功走的路由（会话粘性）
+	StickyRouteID uint
+	// DemotedRouteIDs 最近对这个模型回过「模型不存在」的路由：排到最后
+	DemotedRouteIDs map[uint]struct{}
 }
 
 // orderCandidates 可调度路由的尝试顺序：
 //  1. 优先级从高到低，同优先级按倍率方向 + position（SortRoutes）；
 //  2. random 模式下，同优先级的一档内随机打散；
 //  3. 声明了该模型的路由排前面；
-//  4. 任务亲和路由放最前。
+//  4. 最近回过「没有这个模型」的路由排到最后；
+//  5. 会话上次成功的路由放前面（会话粘性）；
+//  6. 任务亲和路由放最前。
 func orderCandidates(
 	routes []storage.GatewayRoute,
 	groupsByChannel map[uint][]connector.APIKeyGroup,
@@ -438,17 +577,32 @@ func orderCandidates(
 			return a && !b
 		})
 	}
+	if len(prefs.DemotedRouteIDs) > 0 {
+		sort.SliceStable(cands, func(i, j int) bool {
+			_, a := prefs.DemotedRouteIDs[cands[i].Route.ID]
+			_, b := prefs.DemotedRouteIDs[cands[j].Route.ID]
+			return !a && b
+		})
+	}
+	if _, demoted := prefs.DemotedRouteIDs[prefs.StickyRouteID]; prefs.StickyRouteID != 0 && !demoted {
+		moveRouteToFront(cands, prefs.StickyRouteID)
+	}
 	if prefs.PinnedRouteID != 0 {
-		for i := range cands {
-			if cands[i].Route.ID == prefs.PinnedRouteID {
-				pinned := cands[i]
-				copy(cands[1:i+1], cands[:i])
-				cands[0] = pinned
-				break
-			}
-		}
+		moveRouteToFront(cands, prefs.PinnedRouteID)
 	}
 	return cands
+}
+
+// moveRouteToFront 把指定路由挪到最前，其余保持原顺序；不在候选里（冷却 / 停用 / 已试过）则不动。
+func moveRouteToFront(cands []ScoredRoute, routeID uint) {
+	for i := range cands {
+		if cands[i].Route.ID == routeID {
+			picked := cands[i]
+			copy(cands[1:i+1], cands[:i])
+			cands[0] = picked
+			return
+		}
+	}
 }
 
 // shufflePriorityTiers 同优先级的连续一段随机打散（候选已按优先级降序排好）。

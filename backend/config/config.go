@@ -153,7 +153,7 @@ const (
 	DefaultGatewayUsageErrorHeaderValueRunes = 8 * 1024
 	DefaultGatewayUsageErrorHeadersJSONBytes = 64 * 1024
 	DefaultGatewayStreamKeepaliveSeconds     = 15
-	DefaultGatewayStreamIdleTimeoutSeconds   = 120
+	DefaultGatewayStreamIdleTimeoutSeconds   = 180 // 同 sub2api gateway.stream_data_interval_timeout
 	DefaultGatewayStreamMaxLineBytes         = 8 << 20
 	DefaultGatewayMaxRequestBodyBytes        = 64 << 20
 	DefaultGatewayProtocolEngine             = "relaykit"
@@ -251,7 +251,7 @@ func (u UpstreamConfig) WithDefaults() UpstreamConfig {
 type GatewayConfig struct {
 	// TempPauseSeconds 新建组默认临时暂停时长（秒），对应路由冷却。
 	TempPauseSeconds int `mapstructure:"tempPauseSeconds" yaml:"tempPauseSeconds" json:"tempPauseSeconds"`
-	// ForwardTimeoutSeconds 单次上游转发/流式 drain 超时（秒）。
+	// ForwardTimeoutSeconds 单次上游转发超时（秒）。流式只管到收到第一段上游数据为止，之后看 StreamIdleTimeoutSeconds。
 	ForwardTimeoutSeconds int `mapstructure:"forwardTimeoutSeconds" yaml:"forwardTimeoutSeconds" json:"forwardTimeoutSeconds"`
 	// ModelsCacheTTLSeconds 公开 /v1/models 列表缓存 TTL（秒）。
 	ModelsCacheTTLSeconds int `mapstructure:"modelsCacheTTLSeconds" yaml:"modelsCacheTTLSeconds" json:"modelsCacheTTLSeconds"`
@@ -266,7 +266,7 @@ type GatewayConfig struct {
 	UsageErrorHeadersJSONBytes int `mapstructure:"usageErrorHeadersJSONBytes" yaml:"usageErrorHeadersJSONBytes" json:"usageErrorHeadersJSONBytes"`
 	// StreamKeepaliveSeconds 已提交 SSE 流的下游保活间隔（秒）。
 	StreamKeepaliveSeconds int `mapstructure:"streamKeepaliveSeconds" yaml:"streamKeepaliveSeconds" json:"streamKeepaliveSeconds"`
-	// StreamIdleTimeoutSeconds 上游 SSE 收到有效数据后的最大空闲时长（秒）。
+	// StreamIdleTimeoutSeconds 上游 SSE 收到有效数据后的最大空闲时长（秒）；流式不设总时长，靠它兜底卡住的流。
 	StreamIdleTimeoutSeconds int `mapstructure:"streamIdleTimeoutSeconds" yaml:"streamIdleTimeoutSeconds" json:"streamIdleTimeoutSeconds"`
 	// StreamMaxLineBytes 上游单条 SSE 行最大字节数。
 	StreamMaxLineBytes int `mapstructure:"streamMaxLineBytes" yaml:"streamMaxLineBytes" json:"streamMaxLineBytes"`

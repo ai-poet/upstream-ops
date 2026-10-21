@@ -648,6 +648,33 @@ func (r *GatewayRoutes) SetTempUnschedulable(id uint, until time.Time, reason st
 	}).Error
 }
 
+// SetTempUnschedulableForSource 让共用同一上游账号的路由一起冷却（余额属于账号，不属于某条路由）：
+// 监控渠道按 source_channel_id，直连渠道按 gateway_provider_id，跨组生效；已经冷却得更久的不缩短。
+// 返回受影响的路由数。
+func (r *GatewayRoutes) SetTempUnschedulableForSource(sourceKind string, sourceID uint, until time.Time, reason string, failedAt time.Time, requestID string) (n int64, err error) {
+	defer bumpGatewayConfig(&err)
+	if sourceID == 0 {
+		return 0, nil
+	}
+	if failedAt.IsZero() {
+		failedAt = time.Now()
+	}
+	q := r.db.Model(&GatewayRoute{})
+	if sourceKind == GatewayRouteSourceProvider {
+		q = q.Where("gateway_provider_id = ? AND (source_kind = ? OR (source_kind = '' AND source_channel_id = 0))", sourceID, GatewayRouteSourceProvider)
+	} else {
+		q = q.Where("source_channel_id = ? AND source_kind IN ?", sourceID, []string{GatewayRouteSourceMonitor, ""})
+	}
+	res := q.Where("temp_unschedulable_until IS NULL OR temp_unschedulable_until < ?", until).Updates(map[string]any{
+		"temp_unschedulable_until":      until,
+		"temp_unschedulable_reason":     reason,
+		"temp_unschedulable_at":         failedAt,
+		"temp_unschedulable_request_id": strings.TrimSpace(requestID),
+		"recover_success_streak":        0,
+	})
+	return res.RowsAffected, res.Error
+}
+
 // CountUnschedulable 当前在冷却中（temp_unschedulable_until 未到期）与自动禁用中的路由数（指标用）。
 func (r *GatewayRoutes) CountUnschedulable(now time.Time) (paused, autoDisabled int64, err error) {
 	if err = r.db.Model(&GatewayRoute{}).Where("temp_unschedulable_until > ?", now).Count(&paused).Error; err != nil {

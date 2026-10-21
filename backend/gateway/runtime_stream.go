@@ -133,7 +133,12 @@ func (rt *Runtime) forwardStreamPlan(ctx context.Context, c *gin.Context, call u
 		upBase = context.WithoutCancel(ctx)
 	}
 	gwCfg := rt.gatewayRuntime()
-	upCtx, upCancel := context.WithTimeout(upBase, gwCfg.ForwardTimeout())
+	// 转发超时只管到收到第一段上游数据为止：之后由「数据间隔」超时兜底（streamIdleTimeout），
+	// 不给整条流设总时长。以前 10 分钟一到就掐，GPT-6.x 的长 Codex 回合正好在 600 秒被网关切断
+	// （线上 3 天约 240 次，几乎都已经在出字）。sub2api 也是只设流数据间隔超时（gateway.stream_data_interval_timeout）。
+	upCtx, upCancel := context.WithCancelCause(upBase)
+	forwardDeadline := time.AfterFunc(gwCfg.ForwardTimeout(), func() { upCancel(context.DeadlineExceeded) })
+	defer forwardDeadline.Stop()
 
 	// 可取消：仅首字超时 / 未 commit 的客户端断开时 abort
 	reqCtx, abortReq := context.WithCancel(upCtx)
@@ -150,7 +155,7 @@ func (rt *Runtime) forwardStreamPlan(ctx context.Context, c *gin.Context, call u
 				_ = upstreamBody.Close()
 			}
 			abortReq()
-			upCancel()
+			upCancel(context.Canceled)
 			if !drained {
 				rt.metrics.upstreamStreamReset()
 			}
@@ -177,7 +182,9 @@ func (rt *Runtime) forwardStreamPlan(ctx context.Context, c *gin.Context, call u
 		return streamAttemptResult{Err: err}
 	}
 
-	client := rt.httpClientForTarget(call.target.Channel, call.target.Provider)
+	// 共享 client 的 Timeout（= 转发超时）连读响应体也算在内，会照样把长流掐断；流式用不带 Timeout 的副本，
+	// 时长由上面的 context 控制
+	client := streamHTTPClient(rt.httpClientForTarget(call.target.Channel, call.target.Provider))
 	start := time.Now()
 	resp, err := doHTTPWithFirstTokenDeadline(reqCtx, abortReq, client, req, start, call.firstTokenTimeout)
 	if err != nil {
@@ -193,6 +200,12 @@ func (rt *Runtime) forwardStreamPlan(ctx context.Context, c *gin.Context, call u
 		start:             start,
 		firstTokenTimeout: call.firstTokenTimeout,
 		result:            streamAttemptResult{Status: resp.StatusCode, Headers: resp.Header.Clone()},
+		// 收到第一段有效数据后停掉总时长：有数据间隔超时才停，否则保留它兜底卡死的流
+		stopForwardDeadline: func() {
+			if gwCfg.StreamIdleTimeout() > 0 {
+				forwardDeadline.Stop()
+			}
+		},
 	}
 	// 非 2xx：整包读错误体，不 commit，供 retry/failover（错误体不受首字超时约束）
 	if s.result.Status < 200 || s.result.Status >= 300 {

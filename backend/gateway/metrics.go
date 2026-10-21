@@ -30,7 +30,7 @@ type Metrics struct {
 	attemptsMu sync.Mutex
 	attempts   map[string]int64 // 上游尝试结果：success / transport / first_token_timeout / http_429 / http_5xx / http_4xx / config / client
 
-	routeCooldowns      [3]atomic.Int64 // 按原因：http / transport / first_token_timeout
+	routeCooldowns      [4]atomic.Int64 // 按原因：http / transport / first_token_timeout / account
 	routeAutoDisables   atomic.Int64
 	routeCooldownBorrow atomic.Int64 // 所有路由都在冷却时借用最早到期路由的次数
 	upstreamResets      atomic.Int64 // 收到协议终态后，上游在宽限期内没结束、被网关重置（RST）的流
@@ -65,9 +65,11 @@ const (
 	cooldownReasonHTTP = iota
 	cooldownReasonTransport
 	cooldownReasonFirstTokenTimeout
+	// cooldownReasonAccount 账号级失败（余额 / 鉴权 / 无权限）
+	cooldownReasonAccount
 )
 
-var cooldownReasonNames = [3]string{"http", "transport", "first_token_timeout"}
+var cooldownReasonNames = [4]string{"http", "transport", "first_token_timeout", "account"}
 
 func (m *Metrics) observeRequest(status int, d time.Duration) {
 	if m == nil {

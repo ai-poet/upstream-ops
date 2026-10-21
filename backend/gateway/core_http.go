@@ -117,6 +117,14 @@ func newUpstreamClient(proxy string, timeout time.Duration) *http.Client {
 	return &http.Client{Timeout: timeout, Transport: transport}
 }
 
+// streamHTTPClient 流式转发用的 client：共享 client 的副本（同一个 Transport），Timeout 为 0，
+// 时长由调用方的 context 控制（见 forwardStreamPlan）。
+func streamHTTPClient(base *http.Client) *http.Client {
+	c := *base
+	c.Timeout = 0
+	return &c
+}
+
 // websocketHTTPClient 给 WebSocket 拨号用的 client：coder/websocket 要求 Timeout 为 0（由 context 控制），
 // 返回共享 client 的副本（同一个 Transport，连接池照旧复用），不改共享 client 本身。
 func websocketHTTPClient(base *http.Client) *http.Client {

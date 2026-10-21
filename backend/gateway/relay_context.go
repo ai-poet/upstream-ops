@@ -38,6 +38,8 @@ type relayRequest struct {
 	thinkingEnabled bool
 	billing         pricing.BillingInput
 
+	// sessionKey 会话标识（哈希，空表示认不出），用于会话粘性
+	sessionKey        string
 	routes            []storage.GatewayRoute // 已按转发模型过滤
 	groupsByChannel   map[uint][]connector.APIKeyGroup
 	groupMapping      ModelMap
@@ -93,6 +95,8 @@ type routeChoice struct {
 	reasoningEffort string
 	// firstTokenTimeout 本路由实际用的首字超时：没有可顺延的下家时关闭（0）
 	firstTokenTimeout time.Duration
+	// stripThinking 上游回了 thinking 签名错误：本路由后续尝试把 thinking 块降级成文本（见 thinking_retry.go）
+	stripThinking bool
 }
 
 // newRouteChoice 按组与路由的模型映射算出上游模型。
@@ -164,6 +168,10 @@ type failoverState struct {
 	lastStatus int
 	lastBody   []byte // 已转成客户端协议的上游错误体
 	lastErr    error
+	// lastEcho 最后一次失败是「换路由」类（账号级 / 4xx 顺延）：没有下家时原样回上游的状态码、错误体与响应头，
+	// 与不顺延时直接回显一致（错误体为空也照回，而不是改成 502）
+	lastEcho    bool
+	lastHeaders http.Header
 
 	// reply 尝试以 attemptDone 结束且需要回错误时（不可重试的上游错误、请求本身有误）要回的错误；成功时为 nil
 	reply *gatewayError
@@ -177,6 +185,9 @@ func (st *failoverState) fail(e *gatewayError) attemptNext {
 
 // lastFailure 所有尝试都没成功时回什么：有上游错误体就原样回（已转成客户端协议），否则按最后的错误回网关错误。
 func (st *failoverState) lastFailure() *gatewayError {
+	if st.lastStatus > 0 && st.lastEcho {
+		return upstreamError(st.lastStatus, st.lastBody, st.lastHeaders)
+	}
 	if st.lastStatus > 0 && len(st.lastBody) > 0 {
 		return upstreamError(st.lastStatus, st.lastBody, nil)
 	}
@@ -228,9 +239,15 @@ type usageRecord struct {
 	usageOutcome
 }
 
-// recordAttempt 为一次转发尝试记一条用量，并计入上游尝试指标。
+// recordAttempt 为一次转发尝试记一条用量，并计入上游尝试指标；成功时把会话绑到这条路由。
 func (rt *Runtime) recordAttempt(req *relayRequest, at *relayAttempt, out usageOutcome) {
 	rt.metrics.observeAttempt(out.success, out.errInfo.Type, out.status, isFirstTokenTimeout(out.err))
+	if out.success {
+		if req.key != nil && req.group != nil {
+			rt.sessions.bind(req.group.ID, req.key.ID, req.sessionKey, at.route.ID)
+		}
+		rt.modelGaps.clear(at.route.ID, req.model)
+	}
 	rt.recordUsage(req.c, usageRecord{
 		key:            req.key,
 		group:          req.group,

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bejix/upstream-ops/backend/gateway/protocol"
+	"github.com/bejix/upstream-ops/backend/storage"
 )
 
 // runAttempt 一次上游尝试；budget 是本路由剩下的重试次数（失败后由它决定重试还是收尾、冷却）。
@@ -96,6 +97,10 @@ func (rt *Runtime) prepareAttempt(req *relayRequest, at *relayAttempt, st *failo
 		return attemptNextRoute
 	}
 	plan.GeminiArray = req.in.GeminiArray
+	// 上次在这条路由上撞了 thinking 签名错误：去掉 thinking 块再发（同 sub2api FilterThinkingBlocksForRetry）
+	if at.stripThinking && protocol.NormalizeKind(at.upstreamKind) == protocol.KindAnthropic {
+		fwdBody = filterThinkingBlocksForRetry(fwdBody, at.upstreamModel)
+	}
 	// 查询串：没做协议转换（同协议、透传端点）时原样带给上游，如 Anthropic 的 ?beta=true、Azure 的 ?api-version=；
 	// 跨协议时上游端点换了，原查询串对它没有意义，不带。网关自己的 ?key= / ?api_key= 已在 forwardQuery 去掉
 	if req.query != "" && (!plan.Converted || protocol.IsPassthroughEndpoint(path)) {
@@ -277,14 +282,29 @@ func (rt *Runtime) handleAttemptFailure(req *relayRequest, at *relayAttempt, st 
 	if decision.Reason != "" && !clientCanceled {
 		errInfo.Detail = strings.TrimRight(errInfo.Detail, "\n") + "\nfailover_decision: " + decision.Reason + "\n"
 	}
+	// 这条路由没有这个模型：10 分钟内同模型的请求把它排到最后（见 session_affinity.go）
+	if decision.Action == failSkipRoute && decision.Reason == "model_unavailable" {
+		rt.modelGaps.note(at.route.ID, req.model)
+	}
+	st.lastEcho, st.lastHeaders = false, nil
 	if out.Err != nil {
 		st.lastErr = out.Err
 	} else {
+		st.lastEcho, st.lastHeaders = decision.Action == failSwitchRoute, out.Headers
 		st.lastStatus = out.Status
 		st.lastBody = convertErrorBody(out.Body, req.in.Kind, at.upstreamKind, at.plan.Converted)
 		st.lastErr = fmt.Errorf("upstream status %d: %s", out.Status, errInfo.Summary)
 	}
 	failed := usageOutcome{status: out.Status, errInfo: errInfo, durationMS: out.durationMS, firstTokenMS: out.FirstTokenMS, err: out.Err}
+
+	// thinking 签名错误：去掉 thinking 块在同一路由补试一次，不占组配置的重试次数（同 sub2api）
+	if !clientCanceled && shouldRetryWithoutThinking(at, out) {
+		at.stripThinking = true
+		failed.errInfo.Detail = strings.TrimRight(failed.errInfo.Detail, "\n") + "\nfailover_decision: thinking_signature_retry\n"
+		rt.recordAttempt(req, at, failed)
+		budget.backoff = 0
+		return attemptRetry
+	}
 
 	// 不可重试的错误（默认 4xx、上下文超长等）：直接回显给客户端
 	if decision.Action == failStop && !clientCanceled && out.Err == nil {
@@ -360,6 +380,8 @@ func (rt *Runtime) pauseRouteAfterFailure(req *relayRequest, at *relayAttempt, d
 		reason = truncateRunes(errInfo.Detail, 4000)
 	}
 	switch {
+	case decision.Action == failSwitchRoute && decision.Cooldown > 0:
+		return rt.pauseRouteForAccountFailure(req, at, decision, errInfo, reason)
 	case decision.Action == failDisableRoute:
 		rt.metrics.routeAutoDisabled()
 		_ = rt.Routes.SetAutoDisabled(at.route.ID, reason, time.Now(), req.id)
@@ -388,4 +410,39 @@ func (rt *Runtime) pauseRouteAfterFailure(req *relayRequest, at *relayAttempt, d
 		return &until
 	}
 	return nil
+}
+
+// pauseRouteForAccountFailure 账号级失败（余额 / 鉴权 / 无权限）：照 sub2api handleOpenAI403，路由冷却 10 分钟，
+// 180 分钟内第 3 次直接自动禁用（后台恢复探测成功后恢复）。不看组的冷却秒数——那是给瞬时错误的，
+// 组冷却为 0 时，余额耗尽的路由以前每个请求都要先打一遍。余额耗尽按上游账号算，同渠道的路由一起冷却。
+func (rt *Runtime) pauseRouteForAccountFailure(req *relayRequest, at *relayAttempt, decision failureDecision, errInfo usageErrorInfo, reason string) *time.Time {
+	now := time.Now()
+	if strikes := rt.routeHealth.noteAccountFailure(at.route.ID, now); strikes >= accountFailuresBeforeDisable {
+		rt.metrics.routeAutoDisabled()
+		rt.routeHealth.clearAccountFailures(at.route.ID)
+		_ = rt.Routes.SetAutoDisabled(at.route.ID, fmt.Sprintf("%d 次账号级失败（%s）\n%s", strikes, decision.Reason, reason), now, req.id)
+		if rt.Log != nil {
+			rt.Log.Warn("gateway route auto-disabled after repeated account failures",
+				"request_id", req.id, "route_id", at.route.ID, "reason", decision.Reason, "strikes", strikes, "err", errInfo.Summary)
+		}
+		return nil
+	}
+	until := now.Add(decision.Cooldown)
+	rt.metrics.routeCooledDown(cooldownReasonAccount)
+	if decision.ChannelWide {
+		kind := at.route.NormalizeSourceKind()
+		sourceID := at.route.SourceChannelID
+		if kind == storage.GatewayRouteSourceProvider {
+			sourceID = at.route.GatewayProviderID
+		}
+		if n, err := rt.Routes.SetTempUnschedulableForSource(kind, sourceID, until, reason, now, req.id); err == nil && n > 0 {
+			if rt.Log != nil {
+				rt.Log.Warn("gateway routes paused: upstream account out of balance",
+					"request_id", req.id, "route_id", at.route.ID, "source_kind", kind, "source_id", sourceID, "routes", n)
+			}
+			return &until
+		}
+	}
+	_ = rt.Routes.SetTempUnschedulable(at.route.ID, until, reason, now, req.id)
+	return &until
 }
