@@ -417,10 +417,15 @@ func (rt *Runtime) pauseRouteAfterFailure(req *relayRequest, at *relayAttempt, d
 // 组冷却为 0 时，余额耗尽的路由以前每个请求都要先打一遍。余额耗尽按上游账号算，同渠道的路由一起冷却。
 func (rt *Runtime) pauseRouteForAccountFailure(req *relayRequest, at *relayAttempt, decision failureDecision, errInfo usageErrorInfo, reason string) *time.Time {
 	now := time.Now()
+	// 原因开头写明分类：余额类冷却要靠它认出来，充值后提前恢复（balance_watch.go）
+	reason = "账号级失败：" + decision.Reason + "\n" + reason
+	if decision.ChannelWide && at.route.NormalizeSourceKind() == storage.GatewayRouteSourceMonitor {
+		rt.watchChannelBalance(at.route.SourceChannelID)
+	}
 	if strikes := rt.routeHealth.noteAccountFailure(at.route.ID, now); strikes >= accountFailuresBeforeDisable {
 		rt.metrics.routeAutoDisabled()
 		rt.routeHealth.clearAccountFailures(at.route.ID)
-		_ = rt.Routes.SetAutoDisabled(at.route.ID, fmt.Sprintf("%d 次账号级失败（%s）\n%s", strikes, decision.Reason, reason), now, req.id)
+		_ = rt.Routes.SetAutoDisabled(at.route.ID, fmt.Sprintf("累计 %d 次%s", strikes, reason), now, req.id)
 		if rt.Log != nil {
 			rt.Log.Warn("gateway route auto-disabled after repeated account failures",
 				"request_id", req.id, "route_id", at.route.ID, "reason", decision.Reason, "strikes", strikes, "err", errInfo.Summary)

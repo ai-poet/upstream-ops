@@ -1220,6 +1220,20 @@ func (s *Service) RevealAPIKey(ctx context.Context, channelID uint, keyID int64)
 	return key, nil
 }
 
+// GetChannelBalance 查一次渠道当前余额（与监控采集同一个接口，已按充值倍率换算），不写快照。
+// 网关在路由因余额不足冷却期间用它判断是否已经充值（gateway/balance_watch.go）。
+func (s *Service) GetChannelBalance(ctx context.Context, channelID uint) (float64, error) {
+	_, resolved, conn, session, err := s.prepareConnectorCall(ctx, channelID)
+	if err != nil {
+		return 0, err
+	}
+	res, err := conn.GetBalance(ctx, resolved, session)
+	if err != nil {
+		return 0, err
+	}
+	return res.Balance, nil
+}
+
 func (s *Service) prepareConnectorCall(ctx context.Context, channelID uint) (*storage.Channel, *connector.Channel, connector.Connector, *connector.AuthSession, error) {
 	c, err := s.Channels.FindByID(channelID)
 	if err != nil {

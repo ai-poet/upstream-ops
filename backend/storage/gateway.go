@@ -675,6 +675,38 @@ func (r *GatewayRoutes) SetTempUnschedulableForSource(sourceKind string, sourceI
 	return res.RowsAffected, res.Error
 }
 
+// ListBalancePausedRoutes 某监控渠道下因余额不足还停着的路由：冷却未到期，或累计停用（原因里带 marker）。
+func (r *GatewayRoutes) ListBalancePausedRoutes(channelID uint, marker string, now time.Time) ([]uint, error) {
+	var ids []uint
+	like := "%" + marker + "%"
+	err := r.db.Model(&GatewayRoute{}).
+		Where("source_channel_id = ? AND source_kind IN ?", channelID, []string{GatewayRouteSourceMonitor, ""}).
+		Where("(temp_unschedulable_until > ? AND temp_unschedulable_reason LIKE ?) OR (auto_disabled = ? AND auto_disabled_reason LIKE ?)",
+			now, like, true, like).
+		Pluck("id", &ids).Error
+	return ids, err
+}
+
+// ResumeRoutes 结束这些路由的冷却（恢复调度），自动禁用只解除原因里带 marker 的——
+// 同一路由若因别的原因（如密钥失效）被停用，不跟着恢复。保留错误原因 / 时间 / request_id 供排查。
+func (r *GatewayRoutes) ResumeRoutes(ids []uint, marker string) (err error) {
+	defer bumpGatewayConfig(&err)
+	if len(ids) == 0 {
+		return nil
+	}
+	like := "%" + marker + "%"
+	return r.db.Exec(
+		`UPDATE gateway_routes SET
+		   temp_unschedulable_until = NULL,
+		   auto_disabled = CASE WHEN auto_disabled_reason LIKE ? THEN ? ELSE auto_disabled END,
+		   auto_disabled_at = CASE WHEN auto_disabled_reason LIKE ? THEN NULL ELSE auto_disabled_at END,
+		   auto_disabled_reason = CASE WHEN auto_disabled_reason LIKE ? THEN '' ELSE auto_disabled_reason END,
+		   updated_at = ?
+		 WHERE id IN ?`,
+		like, false, like, like, time.Now(), ids,
+	).Error
+}
+
 // CountUnschedulable 当前在冷却中（temp_unschedulable_until 未到期）与自动禁用中的路由数（指标用）。
 func (r *GatewayRoutes) CountUnschedulable(now time.Time) (paused, autoDisabled int64, err error) {
 	if err = r.db.Model(&GatewayRoute{}).Where("temp_unschedulable_until > ?", now).Count(&paused).Error; err != nil {

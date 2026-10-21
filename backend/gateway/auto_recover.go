@@ -22,6 +22,7 @@ func (s *Service) StartAutoRecover() {
 	stop := make(chan struct{})
 	s.autoRecoverStop = stop
 	go s.autoRecoverLoop(stop)
+	go s.balanceWatchLoop(stop)
 }
 
 func (s *Service) stopAutoRecover() {

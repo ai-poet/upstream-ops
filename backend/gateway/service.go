@@ -78,6 +78,10 @@ type core struct {
 	sessions  *sessionAffinity
 	modelGaps *modelGaps
 
+	// 余额不足冷却期间盯着的渠道（见 balance_watch.go）
+	balanceMu sync.Mutex
+	balance   balanceWatches
+
 	autoRecoverMu   sync.Mutex
 	autoRecoverStop chan struct{}
 
