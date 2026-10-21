@@ -446,6 +446,12 @@ func (r *GatewayRoutes) SaveForGroup(groupID uint, list []GatewayRoute) (err err
 			list[i].GatewayGroupID = groupID
 			list[i].Position = i
 			normalizeGatewayRoute(&list[i])
+			// 已有路由沿用原来的创建时间：客户端传来的是零值，Save 会把它写回去，
+			// MySQL 严格模式（NO_ZERO_DATE）拒绝 '0000-00-00'（Error 1292），整组路由保存失败。
+			// 以前只在来源没变时才沿用，换了来源渠道的路由就会撞上
+			if hasPrev {
+				list[i].CreatedAt = prev.CreatedAt
+			}
 
 			// 保留已有上游密钥 / 暂停状态：来源未变时不丢
 			sameSource := hasPrev &&
@@ -464,7 +470,6 @@ func (r *GatewayRoutes) SaveForGroup(groupID uint, list []GatewayRoute) (err err
 				list[i].AutoDisabled = prev.AutoDisabled
 				list[i].AutoDisabledAt = prev.AutoDisabledAt
 				list[i].AutoDisabledReason = prev.AutoDisabledReason
-				list[i].CreatedAt = prev.CreatedAt
 			} else {
 				list[i].SourceAPIKeyID = 0
 				list[i].SourceAPIKeyName = ""
