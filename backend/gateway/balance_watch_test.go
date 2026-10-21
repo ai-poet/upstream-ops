@@ -69,7 +69,7 @@ func TestBalanceWatch_ResumesRoutesAfterRecharge(t *testing.T) {
 	}
 
 	svc.checkBalanceWatches(context.Background()) // 取基线 0.03
-	api.set(0.01)                                  // 在途请求还在扣
+	api.set(0.01)                                 // 在途请求还在扣
 	svc.checkBalanceWatches(context.Background())
 	if r, _ := routes.FindByID(failing.ID); r.TempUnschedulableUntil == nil {
 		t.Fatal("resumed without a recharge")
