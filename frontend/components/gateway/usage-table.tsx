@@ -685,6 +685,72 @@ async function copyText(label: string, text: string) {
   }
 }
 
+const FAILOVER_REASON_LABELS: Record<string, string> = {
+  thinking_signature: "thinking 签名无效",
+  account_balance: "余额不足",
+  account_forbidden: "无权限",
+  account_auth: "密钥无效",
+  model_unavailable: "上游没有这个模型",
+  context_length: "上下文超长",
+  transport: "网络 / 流错误",
+  protocol_convert: "协议转换失败",
+  config: "路由配置错误",
+  task_not_found: "任务不在这条路由",
+  auto_disable: "命中自动停用规则",
+}
+
+function failoverReasonLabel(reason?: string): string {
+  if (!reason) return ""
+  if (FAILOVER_REASON_LABELS[reason]) return FAILOVER_REASON_LABELS[reason]
+  const m = /^http_(\d{3})(_html)?$/.exec(reason)
+  if (m) return `HTTP ${m[1]}${m[2] ? "（拦截页）" : ""}`
+  return reason
+}
+
+const NEXT_ACTION_LABELS: Record<string, string> = {
+  retry_same_route: "同路由重试",
+  retry_without_thinking: "去掉 thinking 块后同路由重试",
+  switch_route: "换下一条路由",
+  give_up: "没有可换的路由，错误回给客户端",
+  stop: "不可重试，错误直接回给客户端",
+  client_gone: "客户端已断开，停止重试",
+  disable_route: "路由自动停用",
+  cooldown: "路由冷却",
+}
+
+/** 失败之后的处理步骤（按先后），冷却带上截止时间 */
+function nextActionSteps(u: GatewayUsageLog): string[] {
+  return (u.next_action || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((step) => {
+      if (step === "cooldown" && u.cooldown_until) {
+        return `路由冷却至 ${fullDateTime(u.cooldown_until)}`
+      }
+      return NEXT_ACTION_LABELS[step] ?? step
+    })
+}
+
+/** 重试轨迹的一步：失败原因 → 网关的处理 */
+function TrailLine({ u, className }: { u: GatewayUsageLog; className?: string }) {
+  const reason = failoverReasonLabel(u.failover_reason)
+  const steps = nextActionSteps(u)
+  if (!reason && steps.length === 0) return null
+  return (
+    <div className={cn("flex min-w-0 flex-wrap items-center gap-x-1 text-[11px] text-muted-foreground", className)}>
+      <span className="text-violet-700 dark:text-violet-300">↳</span>
+      {reason ? <span className="font-medium text-foreground/80">{reason}</span> : null}
+      {steps.map((s, i) => (
+        <span key={i} className="min-w-0">
+          {reason || i > 0 ? "→ " : ""}
+          {s}
+        </span>
+      ))}
+    </div>
+  )
+}
+
 function attemptKindLabel(kind?: string) {
   switch (kind) {
     case "retry":
@@ -780,6 +846,11 @@ function StatusCell({
           冷却至 {fullDateTime(u.cooldown_until)}
         </div>
       ) : null}
+      {!u.success && u.next_action ? (
+        <div className="text-[10px] text-violet-700 dark:text-violet-300">
+          → {nextActionSteps(u).filter((s) => !s.startsWith("路由冷却")).join(" → ")}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -796,7 +867,7 @@ function ChainTimeline({
   return (
     <div className="space-y-2 rounded-lg border border-violet-200/70 bg-violet-50/40 p-3 dark:border-violet-900/40 dark:bg-violet-950/20">
       <div className="min-w-0 text-xs font-medium text-violet-900 dark:text-violet-200">
-        同请求链路 · {rows.length} 次尝试
+        重试轨迹 · {rows.length} 次尝试
         <span className="ml-2 break-all font-mono text-[10px] font-normal text-muted-foreground">
           {rows[0]?.request_id}
         </span>
@@ -853,6 +924,7 @@ function ChainTimeline({
                   </button>
                 ) : null}
               </div>
+              {!r.success ? <TrailLine u={r} className="mt-1 pl-8" /> : null}
               {errOpen ? (
                 <div className="mt-2 min-w-0 border-t border-border/60 pt-2">
                   <ErrorDetailPanel u={r} />
@@ -879,6 +951,8 @@ function ErrorDetailPanel({ u }: { u: GatewayUsageLog }) {
     `type: ${u.error_type || "—"}`,
     `url: ${u.upstream_url || "—"}`,
     `cooldown_until: ${u.cooldown_until || "—"}`,
+    `failover_reason: ${u.failover_reason || "—"}`,
+    `next_action: ${u.next_action || "—"}`,
     "",
     "--- summary ---",
     u.error_message || "(none)",
@@ -944,6 +1018,14 @@ function ErrorDetailPanel({ u }: { u: GatewayUsageLog }) {
             {u.protocol_converted ? "（已转换）" : ""}
           </div>
         </div>
+        {u.failover_reason || u.next_action ? (
+          <div className="sm:col-span-2">
+            <div className="text-[10px] uppercase tracking-wide text-muted-foreground">网关的处理</div>
+            <div>
+              {[failoverReasonLabel(u.failover_reason), ...nextActionSteps(u)].filter(Boolean).join(" → ")}
+            </div>
+          </div>
+        ) : null}
       </div>
       {u.error_detail ? (
         <div>

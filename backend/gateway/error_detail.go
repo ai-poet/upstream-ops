@@ -27,7 +27,10 @@ type usageRecordMeta struct {
 	Attempt           int
 	AttemptKind       string
 	CooldownUntil     *time.Time
-	BillingInput      pricing.BillingInput
+	// FailoverReason / NextAction 失败分类与之后的处理（见 retry_trail.go）
+	FailoverReason string
+	NextAction     string
+	BillingInput   pricing.BillingInput
 }
 
 // usageErrorInfo 失败请求的结构化错误信息（摘要 + 上游原文）。

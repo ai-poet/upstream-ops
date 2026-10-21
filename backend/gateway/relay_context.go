@@ -121,6 +121,8 @@ type relayAttempt struct {
 	call         upstreamCall
 	// meta 随阶段补全：解析目标 → 定上游协议 → 转换完成（失败时只记已知的部分）
 	meta usageRecordMeta
+	// routeDisabled 这次失败让路由被自动停用（写进重试轨迹）
+	routeDisabled bool
 }
 
 // upstreamCall 发往上游的一次 HTTP 调用。

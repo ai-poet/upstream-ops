@@ -47,11 +47,13 @@ func (rt *Runtime) prepareAttempt(req *relayRequest, at *relayAttempt, st *failo
 	target, err := rt.resolveUpstreamTarget(&at.route)
 	if err != nil {
 		st.lastErr = err
-		rt.recordAttempt(req, at, usageOutcome{errInfo: usageErrorInfo{
+		info := usageErrorInfo{
 			Type:    "config",
 			Summary: err.Error(),
 			Detail:  fmt.Sprintf("config error\nroute_id: %d\nsource_kind: %s\nerror: %s\n", at.route.ID, at.route.NormalizeSourceKind(), err.Error()),
-		}})
+		}
+		rt.markTrail(at, &info, failoverReasonConfig, rt.failoverNextAction(req, st))
+		rt.recordAttempt(req, at, usageOutcome{errInfo: info})
 		// 配置错误：不再重试同路由，进入顺延判断
 		return attemptNextRoute
 	}
@@ -85,13 +87,20 @@ func (rt *Runtime) prepareAttempt(req *relayRequest, at *relayAttempt, st *failo
 		st.lastStatus = 0
 		at.meta.UpstreamProtocol = string(at.upstreamKind)
 		at.meta.ProtocolConverted = true
-		rt.recordAttempt(req, at, usageOutcome{errInfo: usageErrorInfo{
+		info := usageErrorInfo{
 			Type:    "config",
 			Summary: convErr.Error(),
 			Detail:  fmt.Sprintf("protocol convert failed\nroute_id: %d\ninbound: %s\nupstream: %s\nerror: %s\n", at.route.ID, kind, at.upstreamKind, convErr.Error()),
-		}})
+		}
 		// 请求里的图片 / 文件下载失败：换哪条路由都一样，直接回 400
-		if mediaErr := mediaFetchFailure(req.convCtx); mediaErr != nil {
+		mediaErr := mediaFetchFailure(req.convCtx)
+		action := rt.failoverNextAction(req, st)
+		if mediaErr != nil {
+			action = nextActionStop
+		}
+		rt.markTrail(at, &info, failoverReasonProtocolConvert, action)
+		rt.recordAttempt(req, at, usageOutcome{errInfo: info})
+		if mediaErr != nil {
 			return st.fail(newGatewayError(http.StatusBadRequest, "invalid_request_error", "failed to load media from the request: "+mediaErr.Error()))
 		}
 		return attemptNextRoute
@@ -279,9 +288,6 @@ func (rt *Runtime) handleAttemptFailure(req *relayRequest, at *relayAttempt, st 
 		annotateClientContextError(&errInfo, c, at.meta.UpstreamURL, c.Request.Method, out.Err)
 	}
 	decision := rt.classifyFailure(req.group, out.Status, out.Headers, out.Body, out.Err, req.in.TaskID != "", req.model, at.upstreamModel)
-	if decision.Reason != "" && !clientCanceled {
-		errInfo.Detail = strings.TrimRight(errInfo.Detail, "\n") + "\nfailover_decision: " + decision.Reason + "\n"
-	}
 	// 这条路由没有这个模型：10 分钟内同模型的请求把它排到最后（见 session_affinity.go）
 	if decision.Action == failSkipRoute && decision.Reason == "model_unavailable" {
 		rt.modelGaps.note(at.route.ID, req.model)
@@ -300,7 +306,7 @@ func (rt *Runtime) handleAttemptFailure(req *relayRequest, at *relayAttempt, st 
 	// thinking 签名错误：去掉 thinking 块在同一路由补试一次，不占组配置的重试次数（同 sub2api）
 	if !clientCanceled && shouldRetryWithoutThinking(at, out) {
 		at.stripThinking = true
-		failed.errInfo.Detail = strings.TrimRight(failed.errInfo.Detail, "\n") + "\nfailover_decision: thinking_signature_retry\n"
+		rt.markTrail(at, &failed.errInfo, failoverReasonThinkingSignature, nextActionRetryWithoutThinking)
 		rt.recordAttempt(req, at, failed)
 		budget.backoff = 0
 		return attemptRetry
@@ -308,6 +314,7 @@ func (rt *Runtime) handleAttemptFailure(req *relayRequest, at *relayAttempt, st 
 
 	// 不可重试的错误（默认 4xx、上下文超长等）：直接回显给客户端
 	if decision.Action == failStop && !clientCanceled && out.Err == nil {
+		rt.markTrail(at, &failed.errInfo, decision.Reason, nextActionStop)
 		rt.recordAttempt(req, at, failed)
 		return st.fail(upstreamError(out.Status, st.lastBody, out.Headers))
 	}
@@ -318,6 +325,22 @@ func (rt *Runtime) handleAttemptFailure(req *relayRequest, at *relayAttempt, st 
 	if !clientCanceled { // 客户端取消不冷却
 		at.meta.CooldownUntil = rt.pauseRouteAfterFailure(req, at, decision, errInfo, out.Status, !willRetry, transient)
 	}
+	var action string
+	switch {
+	case clientCanceled:
+		action = nextActionClientGone
+	case !req.policy.enabled:
+		action = nextActionStop
+	case willRetry:
+		action = nextActionRetrySameRoute
+	default:
+		action = rt.failoverNextAction(req, st)
+	}
+	reason := decision.Reason
+	if clientCanceled {
+		reason = ""
+	}
+	rt.markTrail(at, &failed.errInfo, reason, action)
 	rt.recordAttempt(req, at, failed)
 	if rt.Log != nil {
 		rt.Log.Warn("gateway upstream fail",
@@ -384,6 +407,7 @@ func (rt *Runtime) pauseRouteAfterFailure(req *relayRequest, at *relayAttempt, d
 		return rt.pauseRouteForAccountFailure(req, at, decision, errInfo, reason)
 	case decision.Action == failDisableRoute:
 		rt.metrics.routeAutoDisabled()
+		at.routeDisabled = true
 		_ = rt.Routes.SetAutoDisabled(at.route.ID, reason, time.Now(), req.id)
 		if rt.Log != nil {
 			rt.Log.Warn("gateway route auto-disabled", "request_id", req.id, "route_id", at.route.ID, "status", status, "err", errInfo.Summary)
@@ -424,6 +448,7 @@ func (rt *Runtime) pauseRouteForAccountFailure(req *relayRequest, at *relayAttem
 	}
 	if strikes := rt.routeHealth.noteAccountFailure(at.route.ID, now); strikes >= accountFailuresBeforeDisable {
 		rt.metrics.routeAutoDisabled()
+		at.routeDisabled = true
 		rt.routeHealth.clearAccountFailures(at.route.ID)
 		_ = rt.Routes.SetAutoDisabled(at.route.ID, fmt.Sprintf("累计 %d 次%s", strikes, reason), now, req.id)
 		if rt.Log != nil {

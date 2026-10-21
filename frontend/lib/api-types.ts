@@ -850,6 +850,10 @@ export interface GatewayUsageLog {
   attempt_kind?: string
   /** 本条失败触发的冷却截止 */
   cooldown_until?: string | null
+  /** 失败分类（account_balance、thinking_signature、http_400 等） */
+  failover_reason?: string
+  /** 失败之后网关做了什么，逗号连接（如 cooldown,switch_route）；同请求的尝试串起来就是重试轨迹 */
+  next_action?: string
   requested_model: string
   upstream_model?: string
   model_mapping_chain?: string

@@ -115,6 +115,8 @@ func (rt *Runtime) recordUsage(c *gin.Context, u usageRecord) {
 		Attempt:               attempt,
 		AttemptKind:           attemptKind,
 		CooldownUntil:         u.meta.CooldownUntil,
+		FailoverReason:        u.meta.FailoverReason,
+		NextAction:            u.meta.NextAction,
 		RequestedModel:        u.requestedModel,
 		UpstreamModel:         u.upstreamModel,
 		ModelMappingChain:     u.chain,

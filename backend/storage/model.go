@@ -582,6 +582,11 @@ type GatewayUsageLog struct {
 	AttemptKind string `gorm:"size:16;not null;default:'primary'" json:"attempt_kind,omitempty"`
 	// 本条失败后写入的冷却截止（若有），便于日志展示
 	CooldownUntil     *time.Time `json:"cooldown_until,omitempty"`
+	// FailoverReason 这次失败的分类（如 account_balance、thinking_signature、http_400），成功时为空
+	FailoverReason string `gorm:"size:48;not null;default:''" json:"failover_reason,omitempty"`
+	// NextAction 这次失败之后网关做了什么，按先后用逗号连接（如 cooldown,switch_route），
+	// 与同 request_id 的后续尝试串起来就是重试轨迹
+	NextAction string `gorm:"size:64;not null;default:''" json:"next_action,omitempty"`
 	RequestedModel    string     `gorm:"size:256;not null;index" json:"requested_model"`
 	UpstreamModel     string     `gorm:"size:256" json:"upstream_model,omitempty"`
 	ModelMappingChain string     `gorm:"size:512" json:"model_mapping_chain,omitempty"`
