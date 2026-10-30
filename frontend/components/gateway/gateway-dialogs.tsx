@@ -707,6 +707,23 @@ export function GroupFormDialog({
               rows={2}
             />
           </div>
+          <div className="space-y-1">
+            <Label htmlFor="gateway-group-rate">Sub2API 分组倍率</Label>
+            <Input
+              id="gateway-group-rate"
+              type="number"
+              min="0.0001"
+              step="0.0001"
+              value={groupForm.rate_multiplier}
+              onChange={(e) =>
+                setGroupForm({ ...groupForm, rate_multiplier: e.target.value })
+              }
+              placeholder="1"
+            />
+            <p className="text-[11px] leading-5 text-muted-foreground">
+              组内所有密钥共用，通过 /v1/sub2api/billing 供 Sub2API 探测展示；不影响路由账号计费倍率。
+            </p>
+          </div>
           {editingGroup && (
             <div className="flex items-center gap-2">
               <Switch

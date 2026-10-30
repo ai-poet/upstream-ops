@@ -13,6 +13,7 @@ type AuthResult struct {
 type CreateGroupInput struct {
 	Name                  string `json:"name"`
 	Description           string `json:"description"`
+	RateMultiplier        *float64 `json:"rate_multiplier"`
 	RateSortDirection     string `json:"rate_sort_direction"`
 	RateResortEnabled     *bool  `json:"rate_resort_enabled"`
 	ModelMappingJSON      string `json:"model_mapping"`
@@ -40,6 +41,7 @@ type UpdateGroupInput struct {
 	Name                  *string `json:"name"`
 	Description           *string `json:"description"`
 	Status                *string `json:"status"`
+	RateMultiplier        *float64 `json:"rate_multiplier"`
 	RateSortDirection     *string `json:"rate_sort_direction"`
 	RateResortEnabled     *bool   `json:"rate_resort_enabled"`
 	ModelMappingJSON      *string `json:"model_mapping"`

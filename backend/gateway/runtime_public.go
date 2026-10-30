@@ -247,6 +247,27 @@ func (rt *Runtime) HandleCountTokens(c *gin.Context) {
 	})
 }
 
+// HandleSub2APIBilling 按 Sub2API 协议声明当前密钥所属网关分组的倍率。
+func (rt *Runtime) HandleSub2APIBilling(c *gin.Context) {
+	_ = ensureGatewayRequestID(c)
+	auth, err := rt.Authenticate(c)
+	if err != nil {
+		writeError(c, protocolOpenAI, authError(err.Error()))
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{
+		"object":                    "sub2api.key_billing",
+		"schema_version":            1,
+		"billing_scope":             "token",
+		"group_rate_multiplier":     auth.Group.RateMultiplier,
+		"resolved_rate_multiplier":  auth.Group.RateMultiplier,
+		"peak_rate_enabled":         false,
+		"effective_rate_multiplier": auth.Group.RateMultiplier,
+		"observed_at":               time.Now().UTC().Format(time.RFC3339Nano),
+	})
+}
+
 // HandleUsage 用量相关端点。
 func (rt *Runtime) HandleUsage(c *gin.Context) {
 	_ = ensureGatewayRequestID(c)

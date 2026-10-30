@@ -25,6 +25,7 @@ export type GroupFormState = {
   name: string
   description: string
   status: "active" | "disabled"
+  rate_multiplier: string
   rate_resort_enabled: boolean
   retry_enabled: boolean
   retry_count: string
@@ -584,6 +585,7 @@ export const emptyGroupForm = (): GroupFormState => ({
   name: "",
   description: "",
   status: "active",
+  rate_multiplier: "1",
   rate_resort_enabled: false,
   retry_enabled: true,
   retry_count: "0",

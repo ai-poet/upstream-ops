@@ -203,6 +203,7 @@ func registerAllGatewayRoutes(r *gin.Engine, s *Service) {
 	v1 := r.Group("/v1")
 	{
 		v1.GET("/usage", rt.HandleUsage)
+		v1.GET("/sub2api/billing", rt.HandleSub2APIBilling)
 		v1.POST("/completions", fwd("/v1/completions", chat))
 		v1.POST("/messages", fwd("/v1/messages", anth))
 

@@ -418,6 +418,7 @@ type GatewayGroup struct {
 	// Position 侧栏展示与管理端列表顺序（越小越靠前）；新建组追加到末尾。
 	Position          int    `gorm:"not null;default:0;index" json:"position"`
 	Status            string `gorm:"size:16;not null;default:'active';index" json:"status"`
+	RateMultiplier    float64 `gorm:"not null;default:1" json:"rate_multiplier"`
 	RateSortDirection string `gorm:"size:16;not null;default:'asc'" json:"rate_sort_direction"`
 	// RateResortEnabled 渠道分组价格倍率重排：开启后，倍率扫描结束时按源分组实时倍率
 	// 重写路由 position 与 billing_rate_multiplier。

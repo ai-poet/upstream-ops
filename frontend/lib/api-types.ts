@@ -583,6 +583,8 @@ export interface GatewayGroup {
   /** 侧栏排序，越小越靠前 */
   position?: number
   status: GatewayGroupStatus
+  /** 通过 /v1/sub2api/billing 向 Sub2API 声明的分组倍率 */
+  rate_multiplier: number
   rate_sort_direction: GatewayRateSortDirection
   /**
    * 渠道分组价格倍率重排：开启后，倍率扫描结束时按源分组实时倍率

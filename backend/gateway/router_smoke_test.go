@@ -19,6 +19,7 @@ func TestRegisterPublicRoutes(t *testing.T) {
 	}
 	for _, route := range []string{
 		"GET /v1/models/:model",
+		"GET /v1/sub2api/billing",
 		"GET /models",
 		"POST /messages/count_tokens",
 		"POST /v1/images/generations/async",

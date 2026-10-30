@@ -734,6 +734,7 @@ export function GatewayPage() {
       name: g.name,
       description: g.description ?? "",
       status: g.status === "disabled" ? "disabled" : "active",
+      rate_multiplier: String(g.rate_multiplier ?? 1),
       rate_resort_enabled: !!g.rate_resort_enabled,
       retry_enabled: g.retry_enabled !== false,
       retry_count: String(g.retry_count ?? 0),
@@ -758,6 +759,11 @@ export function GatewayPage() {
       toast.error("请填写组名称")
       return
     }
+    const rateMultiplier = Number(groupForm.rate_multiplier)
+    if (!Number.isFinite(rateMultiplier) || rateMultiplier <= 0) {
+      toast.error("分组倍率必须大于 0")
+      return
+    }
     const retryCount = Math.max(0, Math.min(10, Number(groupForm.retry_count) || 0))
     const failoverMax = Math.max(0, Math.min(32, Number(groupForm.failover_max) || 0))
     const cooldownSeconds = Math.max(
@@ -769,6 +775,7 @@ export function GatewayPage() {
     if (firstTokenTimeout > 0 && firstTokenTimeout < 1) firstTokenTimeout = 1
     if (firstTokenTimeout > 300) firstTokenTimeout = 300
     const policy = {
+      rate_multiplier: rateMultiplier,
       rate_resort_enabled: groupForm.rate_resort_enabled,
       retry_enabled: groupForm.retry_enabled,
       retry_count: retryCount,

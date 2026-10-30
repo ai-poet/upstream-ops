@@ -3,6 +3,7 @@ package gateway
 
 import (
 	"errors"
+	"math"
 	"strings"
 
 	"github.com/bejix/upstream-ops/backend/storage"
@@ -16,6 +17,13 @@ func (a *AdminService) CreateGroup(in CreateGroupInput) (*storage.GatewayGroup, 
 	}
 	if _, err := a.Groups.FindByName(name); err == nil {
 		return nil, errors.New("name already exists")
+	}
+	rateMultiplier := 1.0
+	if in.RateMultiplier != nil {
+		rateMultiplier = *in.RateMultiplier
+	}
+	if rateMultiplier <= 0 || math.IsNaN(rateMultiplier) || math.IsInf(rateMultiplier, 0) {
+		return nil, errors.New("rate_multiplier must be > 0")
 	}
 	dir := strings.ToLower(strings.TrimSpace(in.RateSortDirection))
 	if dir != "desc" {
@@ -89,6 +97,7 @@ func (a *AdminService) CreateGroup(in CreateGroupInput) (*storage.GatewayGroup, 
 		Description:           strings.TrimSpace(in.Description),
 		Position:              pos,
 		Status:                storage.GatewayGroupStatusActive,
+		RateMultiplier:        rateMultiplier,
 		RateSortDirection:     dir,
 		RateResortEnabled:     rateResort,
 		ModelMappingJSON:      strings.TrimSpace(in.ModelMappingJSON),
@@ -133,6 +142,12 @@ func (a *AdminService) UpdateGroup(id uint, in UpdateGroupInput) (*storage.Gatew
 	}
 	if in.Description != nil {
 		item.Description = strings.TrimSpace(*in.Description)
+	}
+	if in.RateMultiplier != nil {
+		if *in.RateMultiplier <= 0 || math.IsNaN(*in.RateMultiplier) || math.IsInf(*in.RateMultiplier, 0) {
+			return nil, errors.New("rate_multiplier must be > 0")
+		}
+		item.RateMultiplier = *in.RateMultiplier
 	}
 	if in.Status != nil {
 		st := strings.TrimSpace(*in.Status)
