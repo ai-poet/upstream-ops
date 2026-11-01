@@ -267,6 +267,7 @@ type UsageQueryOpts = {
 type UsagePanelProps = {
   usage: GatewayUsagePage | null
   usageStats: GatewayUsageStats | null
+  usageStatsLoading: boolean
   usageLoading: boolean
   groups: GatewayGroup[]
   usageKeys: GatewayKey[]
@@ -285,7 +286,6 @@ type UsagePanelProps = {
   setUsageFrom: (v: string) => void
   usageTo: string
   setUsageTo: (v: string) => void
-  usagePage: number
   setUsagePage: (v: number) => void
   usagePageSize: number
   setUsagePageSize: (v: number) => void
@@ -298,6 +298,7 @@ type UsagePanelProps = {
 export function UsagePanel({
   usage,
   usageStats,
+  usageStatsLoading,
   usageLoading,
   groups,
   usageKeys,
@@ -316,7 +317,6 @@ export function UsagePanel({
   setUsageFrom,
   usageTo,
   setUsageTo,
-  usagePage,
   setUsagePage,
   usagePageSize,
   setUsagePageSize,
@@ -713,7 +713,7 @@ export function UsagePanel({
             }}
           />
         </div>
-        {/* 分页：始终展示总数；多页时显示翻页与每页条数 */}
+        {/* 分页：总数由 stats 后台补齐；未知总数时用 has_more 判断下一页 */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/60 pt-3 text-sm">
           <div className="text-muted-foreground">
             {usageLoading ? (
@@ -725,7 +725,7 @@ export function UsagePanel({
               <>
                 共{" "}
                 <span className="font-medium tabular-nums text-foreground">
-                  {usage?.total ?? 0}
+                  {usageStatsLoading ? "统计中…" : usageStats ? (usage?.total ?? 0) : "—"}
                 </span>{" "}
                 条
                 {(usage?.pages ?? 0) > 0 ? (
@@ -801,7 +801,7 @@ export function UsagePanel({
               disabled={
                 usageLoading ||
                 !usage ||
-                (usage.page ?? 1) >= (usage.pages || 1)
+                (!(usage.has_more ?? false) && (usage.page ?? 1) >= (usage.pages || 1))
               }
               onClick={() => goUsagePage((usage?.page ?? 1) + 1)}
             >

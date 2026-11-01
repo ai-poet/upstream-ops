@@ -829,7 +829,7 @@ Each forward attempt (success or failure) tries to write a usage row, field styl
 
 Admin UI: list filters, stats aggregation, model filter options, cleanup API, and selected-record deletion (including retry/failover rows shown for the same requests on the current page). Clients may call `GET /v1/usage` with a gateway key (see actual response shape).
 
-Besides time-based and full cleanup, the cleanup API accepts `{"ids":[1,2],"confirm":true}` for ID-based deletion (up to 2000 rows per call); `dry_run:true` only returns the match count. Admin list requests use `include_sum=false` to skip the cost aggregate already provided by stats, and pagination/page-size changes reuse the current stats.
+Besides time-based and full cleanup, the cleanup API accepts `{"ids":[1,2],"confirm":true}` for ID-based deletion (up to 2000 rows per call); `dry_run:true` only returns the match count. Time-based and full cleanup delete in primary-key batches of 5000 to avoid one long-running DELETE on large tables. Admin list requests use `include_sum=false&include_total=false` to skip duplicate aggregates, and deep pages fetch page IDs before the full rows. Cost and exact totals are filled in by stats in the background without blocking list loading or pagination.
 
 ### Compatibility paths
 

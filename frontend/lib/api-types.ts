@@ -925,6 +925,7 @@ export interface GatewayUsagePage {
   page_size: number
   pages: number
   sum_cost: number
+  has_more: boolean
 }
 
 export interface GatewayUsageStats {

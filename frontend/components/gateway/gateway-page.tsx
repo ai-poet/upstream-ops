@@ -138,6 +138,7 @@ export function GatewayPage() {
 
   const [usage, setUsage] = useState<GatewayUsagePage | null>(null)
   const [usageStats, setUsageStats] = useState<GatewayUsageStats | null>(null)
+  const [usageStatsLoading, setUsageStatsLoading] = useState(false)
   /** 使用记录独立筛选，不跟左侧网关组；默认全部 */
   const [usageGroupFilter, setUsageGroupFilter] = useState<string>("all")
   const [usageKeys, setUsageKeys] = useState<GatewayKey[]>([])
@@ -429,7 +430,10 @@ export function GatewayPage() {
       includeStats?: boolean
     }) => {
       const seq = ++usageSeqRef.current
+      const includeStats = opts?.includeStats !== false
       setUsageLoading(true)
+      setUsageStatsLoading(includeStats)
+      if (includeStats) setUsageStats(null)
       try {
         // 分页参数必须由调用方传入当前筛选态，避免闭包依赖 page 导致 effect 循环
         const pageNum = opts?.page ?? 1
@@ -439,8 +443,9 @@ export function GatewayPage() {
         const qs = new URLSearchParams({
           page: String(pageNum),
           page_size: String(size),
-          // 费用卡片使用 stats.total_actual_cost，列表无需再扫描一遍 SUM。
+          // 列表只取当前页；费用与精确总数由 stats 后台补齐。
           include_sum: "false",
+          include_total: "false",
         })
         const gid = opts?.groupID
         if (gid != null && gid !== "" && gid !== "all" && Number(gid) > 0) {
@@ -465,19 +470,48 @@ export function GatewayPage() {
           const iso = usageTimeToRFC3339(opts.to)
           if (iso) qs.set("to", iso)
         }
-        const [page, stats] = await Promise.all([
-          apiFetch<GatewayUsagePage>(`/gateway/usage?${qs}`),
-          opts?.includeStats === false
-            ? Promise.resolve(null)
-            : apiFetch<GatewayUsageStats>(`/gateway/usage/stats?${qs}`),
-        ])
+
+        const page = await apiFetch<GatewayUsagePage>(`/gateway/usage?${qs}`)
         if (seq !== usageSeqRef.current) return
-        setUsage(page)
-        if (stats) setUsageStats(stats)
+        setUsage((previous) => {
+          if (includeStats || !previous) return page
+          const total = previous.total ?? 0
+          return {
+            ...page,
+            total,
+            pages: total > 0 ? Math.ceil(total / size) : 0,
+          }
+        })
         setUsagePage(page.page || pageNum)
         if (page.page_size > 0) setUsagePageSize(page.page_size)
+
+        if (includeStats) {
+          // 大表统计可能耗时数十秒，后台更新卡片和总数，不阻塞列表或删除完成。
+          void apiFetch<GatewayUsageStats>(`/gateway/usage/stats?${qs}`)
+            .then((stats) => {
+              if (seq !== usageSeqRef.current) return
+              setUsageStats(stats)
+              setUsage((current) => {
+                if (!current) return current
+                const total = stats.total_requests ?? 0
+                return {
+                  ...current,
+                  total,
+                  pages: total > 0 ? Math.ceil(total / current.page_size) : 0,
+                }
+              })
+            })
+            .catch((e) => {
+              if (seq !== usageSeqRef.current) return
+              toast.error(e instanceof Error ? e.message : "加载使用统计失败")
+            })
+            .finally(() => {
+              if (seq === usageSeqRef.current) setUsageStatsLoading(false)
+            })
+        }
       } catch (e) {
         if (seq !== usageSeqRef.current) return
+        setUsageStatsLoading(false)
         toast.error(e instanceof Error ? e.message : "加载使用记录失败")
       } finally {
         if (seq === usageSeqRef.current) setUsageLoading(false)
@@ -699,8 +733,9 @@ export function GatewayPage() {
   ])
 
   function goUsagePage(p: number) {
-    const pages = Math.max(1, usage?.pages ?? 1)
-    const next = Math.max(1, Math.min(pages, p))
+    const pages = usage?.pages ?? 0
+    let next = Math.max(1, p)
+    if (pages > 0) next = Math.min(pages, next)
     setUsagePage(next)
     void loadUsage({ ...usageQueryOpts(next, usagePageSize), includeStats: false })
   }
@@ -1929,6 +1964,7 @@ export function GatewayPage() {
           <UsagePanel
             usage={usage}
             usageStats={usageStats}
+            usageStatsLoading={usageStatsLoading}
             usageLoading={usageLoading}
             groups={groups}
             usageKeys={usageKeys}
@@ -1947,7 +1983,6 @@ export function GatewayPage() {
             setUsageFrom={setUsageFrom}
             usageTo={usageTo}
             setUsageTo={setUsageTo}
-            usagePage={usagePage}
             setUsagePage={setUsagePage}
             usagePageSize={usagePageSize}
             setUsagePageSize={setUsagePageSize}

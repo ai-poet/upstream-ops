@@ -16,19 +16,23 @@ import (
 func TestParseGatewayUsageQueryIncludeSum(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, tc := range []struct {
-		query string
-		want  bool
+		query         string
+		wantSkipSum   bool
+		wantSkipTotal bool
 	}{
-		{query: "", want: false},
-		{query: "include_sum=true", want: false},
-		{query: "include_sum=false", want: true},
-		{query: "include_sum=0", want: true},
+		{query: "", wantSkipSum: false, wantSkipTotal: false},
+		{query: "include_sum=true&include_total=true", wantSkipSum: false, wantSkipTotal: false},
+		{query: "include_sum=false&include_total=false", wantSkipSum: true, wantSkipTotal: true},
+		{query: "include_sum=0&include_total=0", wantSkipSum: true, wantSkipTotal: true},
 	} {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Request = httptest.NewRequest(http.MethodGet, "/api/gateway/usage?"+tc.query, nil)
 		q := parseGatewayUsageQuery(c)
-		if q.SkipCostSum != tc.want {
-			t.Fatalf("query %q: SkipCostSum = %v, want %v", tc.query, q.SkipCostSum, tc.want)
+		if q.SkipCostSum != tc.wantSkipSum {
+			t.Fatalf("query %q: SkipCostSum = %v, want %v", tc.query, q.SkipCostSum, tc.wantSkipSum)
+		}
+		if q.SkipTotal != tc.wantSkipTotal {
+			t.Fatalf("query %q: SkipTotal = %v, want %v", tc.query, q.SkipTotal, tc.wantSkipTotal)
 		}
 	}
 }

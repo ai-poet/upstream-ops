@@ -867,6 +867,8 @@ func (r *GatewayUsageLogs) CountAll() (int64, error) {
 	return n, err
 }
 
+const gatewayUsageDeleteBatchSize = 5000
+
 // DeleteBefore 删除 created_at < before 的使用记录，返回删除行数。
 func (r *GatewayUsageLogs) DeleteBefore(before time.Time) (int64, error) {
 	if before.IsZero() {
@@ -878,15 +880,51 @@ func (r *GatewayUsageLogs) DeleteBefore(before time.Time) (int64, error) {
 	} else {
 		q = q.Where("created_at < ?", before)
 	}
-	res := q.Delete(&GatewayUsageLog{})
-	return res.RowsAffected, res.Error
+	return r.deleteInBatches(q, gatewayUsageDeleteBatchSize)
 }
 
-// DeleteAll 删除全部使用记录，返回删除行数。
-// GORM 要求 Delete 带条件，故使用 1=1。
+// deleteInBatches 按主键分批删除，避免大表清理产生单条超长 DELETE 和长时间持锁。
+// maxID 固定本次清理边界，避免持续写入时 DeleteAll 永远追不上新记录。
+func (r *GatewayUsageLogs) deleteInBatches(scope *gorm.DB, batchSize int) (int64, error) {
+	if batchSize <= 0 {
+		return 0, fmt.Errorf("delete batch size must be positive")
+	}
+	if !isSQLite(scope) {
+		// 清理通常从最旧（最小 ID）记录开始；强制主键避免 created_at 索引带来逐批 filesort。
+		scope = scope.Table("gateway_usage_logs FORCE INDEX (PRIMARY)")
+	}
+	var maxID uint
+	if err := scope.Session(&gorm.Session{}).Select("COALESCE(MAX(id),0)").Scan(&maxID).Error; err != nil {
+		return 0, err
+	}
+	if maxID == 0 {
+		return 0, nil
+	}
+	scope = scope.Where("id <= ?", maxID)
+
+	var total int64
+	for {
+		var ids []uint
+		if err := scope.Session(&gorm.Session{}).Select("id").Order("id ASC").Limit(batchSize).Find(&ids).Error; err != nil {
+			return total, err
+		}
+		if len(ids) == 0 {
+			return total, nil
+		}
+		res := r.db.Where("id IN ?", ids).Delete(&GatewayUsageLog{})
+		total += res.RowsAffected
+		if res.Error != nil {
+			return total, res.Error
+		}
+		if len(ids) < batchSize {
+			return total, nil
+		}
+	}
+}
+
+// DeleteAll 分批删除全部使用记录，返回删除行数。
 func (r *GatewayUsageLogs) DeleteAll() (int64, error) {
-	res := r.db.Where("1 = 1").Delete(&GatewayUsageLog{})
-	return res.RowsAffected, res.Error
+	return r.deleteInBatches(r.db.Model(&GatewayUsageLog{}), gatewayUsageDeleteBatchSize)
 }
 
 func normalizeGatewayUsageIDs(ids []uint) ([]uint, error) {
@@ -952,6 +990,8 @@ type GatewayUsageQuery struct {
 	PageSize   int
 	// SkipCostSum 跳过全量费用汇总；管理端翻页使用统计接口的费用数据。
 	SkipCostSum bool
+	// SkipTotal 跳过全量计数；管理端用 stats.total_requests 异步补齐总数。
+	SkipTotal bool
 }
 
 // GatewayUsageLogItem 列表展示用：原始日志 + 关联名称（非多租户用户字段）。
@@ -972,6 +1012,7 @@ type GatewayUsagePage struct {
 	PageSize int                   `json:"page_size"`
 	Pages    int                   `json:"pages"`
 	SumCost  float64               `json:"sum_cost"`
+	HasMore  bool                  `json:"has_more"`
 }
 
 type GatewayUsageStats struct {
@@ -1130,18 +1171,41 @@ func (r *GatewayUsageLogs) List(q GatewayUsageQuery) (*GatewayUsagePage, error) 
 	}
 	db := r.applyFilters(r.db.Model(&GatewayUsageLog{}), q)
 	var total int64
-	if err := db.Count(&total).Error; err != nil {
-		return nil, err
+	if !q.SkipTotal {
+		if err := db.Count(&total).Error; err != nil {
+			return nil, err
+		}
 	}
 	var sum float64
 	if !q.SkipCostSum {
 		_ = db.Session(&gorm.Session{}).Select("COALESCE(SUM(actual_cost),0)").Scan(&sum).Error
 	}
 
-	var rows []GatewayUsageLog
 	offset := (q.Page - 1) * q.PageSize
-	if err := db.Order("id DESC").Offset(offset).Limit(q.PageSize).Find(&rows).Error; err != nil {
+	queryLimit := q.PageSize
+	if q.SkipTotal {
+		// 多取一个 ID 判断是否有下一页，无需为了翻页扫描精确总数。
+		queryLimit++
+	}
+	var pageIDs []uint
+	if err := db.Session(&gorm.Session{}).
+		Select("id").Order("id DESC").Offset(offset).Limit(queryLimit).Find(&pageIDs).Error; err != nil {
 		return nil, err
+	}
+	hasMore := len(pageIDs) > q.PageSize
+	if hasMore {
+		pageIDs = pageIDs[:q.PageSize]
+	}
+
+	// 延迟关联：OFFSET 只扫描主键，再按本页 ID 回表，避免深分页读取大量完整日志行。
+	var rows []GatewayUsageLog
+	if len(pageIDs) > 0 {
+		if err := r.db.Where("id IN ?", pageIDs).Order("id DESC").Find(&rows).Error; err != nil {
+			return nil, err
+		}
+	}
+	if !q.SkipTotal {
+		hasMore = int64(offset+len(rows)) < total
 	}
 	items, err := r.enrichUsageItems(rows)
 	if err != nil {
@@ -1158,6 +1222,7 @@ func (r *GatewayUsageLogs) List(q GatewayUsageQuery) (*GatewayUsagePage, error) 
 		PageSize: q.PageSize,
 		Pages:    pages,
 		SumCost:  sum,
+		HasMore:  hasMore,
 	}, nil
 }
 

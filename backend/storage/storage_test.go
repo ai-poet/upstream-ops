@@ -1286,6 +1286,18 @@ func (l *usageSQLLogger) contains(substr string) bool {
 	return false
 }
 
+func (l *usageSQLLogger) count(substr string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var n int
+	for _, statement := range l.statements {
+		if strings.Contains(statement, substr) {
+			n++
+		}
+	}
+	return n
+}
+
 func TestGatewayUsageListSkipCostSum(t *testing.T) {
 	db := openTestDB(t)
 	capture := &usageSQLLogger{Interface: logger.Default.LogMode(logger.Silent)}
@@ -1319,5 +1331,69 @@ func TestGatewayUsageListSkipCostSum(t *testing.T) {
 	}
 	if capture.contains("SUM(actual_cost)") {
 		t.Fatalf("skip cost sum still executed aggregate SQL: %v", capture.statements)
+	}
+}
+
+func TestGatewayUsageListSkipTotal(t *testing.T) {
+	db := openTestDB(t)
+	capture := &usageSQLLogger{Interface: logger.Default.LogMode(logger.Silent)}
+	usage := NewGatewayUsageLogs(db.Session(&gorm.Session{Logger: capture}))
+	for i := 0; i < 3; i++ {
+		if err := usage.Create(&GatewayUsageLog{RequestID: string(rune('a' + i)), RequestedModel: "gpt-4o"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	capture.reset()
+
+	page, err := usage.List(GatewayUsageQuery{Page: 1, PageSize: 2, SkipTotal: true, SkipCostSum: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 0 || page.Pages != 0 || !page.HasMore || len(page.Items) != 2 {
+		t.Fatalf("first page = %+v", page)
+	}
+	if page.Items[0].ID != 3 || page.Items[1].ID != 2 {
+		t.Fatalf("rows are not in descending ID order: %+v", page.Items)
+	}
+	if capture.contains("COUNT(*)") {
+		t.Fatalf("skip total still executed count SQL: %v", capture.statements)
+	}
+
+	last, err := usage.List(GatewayUsageQuery{Page: 2, PageSize: 2, SkipTotal: true, SkipCostSum: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last.HasMore || len(last.Items) != 1 || last.Items[0].ID != 1 {
+		t.Fatalf("last page = %+v", last)
+	}
+}
+
+func TestGatewayUsageDeleteInBatches(t *testing.T) {
+	db := openTestDB(t)
+	capture := &usageSQLLogger{Interface: logger.Default.LogMode(logger.Silent)}
+	usage := NewGatewayUsageLogs(db.Session(&gorm.Session{Logger: capture}))
+	for i := 0; i < 5; i++ {
+		if err := usage.Create(&GatewayUsageLog{RequestID: string(rune('a' + i)), RequestedModel: "gpt-4o"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	capture.reset()
+
+	deleted, err := usage.deleteInBatches(usage.db.Model(&GatewayUsageLog{}), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 5 {
+		t.Fatalf("deleted = %d, want 5", deleted)
+	}
+	if got := capture.count("DELETE FROM"); got != 3 {
+		t.Fatalf("delete statements = %d, want 3: %v", got, capture.statements)
+	}
+	count, err := usage.CountAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("remaining = %d, want 0", count)
 	}
 }

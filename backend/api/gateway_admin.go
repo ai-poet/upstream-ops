@@ -514,6 +514,7 @@ func parseGatewayUsageQuery(c *gin.Context) storage.GatewayUsageQuery {
 		Page:        queryInt(c, "page", 1),
 		PageSize:    queryInt(c, "page_size", 20),
 		SkipCostSum: c.Query("include_sum") == "false" || c.Query("include_sum") == "0",
+		SkipTotal:   c.Query("include_total") == "false" || c.Query("include_total") == "0",
 	}
 	if v := c.Query("group_id"); v != "" {
 		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
