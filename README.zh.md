@@ -1000,7 +1000,7 @@ x-api-key: sk-...
 
 管理页：列表筛选、stats 聚合、按模型筛选项、清理接口；支持勾选当前页记录快速删除（含当前页同请求的重试 / 顺延关联日志）。客户端可用 `GET /v1/usage`（网关密钥）查看自身用量（以接口实际返回为准）。
 
-清理接口除按时间 / 全部清理外，也支持 `{"ids":[1,2],"confirm":true}` 按 ID 删除，单次最多 2000 条；传 `dry_run:true` 时仅返回匹配数量，不删除数据。按时间 / 全部清理在服务端按主键每批 5000 条执行，避免大表单条超长 DELETE。管理端列表使用 `include_sum=false&include_total=false` 跳过重复聚合，深分页先取本页 ID 再回表；费用和精确总数由 stats 后台补齐，不阻塞列表与翻页。
+清理接口除按时间 / 全部清理外，也支持 `{"ids":[1,2],"confirm":true}` 按 ID 删除，单次最多 2000 条；传 `dry_run:true` 时仅返回匹配数量，不删除数据。管理端按时间 / 全部清理传 `async:true`，接口立即返回 `202` 和任务 ID，后台按主键每批 5000 条执行；`GET /api/gateway/usage/cleanup/status` 返回运行状态、已删除条数或错误，前端轮询进度并在完成后刷新。任务状态保存在进程内存中，重启后可安全重试清理。管理端列表使用 `include_sum=false&include_total=false` 跳过重复聚合，深分页先取本页 ID 再回表；费用和精确总数由 stats 后台补齐，不阻塞列表与翻页。
 
 ### 兼容路径速查
 
@@ -1115,6 +1115,7 @@ GET          /api/gateway/usage
 GET          /api/gateway/usage/stats
 GET          /api/gateway/usage/models
 POST         /api/gateway/usage/cleanup
+GET          /api/gateway/usage/cleanup/status
 GET/PUT      /api/gateway/prices
 GET          /api/gateway/prices/defaults
 DELETE       /api/gateway/prices/:id

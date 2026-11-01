@@ -127,3 +127,53 @@ func TestCleanupGatewayUsageByIDsDryRunAndValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestCleanupGatewayUsageAsync(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openTestDB(t)
+	usage := storage.NewGatewayUsageLogs(db)
+	for i := 0; i < 2; i++ {
+		if err := usage.Create(&storage.GatewayUsageLog{RequestID: string(rune('a' + i)), RequestedModel: "gpt-4o"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := gateway.NewService(nil, nil, nil, usage, nil, nil, nil, nil, nil)
+	r := gin.New()
+	registerGatewayAdmin(r.Group("/api"), &Deps{Gateway: svc, GatewayUsage: usage})
+
+	body := bytes.NewBufferString(`{"all":true,"confirm":true,"async":true}`)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/gateway/usage/cleanup", body))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status %d %s, want %d", rec.Code, rec.Body.String(), http.StatusAccepted)
+	}
+	var started storage.GatewayUsageCleanupJob
+	if err := json.Unmarshal(rec.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+	if started.ID == "" {
+		t.Fatalf("job id is empty: %s", rec.Body.String())
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		rec = httptest.NewRecorder()
+		r.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/gateway/usage/cleanup/status", nil))
+		if rec.Code == http.StatusOK {
+			var current storage.GatewayUsageCleanupJob
+			if err := json.Unmarshal(rec.Body.Bytes(), &current); err != nil {
+				t.Fatal(err)
+			}
+			if current.Status == storage.GatewayUsageCleanupSuccess {
+				if current.ID != started.ID || current.Deleted != 2 {
+					t.Fatalf("final job = %+v", current)
+				}
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("cleanup did not finish: %s", rec.Body.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

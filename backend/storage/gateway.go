@@ -4,6 +4,7 @@ package storage
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -815,11 +816,113 @@ func (r *GatewayRoutes) NoteSuccessForPauseError(id uint) (err error) {
 	).Error
 }
 
+type GatewayUsageCleanupStatus string
+
+const (
+	GatewayUsageCleanupRunning GatewayUsageCleanupStatus = "running"
+	GatewayUsageCleanupSuccess GatewayUsageCleanupStatus = "success"
+	GatewayUsageCleanupError   GatewayUsageCleanupStatus = "error"
+)
+
+// GatewayUsageCleanupJob 是一次后台清理的快照；进度在每批提交后更新。
+type GatewayUsageCleanupJob struct {
+	ID         string                    `json:"job_id"`
+	Status     GatewayUsageCleanupStatus `json:"status"`
+	All        bool                      `json:"all"`
+	Before     *time.Time                `json:"before,omitempty"`
+	Deleted    int64                     `json:"deleted"`
+	Error      string                    `json:"error,omitempty"`
+	StartedAt  time.Time                 `json:"started_at"`
+	FinishedAt *time.Time                `json:"finished_at,omitempty"`
+}
+
+var ErrGatewayUsageCleanupRunning = fmt.Errorf("usage cleanup already running")
+
 // GatewayUsageLogs 使用记录仓储。
-type GatewayUsageLogs struct{ db *gorm.DB }
+type GatewayUsageLogs struct {
+	db         *gorm.DB
+	cleanupMu  sync.Mutex
+	cleanupJob *GatewayUsageCleanupJob
+}
 
 // NewGatewayUsageLogs 构造用量日志仓储。
 func NewGatewayUsageLogs(db *gorm.DB) *GatewayUsageLogs { return &GatewayUsageLogs{db: db} }
+
+// StartCleanup 启动一个后台清理任务；同一实例同时只允许一个大范围清理。
+func (r *GatewayUsageLogs) StartCleanup(all bool, before *time.Time) (GatewayUsageCleanupJob, error) {
+	if !all && (before == nil || before.IsZero()) {
+		return GatewayUsageCleanupJob{}, fmt.Errorf("before time required")
+	}
+	r.cleanupMu.Lock()
+	if r.cleanupJob != nil && r.cleanupJob.Status == GatewayUsageCleanupRunning {
+		r.cleanupMu.Unlock()
+		return GatewayUsageCleanupJob{}, ErrGatewayUsageCleanupRunning
+	}
+	var beforeCopy *time.Time
+	if before != nil {
+		t := *before
+		beforeCopy = &t
+	}
+	job := &GatewayUsageCleanupJob{
+		ID:        fmt.Sprintf("usage-cleanup-%d", time.Now().UnixNano()),
+		Status:    GatewayUsageCleanupRunning,
+		All:       all,
+		Before:    beforeCopy,
+		StartedAt: time.Now(),
+	}
+	r.cleanupJob = job
+	snapshot := *job
+	r.cleanupMu.Unlock()
+
+	go r.runCleanup(all, beforeCopy)
+	return snapshot, nil
+}
+
+// LatestCleanupJob 返回最近一次任务快照；进程重启后任务状态不保留。
+func (r *GatewayUsageLogs) LatestCleanupJob() (GatewayUsageCleanupJob, bool) {
+	r.cleanupMu.Lock()
+	defer r.cleanupMu.Unlock()
+	if r.cleanupJob == nil {
+		return GatewayUsageCleanupJob{}, false
+	}
+	return *r.cleanupJob, true
+}
+
+func (r *GatewayUsageLogs) runCleanup(all bool, before *time.Time) {
+	var deleted int64
+	var err error
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("usage cleanup panic: %v", recovered)
+		}
+		r.cleanupMu.Lock()
+		if r.cleanupJob != nil {
+			r.cleanupJob.Deleted = deleted
+			r.cleanupJob.Status = GatewayUsageCleanupSuccess
+			if err != nil {
+				r.cleanupJob.Status = GatewayUsageCleanupError
+				r.cleanupJob.Error = err.Error()
+			}
+			now := time.Now()
+			r.cleanupJob.FinishedAt = &now
+		}
+		r.cleanupMu.Unlock()
+	}()
+
+	progress := func(n int64) {
+		deleted = n
+		r.cleanupMu.Lock()
+		if r.cleanupJob != nil {
+			r.cleanupJob.Deleted = n
+		}
+		r.cleanupMu.Unlock()
+	}
+	if all {
+		deleted, err = r.deleteAllWithProgress(progress)
+	} else {
+		deleted, err = r.deleteBeforeWithProgress(*before, progress)
+	}
+}
 
 // Create 插入记录。
 func (r *GatewayUsageLogs) Create(item *GatewayUsageLog) error {
@@ -871,6 +974,10 @@ const gatewayUsageDeleteBatchSize = 5000
 
 // DeleteBefore 删除 created_at < before 的使用记录，返回删除行数。
 func (r *GatewayUsageLogs) DeleteBefore(before time.Time) (int64, error) {
+	return r.deleteBeforeWithProgress(before, nil)
+}
+
+func (r *GatewayUsageLogs) deleteBeforeWithProgress(before time.Time, progress func(int64)) (int64, error) {
 	if before.IsZero() {
 		return 0, fmt.Errorf("before time required")
 	}
@@ -880,12 +987,16 @@ func (r *GatewayUsageLogs) DeleteBefore(before time.Time) (int64, error) {
 	} else {
 		q = q.Where("created_at < ?", before)
 	}
-	return r.deleteInBatches(q, gatewayUsageDeleteBatchSize)
+	return r.deleteInBatchesWithProgress(q, gatewayUsageDeleteBatchSize, progress)
 }
 
 // deleteInBatches 按主键分批删除，避免大表清理产生单条超长 DELETE 和长时间持锁。
 // maxID 固定本次清理边界，避免持续写入时 DeleteAll 永远追不上新记录。
 func (r *GatewayUsageLogs) deleteInBatches(scope *gorm.DB, batchSize int) (int64, error) {
+	return r.deleteInBatchesWithProgress(scope, batchSize, nil)
+}
+
+func (r *GatewayUsageLogs) deleteInBatchesWithProgress(scope *gorm.DB, batchSize int, progress func(int64)) (int64, error) {
 	if batchSize <= 0 {
 		return 0, fmt.Errorf("delete batch size must be positive")
 	}
@@ -916,6 +1027,9 @@ func (r *GatewayUsageLogs) deleteInBatches(scope *gorm.DB, batchSize int) (int64
 		if res.Error != nil {
 			return total, res.Error
 		}
+		if progress != nil {
+			progress(total)
+		}
 		if len(ids) < batchSize {
 			return total, nil
 		}
@@ -924,7 +1038,11 @@ func (r *GatewayUsageLogs) deleteInBatches(scope *gorm.DB, batchSize int) (int64
 
 // DeleteAll 分批删除全部使用记录，返回删除行数。
 func (r *GatewayUsageLogs) DeleteAll() (int64, error) {
-	return r.deleteInBatches(r.db.Model(&GatewayUsageLog{}), gatewayUsageDeleteBatchSize)
+	return r.deleteAllWithProgress(nil)
+}
+
+func (r *GatewayUsageLogs) deleteAllWithProgress(progress func(int64)) (int64, error) {
+	return r.deleteInBatchesWithProgress(r.db.Model(&GatewayUsageLog{}), gatewayUsageDeleteBatchSize, progress)
 }
 
 func normalizeGatewayUsageIDs(ids []uint) ([]uint, error) {

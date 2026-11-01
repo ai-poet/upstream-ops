@@ -91,6 +91,13 @@ function daysAgoLocal(days: number): string {
   return toLocalDatetimeValue(d)
 }
 
+type UsageCleanupJob = {
+  job_id: string
+  status: "running" | "success" | "error"
+  deleted: number
+  error?: string
+}
+
 function UsageCleanupDialog({
   open,
   onOpenChange,
@@ -106,6 +113,8 @@ function UsageCleanupDialog({
   const [matched, setMatched] = useState<number | null>(null)
   const [previewing, setPreviewing] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [job, setJob] = useState<UsageCleanupJob | null>(null)
+  const jobRunning = job?.status === "running"
 
   // 打开时重置
   useEffect(() => {
@@ -114,7 +123,43 @@ function UsageCleanupDialog({
     setBeforeLocal(daysAgoLocal(30))
     setAck(false)
     setMatched(null)
+    // 重新进入页面时恢复仍在运行的后台任务进度。
+    void apiFetch<UsageCleanupJob>("/gateway/usage/cleanup/status")
+      .then(setJob)
+      .catch(() => {})
   }, [open])
+
+  // 后台任务独立轮询，关闭对话框也不会中断。
+  const jobID = job?.job_id
+  const jobStatus = job?.status
+  useEffect(() => {
+    if (!jobID || jobStatus !== "running") return
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const next = await apiFetch<UsageCleanupJob>("/gateway/usage/cleanup/status")
+        if (cancelled) return
+        setJob(next)
+        if (next.status === "success") {
+          toast.success(next.deleted > 0 ? `后台清理完成，共删除 ${next.deleted} 条记录` : "没有可清理的记录")
+          onCleaned?.()
+        } else if (next.status === "error") {
+          toast.error(next.error || "后台清理失败")
+        }
+      } catch (e) {
+        if (cancelled) return
+        const message = e instanceof Error ? e.message : "查询后台清理状态失败"
+        setJob((current) => current?.job_id === jobID ? { ...current, status: "error", error: message } : current)
+        toast.error(message)
+      }
+    }
+    void poll()
+    const timer = window.setInterval(() => void poll(), 1500)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [jobID, jobStatus, onCleaned])
 
   // 条件变化时清空预览数
   useEffect(() => {
@@ -122,7 +167,7 @@ function UsageCleanupDialog({
   }, [mode, beforeLocal])
 
   const canSubmit =
-    ack && !submitting && (mode === "all" || !!beforeLocal.trim())
+    ack && !submitting && !jobRunning && (mode === "all" || !!beforeLocal.trim())
 
   const runPreview = async () => {
     setPreviewing(true)
@@ -157,26 +202,26 @@ function UsageCleanupDialog({
     try {
       const body =
         mode === "all"
-          ? { all: true, confirm: true }
+          ? { all: true, confirm: true, async: true }
           : {
               all: false,
               confirm: true,
+              async: true,
               before: localDatetimeToISO(beforeLocal) || beforeLocal,
             }
       if (mode === "before" && !localDatetimeToISO(beforeLocal)) {
         toast.error("请选择有效的截止时间")
         return
       }
-      const res = await apiFetch<{ deleted: number }>("/gateway/usage/cleanup", {
+      const started = await apiFetch<UsageCleanupJob>("/gateway/usage/cleanup", {
         method: "POST",
         body: JSON.stringify(body),
       })
-      const n = res.deleted ?? 0
-      toast.success(n > 0 ? `已清理 ${n} 条访问日志` : "没有可清理的记录")
+      setJob(started)
+      toast.success("后台清理已启动，可关闭窗口继续其他操作")
       onOpenChange(false)
-      onCleaned?.()
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "清理失败")
+      toast.error(e instanceof Error ? e.message : "启动后台清理失败")
     } finally {
       setSubmitting(false)
     }
@@ -193,6 +238,25 @@ function UsageCleanupDialog({
         </DialogHeader>
 
         <div className="space-y-4 text-sm">
+          {job ? (
+            <div className={cn(
+              "rounded-md border px-3 py-2 text-xs",
+              job.status === "error"
+                ? "border-red-200 bg-red-50/70 text-red-800 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-200"
+                : "border-blue-200 bg-blue-50/70 text-blue-800 dark:border-blue-900/50 dark:bg-blue-950/30 dark:text-blue-200",
+            )}>
+              {jobRunning ? (
+                <span className="flex items-center gap-2">
+                  <Loader2 className="size-3.5 shrink-0 animate-spin" />
+                  后台清理中，已删除 {job.deleted} 条；可关闭窗口，任务会继续执行。
+                </span>
+              ) : job.status === "success" ? (
+                `上次后台清理完成，共删除 ${job.deleted} 条记录。`
+              ) : (
+                `后台清理失败：${job.error || "未知错误"}`
+              )}
+            </div>
+          ) : null}
           <div className="rounded-md border border-amber-200 bg-amber-50/80 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-100">
             <p className="font-medium">清理说明</p>
             <ul className="mt-1 list-disc space-y-0.5 pl-4 text-amber-800/90 dark:text-amber-100/80">
@@ -200,6 +264,7 @@ function UsageCleanupDialog({
               <li>按时间清理：删除「截止时间之前」的全部记录（不含该时刻之后）</li>
               <li>清理全部：清空所有历史调用记录，无法找回</li>
               <li>建议先点「预览将删除条数」确认范围</li>
+              <li>启动后后台每批删除 5000 条，关闭窗口不会中断任务</li>
             </ul>
           </div>
 
@@ -285,7 +350,7 @@ function UsageCleanupDialog({
               size="sm"
               variant="secondary"
               className="h-8"
-              disabled={previewing || (mode === "before" && !beforeLocal.trim())}
+              disabled={previewing || jobRunning || (mode === "before" && !beforeLocal.trim())}
               onClick={() => void runPreview()}
             >
               {previewing ? (
@@ -322,7 +387,7 @@ function UsageCleanupDialog({
             disabled={submitting}
             onClick={() => onOpenChange(false)}
           >
-            取消
+            {jobRunning ? "关闭" : "取消"}
           </Button>
           <Button
             type="button"
@@ -330,12 +395,12 @@ function UsageCleanupDialog({
             disabled={!canSubmit}
             onClick={() => void runCleanup()}
           >
-            {submitting ? (
+            {submitting || jobRunning ? (
               <Loader2 className="size-3.5 animate-spin" />
             ) : (
               <Trash2 className="size-3.5" />
             )}
-            {mode === "all" ? "清理全部" : "确认清理"}
+            {jobRunning ? "后台清理中" : submitting ? "正在启动" : mode === "all" ? "后台清理全部" : "后台确认清理"}
           </Button>
         </DialogFooter>
       </DialogContent>

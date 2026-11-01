@@ -1397,3 +1397,50 @@ func TestGatewayUsageDeleteInBatches(t *testing.T) {
 		t.Fatalf("remaining = %d, want 0", count)
 	}
 }
+
+func TestGatewayUsageCleanupAsync(t *testing.T) {
+	db := openTestDB(t)
+	usage := NewGatewayUsageLogs(db)
+	for i := 0; i < 3; i++ {
+		if err := usage.Create(&GatewayUsageLog{RequestID: string(rune('a' + i)), RequestedModel: "gpt-4o"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	job, err := usage.StartCleanup(true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.ID == "" || job.Status != GatewayUsageCleanupRunning {
+		t.Fatalf("initial job = %+v", job)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		current, ok := usage.LatestCleanupJob()
+		if ok && current.Status != GatewayUsageCleanupRunning {
+			if current.Status != GatewayUsageCleanupSuccess || current.Deleted != 3 || current.Error != "" {
+				t.Fatalf("final job = %+v", current)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("cleanup did not finish: %+v", current)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	count, err := usage.CountAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("remaining = %d, want 0", count)
+	}
+}
+
+func TestGatewayUsageCleanupRejectsConcurrentJob(t *testing.T) {
+	usage := NewGatewayUsageLogs(nil)
+	usage.cleanupJob = &GatewayUsageCleanupJob{Status: GatewayUsageCleanupRunning}
+	if _, err := usage.StartCleanup(true, nil); err != ErrGatewayUsageCleanupRunning {
+		t.Fatalf("start concurrent cleanup error = %v", err)
+	}
+}

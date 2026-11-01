@@ -71,6 +71,7 @@ func registerGatewayAdmin(g *gin.RouterGroup, d *Deps) {
 		gp.GET("/usage/stats", func(c *gin.Context) { statsGatewayUsage(c, d) })
 		gp.GET("/usage/models", func(c *gin.Context) { listGatewayUsageModels(c, d) })
 		gp.POST("/usage/cleanup", func(c *gin.Context) { cleanupGatewayUsage(c, d) })
+		gp.GET("/usage/cleanup/status", func(c *gin.Context) { gatewayUsageCleanupStatus(c, d) })
 
 		// prices
 		gp.GET("/prices", func(c *gin.Context) { listGatewayPrices(c, d) })
@@ -638,6 +639,8 @@ type cleanupGatewayUsageReq struct {
 	Confirm bool   `json:"confirm"`
 	// DryRun 仅统计将删除的条数，不实际删除
 	DryRun bool `json:"dry_run"`
+	// Async 大范围清理在后台执行，立即返回任务 ID；与 DryRun 不共用。
+	Async bool `json:"async"`
 }
 
 const maxGatewayUsageCleanupIDs = 2000
@@ -655,6 +658,38 @@ func cleanupGatewayUsage(c *gin.Context, d *Deps) {
 	if !req.Confirm && !req.DryRun {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请确认清理操作（confirm=true）"})
 		return
+	}
+	if req.Async && !req.DryRun {
+		if len(req.IDs) > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "按 ID 小批量删除请使用同步接口"})
+			return
+		}
+		var before *time.Time
+		if !req.All {
+			parsed, ok := parseUsageTime(req.Before)
+			if !ok {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "请提供有效的截止时间 before"})
+				return
+			}
+			before = &parsed
+		}
+		job, err := d.GatewayUsage.StartCleanup(req.All, before)
+		if errors.Is(err, storage.ErrGatewayUsageCleanupRunning) {
+			c.JSON(http.StatusConflict, gin.H{"error": "已有后台清理任务正在执行"})
+			return
+		}
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusAccepted, job)
+		return
+	}
+	if len(req.IDs) == 0 && !req.DryRun {
+		if job, ok := d.GatewayUsage.LatestCleanupJob(); ok && job.Status == storage.GatewayUsageCleanupRunning {
+			c.JSON(http.StatusConflict, gin.H{"error": "已有后台清理任务正在执行"})
+			return
+		}
 	}
 
 	var (
@@ -708,6 +743,19 @@ func cleanupGatewayUsage(c *gin.Context, d *Deps) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"deleted": count, "all": req.All})
+}
+
+func gatewayUsageCleanupStatus(c *gin.Context, d *Deps) {
+	if d.GatewayUsage == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "usage storage unavailable"})
+		return
+	}
+	job, ok := d.GatewayUsage.LatestCleanupJob()
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "暂无后台清理任务"})
+		return
+	}
+	c.JSON(http.StatusOK, job)
 }
 
 func listGatewayPrices(c *gin.Context, d *Deps) {
