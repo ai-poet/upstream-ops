@@ -49,6 +49,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { fullDateTime, formatDurationMS, formatTokens } from "@/lib/format"
 import { apiFetch } from "@/lib/api"
+import { useConfirm } from "@/components/ui/confirm-dialog"
 import type { GatewayUsageLog } from "@/lib/api-types"
 import { cn } from "@/lib/utils"
 import { useIsMobile } from "@/hooks/use-mobile"
@@ -1326,6 +1327,9 @@ export function GatewayUsageTable({
   const [errorOpen, setErrorOpen] = useState<Record<number, boolean>>({})
   const [chainOpen, setChainOpen] = useState<Record<string, boolean>>({})
   const [cleanupOpen, setCleanupOpen] = useState(false)
+  const [selectedIDs, setSelectedIDs] = useState<Set<number>>(new Set())
+  const [deleting, setDeleting] = useState(false)
+  const { confirm, dialog: confirmDialog } = useConfirm()
   const isMobile = useIsMobile()
   const [colVisible, setColVisible] = useState<UsageColVisibility>(() =>
     loadUsageColVisibility(),
@@ -1340,8 +1344,8 @@ export function GatewayUsageTable({
     () => USAGE_COLUMNS.filter((c) => colVisible[c.id]).length,
     [colVisible],
   )
-  // 展开箭头列 + 可见数据列
-  const colSpan = 1 + visibleCount
+  // 选择列 + 展开箭头列 + 可见数据列
+  const colSpan = 2 + visibleCount
 
   const toggleCol = useCallback((id: UsageColId, next: boolean) => {
     setColVisible((prev) => {
@@ -1400,15 +1404,106 @@ export function GatewayUsageTable({
     }
   }
 
+  const selectedRows = mainRows.filter((u) => selectedIDs.has(u.id))
+  const allSelected = mainRows.length > 0 && selectedRows.length === mainRows.length
+  const someSelected = selectedRows.length > 0 && !allSelected
+
+  // 翻页或刷新后只保留仍可见的选择，避免误删上一页记录。
+  useEffect(() => {
+    const pageIDs = new Set(items.map((u) => u.id))
+    setSelectedIDs((prev) => {
+      const next = new Set([...prev].filter((id) => pageIDs.has(id)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [items])
+
+  function toggleSelected(id: number, checked: boolean) {
+    setSelectedIDs((prev) => {
+      const next = new Set(prev)
+      if (checked) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }
+
+  function toggleSelectAll(checked: boolean) {
+    setSelectedIDs(checked ? new Set(mainRows.map((u) => u.id)) : new Set())
+  }
+
+  function usageLogIDs(rows: GatewayUsageLog[]): number[] {
+    const ids = new Set<number>()
+    for (const row of rows) {
+      const rid = (row.request_id || "").trim()
+      const chain = rid ? chainByReq.get(rid) : undefined
+      for (const log of chain?.length ? chain : [row]) ids.add(log.id)
+    }
+    return [...ids]
+  }
+
+  async function deleteRows(rows: GatewayUsageLog[]) {
+    if (rows.length === 0 || deleting) return
+    const ids = usageLogIDs(rows)
+    const confirmed = await confirm({
+      title: rows.length === 1 ? "删除这条使用记录？" : `删除选中的 ${rows.length} 条使用记录？`,
+      description: `将删除所选请求及其在当前列表中的重试 / 顺延关联日志，共 ${ids.length} 条记录。删除后无法恢复。`,
+      confirmLabel: "确认删除",
+      destructive: true,
+    })
+    if (!confirmed) return
+
+    setDeleting(true)
+    try {
+      const res = await apiFetch<{ deleted: number }>("/gateway/usage/cleanup", {
+        method: "POST",
+        body: JSON.stringify({ ids, confirm: true }),
+      })
+      const deleted = res.deleted ?? 0
+      toast.success(deleted > 0 ? `已删除 ${deleted} 条使用记录` : "选中记录已不存在")
+      setSelectedIDs(new Set())
+      onCleaned?.()
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "删除使用记录失败")
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
     <TooltipProvider delayDuration={200}>
       <div className="space-y-2">
         <div className="flex items-center justify-end gap-2">
+          {isMobile ? (
+            <label className="mr-auto flex items-center gap-2 text-xs text-muted-foreground">
+              <Checkbox
+                aria-label="选择本页全部使用记录"
+                checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                disabled={deleting || mainRows.length === 0}
+                onCheckedChange={(v) => toggleSelectAll(v === true)}
+              />
+              本页全选
+            </label>
+          ) : selectedRows.length > 0 ? (
+            <span className="mr-auto text-xs text-muted-foreground">
+              已选 {selectedRows.length} 条
+            </span>
+          ) : null}
+          <Button
+            type="button"
+            size="sm"
+            variant={selectedRows.length > 0 ? "destructive" : "outline"}
+            className="h-8 gap-1.5"
+            disabled={deleting || selectedRows.length === 0}
+            onClick={() => void deleteRows(selectedRows)}
+          >
+            {deleting ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+            删除{selectedRows.length > 0 ? ` (${selectedRows.length})` : ""}
+          </Button>
           <Button
             type="button"
             size="sm"
             variant="outline"
             className="h-8 gap-1.5 text-muted-foreground hover:text-destructive"
+            disabled={deleting}
             onClick={() => setCleanupOpen(true)}
           >
             <Trash2 className="size-3.5" />
@@ -1452,6 +1547,7 @@ export function GatewayUsageTable({
           onOpenChange={setCleanupOpen}
           onCleaned={onCleaned}
         />
+        {confirmDialog}
 
         {isMobile ? (
           <div className="space-y-2">
@@ -1488,12 +1584,21 @@ export function GatewayUsageTable({
                         {u.gateway_key_name || (u.gateway_key_id ? `#${u.gateway_key_id}` : "—")}
                       </div>
                     </div>
-                    <div className="shrink-0">
-                      <StatusCell
-                        u={u}
-                        chainTotal={hasChain ? chainTotal : undefined}
-                        chainIndex={hasChain ? chainIndex || chainTotal : undefined}
+                    <div className="flex shrink-0 items-start gap-2">
+                      <Checkbox
+                        aria-label={`选择使用记录 ${u.id}`}
+                        checked={selectedIDs.has(u.id)}
+                        disabled={deleting}
+                        onCheckedChange={(v) => toggleSelected(u.id, v === true)}
+                        className="mt-1"
                       />
+                      <div className="shrink-0">
+                        <StatusCell
+                          u={u}
+                          chainTotal={hasChain ? chainTotal : undefined}
+                          chainIndex={hasChain ? chainIndex || chainTotal : undefined}
+                        />
+                      </div>
                     </div>
                   </div>
                   {/* 三栏在 375px 下会把费用的「未定价」标记挤成竖排：Token 与延迟并排，费用独占一行 */}
@@ -1563,6 +1668,14 @@ export function GatewayUsageTable({
           <Table className="w-max min-w-full">
             <TableHeader>
               <TableRow>
+                <TableHead className="w-10 px-2">
+                  <Checkbox
+                    aria-label="选择本页全部使用记录"
+                    checked={allSelected ? true : someSelected ? "indeterminate" : false}
+                    disabled={deleting || mainRows.length === 0}
+                    onCheckedChange={(v) => toggleSelectAll(v === true)}
+                  />
+                </TableHead>
                 <TableHead className="w-10 whitespace-nowrap" />
                 {show("status") && (
                   <TableHead className="whitespace-nowrap">状态</TableHead>
@@ -1643,6 +1756,14 @@ export function GatewayUsageTable({
                         hasChain && "border-l-2 border-l-violet-400/80",
                       )}
                     >
+                      <TableCell className="w-10 px-2 align-top pt-4">
+                        <Checkbox
+                          aria-label={`选择使用记录 ${u.id}`}
+                          checked={selectedIDs.has(u.id)}
+                          disabled={deleting}
+                          onCheckedChange={(v) => toggleSelected(u.id, v === true)}
+                        />
+                      </TableCell>
                       <TableCell className="w-10 px-1">
                         {showToggle ? (
                           <button

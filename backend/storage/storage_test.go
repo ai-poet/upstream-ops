@@ -1,13 +1,16 @@
 package storage
 
 import (
+	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 func openTestDB(t *testing.T) *gorm.DB {
@@ -1250,5 +1253,71 @@ func TestGatewayUsageListModels(t *testing.T) {
 	}
 	if len(withModel) != 3 {
 		t.Fatalf("model filter should be ignored, got %d", len(withModel))
+	}
+}
+
+type usageSQLLogger struct {
+	logger.Interface
+	mu         sync.Mutex
+	statements []string
+}
+
+func (l *usageSQLLogger) Trace(_ context.Context, _ time.Time, fc func() (string, int64), _ error) {
+	sql, _ := fc()
+	l.mu.Lock()
+	l.statements = append(l.statements, sql)
+	l.mu.Unlock()
+}
+
+func (l *usageSQLLogger) reset() {
+	l.mu.Lock()
+	l.statements = nil
+	l.mu.Unlock()
+}
+
+func (l *usageSQLLogger) contains(substr string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, statement := range l.statements {
+		if strings.Contains(statement, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestGatewayUsageListSkipCostSum(t *testing.T) {
+	db := openTestDB(t)
+	capture := &usageSQLLogger{Interface: logger.Default.LogMode(logger.Silent)}
+	usage := NewGatewayUsageLogs(db.Session(&gorm.Session{Logger: capture}))
+	for i, cost := range []float64{1.25, 2.75} {
+		if err := usage.Create(&GatewayUsageLog{
+			RequestID:      string(rune('a' + i)),
+			RequestedModel: "gpt-4o",
+			ActualCost:     cost,
+			CreatedAt:      time.Now(),
+		}); err != nil {
+			t.Fatalf("create usage: %v", err)
+		}
+	}
+
+	withSum, err := usage.List(GatewayUsageQuery{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withSum.SumCost != 4 {
+		t.Fatalf("default sum cost = %v, want 4", withSum.SumCost)
+	}
+
+	capture.reset()
+	withoutSum, err := usage.List(GatewayUsageQuery{Page: 1, PageSize: 20, SkipCostSum: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withoutSum.SumCost != 0 || withoutSum.Total != 2 || len(withoutSum.Items) != 2 {
+		t.Fatalf("skip sum page = %+v", withoutSum)
+	}
+	if capture.contains("SUM(actual_cost)") {
+		t.Fatalf("skip cost sum still executed aggregate SQL: %v", capture.statements)
 	}
 }

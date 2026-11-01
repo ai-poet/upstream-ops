@@ -425,6 +425,8 @@ export function GatewayPage() {
       to?: string
       page?: number
       pageSize?: number
+      /** 仅翻页/调整页大小时复用当前统计，避免重复全表聚合 */
+      includeStats?: boolean
     }) => {
       const seq = ++usageSeqRef.current
       setUsageLoading(true)
@@ -437,6 +439,8 @@ export function GatewayPage() {
         const qs = new URLSearchParams({
           page: String(pageNum),
           page_size: String(size),
+          // 费用卡片使用 stats.total_actual_cost，列表无需再扫描一遍 SUM。
+          include_sum: "false",
         })
         const gid = opts?.groupID
         if (gid != null && gid !== "" && gid !== "all" && Number(gid) > 0) {
@@ -463,11 +467,13 @@ export function GatewayPage() {
         }
         const [page, stats] = await Promise.all([
           apiFetch<GatewayUsagePage>(`/gateway/usage?${qs}`),
-          apiFetch<GatewayUsageStats>(`/gateway/usage/stats?${qs}`),
+          opts?.includeStats === false
+            ? Promise.resolve(null)
+            : apiFetch<GatewayUsageStats>(`/gateway/usage/stats?${qs}`),
         ])
         if (seq !== usageSeqRef.current) return
         setUsage(page)
-        setUsageStats(stats)
+        if (stats) setUsageStats(stats)
         setUsagePage(page.page || pageNum)
         if (page.page_size > 0) setUsagePageSize(page.page_size)
       } catch (e) {
@@ -696,7 +702,7 @@ export function GatewayPage() {
     const pages = Math.max(1, usage?.pages ?? 1)
     const next = Math.max(1, Math.min(pages, p))
     setUsagePage(next)
-    void loadUsage(usageQueryOpts(next, usagePageSize))
+    void loadUsage({ ...usageQueryOpts(next, usagePageSize), includeStats: false })
   }
 
   // 使用记录：网关组变更时刷新密钥选项（选组=排除非本组；全部=全部密钥可选）

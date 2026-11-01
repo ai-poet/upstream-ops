@@ -261,6 +261,7 @@ type UsageQueryOpts = {
   to: string
   page: number
   pageSize: number
+  includeStats?: boolean
 }
 
 type UsagePanelProps = {
@@ -757,7 +758,7 @@ export function UsagePanel({
                   const size = Number(v) || 50
                   setUsagePageSize(size)
                   setUsagePage(1)
-                  void loadUsage(usageQueryOpts(1, size))
+                  void loadUsage({ ...usageQueryOpts(1, size), includeStats: false })
                 }}
               >
                 <SelectTrigger className="h-8 w-[4.5rem]">

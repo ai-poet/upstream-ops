@@ -511,8 +511,9 @@ func clearGatewayRoutePause(c *gin.Context, d *Deps) {
 
 func parseGatewayUsageQuery(c *gin.Context) storage.GatewayUsageQuery {
 	q := storage.GatewayUsageQuery{
-		Page:     queryInt(c, "page", 1),
-		PageSize: queryInt(c, "page_size", 20),
+		Page:        queryInt(c, "page", 1),
+		PageSize:    queryInt(c, "page_size", 20),
+		SkipCostSum: c.Query("include_sum") == "false" || c.Query("include_sum") == "0",
 	}
 	if v := c.Query("group_id"); v != "" {
 		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
@@ -625,16 +626,20 @@ func listGatewayUsageModels(c *gin.Context, d *Deps) {
 }
 
 // cleanupGatewayUsageReq 清理访问日志。
+// - ids 非空：仅删除指定记录（与 all / before 互斥）
 // - all=true：删除全部
-// - all=false：删除 created_at < before 的记录（before 为 RFC3339 / datetime-local）
+// - all=false 且 ids 为空：删除 created_at < before 的记录（before 为 RFC3339 / datetime-local）
 // confirm 必须为 true，防止误触。
 type cleanupGatewayUsageReq struct {
+	IDs     []uint `json:"ids"`
 	All     bool   `json:"all"`
 	Before  string `json:"before"`
 	Confirm bool   `json:"confirm"`
 	// DryRun 仅统计将删除的条数，不实际删除
 	DryRun bool `json:"dry_run"`
 }
+
+const maxGatewayUsageCleanupIDs = 2000
 
 func cleanupGatewayUsage(c *gin.Context, d *Deps) {
 	if d.GatewayUsage == nil {
@@ -655,7 +660,27 @@ func cleanupGatewayUsage(c *gin.Context, d *Deps) {
 		count int64
 		err   error
 	)
-	if req.All {
+	if len(req.IDs) > 0 {
+		if req.All || strings.TrimSpace(req.Before) != "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "ids 不能与 all 或 before 同时使用"})
+			return
+		}
+		if len(req.IDs) > maxGatewayUsageCleanupIDs {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "单次最多删除 2000 条使用记录"})
+			return
+		}
+		for _, id := range req.IDs {
+			if id == 0 {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "使用记录 ID 必须大于 0"})
+				return
+			}
+		}
+		if req.DryRun {
+			count, err = d.GatewayUsage.CountByIDs(req.IDs)
+		} else {
+			count, err = d.GatewayUsage.DeleteByIDs(req.IDs)
+		}
+	} else if req.All {
 		if req.DryRun {
 			count, err = d.GatewayUsage.CountAll()
 		} else {

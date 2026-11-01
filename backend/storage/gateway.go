@@ -889,6 +889,46 @@ func (r *GatewayUsageLogs) DeleteAll() (int64, error) {
 	return res.RowsAffected, res.Error
 }
 
+func normalizeGatewayUsageIDs(ids []uint) ([]uint, error) {
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("usage ids required")
+	}
+	out := make([]uint, 0, len(ids))
+	seen := make(map[uint]struct{}, len(ids))
+	for _, id := range ids {
+		if id == 0 {
+			return nil, fmt.Errorf("usage id must be greater than zero")
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	return out, nil
+}
+
+// CountByIDs 统计指定 ID 的使用记录数。
+func (r *GatewayUsageLogs) CountByIDs(ids []uint) (int64, error) {
+	ids, err := normalizeGatewayUsageIDs(ids)
+	if err != nil {
+		return 0, err
+	}
+	var n int64
+	err = r.db.Model(&GatewayUsageLog{}).Where("id IN ?", ids).Count(&n).Error
+	return n, err
+}
+
+// DeleteByIDs 删除指定 ID 的使用记录，返回实际删除行数。
+func (r *GatewayUsageLogs) DeleteByIDs(ids []uint) (int64, error) {
+	ids, err := normalizeGatewayUsageIDs(ids)
+	if err != nil {
+		return 0, err
+	}
+	res := r.db.Where("id IN ?", ids).Delete(&GatewayUsageLog{})
+	return res.RowsAffected, res.Error
+}
+
 type GatewayUsageQuery struct {
 	GatewayGroupID uint
 	GatewayKeyID   uint
@@ -910,6 +950,8 @@ type GatewayUsageQuery struct {
 	To         *time.Time
 	Page       int
 	PageSize   int
+	// SkipCostSum 跳过全量费用汇总；管理端翻页使用统计接口的费用数据。
+	SkipCostSum bool
 }
 
 // GatewayUsageLogItem 列表展示用：原始日志 + 关联名称（非多租户用户字段）。
@@ -1092,7 +1134,9 @@ func (r *GatewayUsageLogs) List(q GatewayUsageQuery) (*GatewayUsagePage, error) 
 		return nil, err
 	}
 	var sum float64
-	_ = db.Session(&gorm.Session{}).Select("COALESCE(SUM(actual_cost),0)").Scan(&sum).Error
+	if !q.SkipCostSum {
+		_ = db.Session(&gorm.Session{}).Select("COALESCE(SUM(actual_cost),0)").Scan(&sum).Error
+	}
 
 	var rows []GatewayUsageLog
 	offset := (q.Page - 1) * q.PageSize

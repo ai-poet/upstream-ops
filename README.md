@@ -827,7 +827,9 @@ Each forward attempt (success or failure) tries to write a usage row, field styl
 - Latency: total latency, first-token latency (streaming)
 - Outcome: success / failure; failures store truncated upstream error summary and redacted headers
 
-Admin UI: list filters, stats aggregation, model filter options, cleanup API. Clients may call `GET /v1/usage` with a gateway key (see actual response shape).
+Admin UI: list filters, stats aggregation, model filter options, cleanup API, and selected-record deletion (including retry/failover rows shown for the same requests on the current page). Clients may call `GET /v1/usage` with a gateway key (see actual response shape).
+
+Besides time-based and full cleanup, the cleanup API accepts `{"ids":[1,2],"confirm":true}` for ID-based deletion (up to 2000 rows per call); `dry_run:true` only returns the match count. Admin list requests use `include_sum=false` to skip the cost aggregate already provided by stats, and pagination/page-size changes reuse the current stats.
 
 ### Compatibility paths
 
