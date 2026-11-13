@@ -91,8 +91,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       body: JSON.stringify({
         username: u,
         password: p,
-        captcha_id: captchaID,
-        captcha_code: captchaCode,
+        ...(captchaID ? { captcha_id: captchaID } : {}),
+        ...(captchaCode ? { captcha_code: captchaCode } : {}),
       }),
       skipAuthErrorHandler: true,
     })

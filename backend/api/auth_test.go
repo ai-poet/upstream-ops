@@ -90,6 +90,9 @@ func TestCaptchaEndpointReturnsDataURI(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
 	var body struct {
 		Data struct {
 			Enabled     bool   `json:"enabled"`

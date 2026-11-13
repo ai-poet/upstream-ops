@@ -31,6 +31,7 @@ type loginInput struct {
 }
 
 func getLoginCaptcha(c *gin.Context, d *Deps) {
+	c.Header("Cache-Control", "no-store")
 	if d.Runtime == nil || !d.Runtime.LoginCaptchaEnabled() {
 		c.JSON(http.StatusOK, gin.H{"data": gin.H{
 			"enabled":      false,

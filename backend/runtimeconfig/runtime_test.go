@@ -10,6 +10,7 @@ import (
 	"github.com/bejix/upstream-ops/backend/channel"
 	"github.com/bejix/upstream-ops/backend/config"
 	"github.com/bejix/upstream-ops/backend/connector"
+	"github.com/bejix/upstream-ops/backend/logincaptcha"
 	"github.com/bejix/upstream-ops/backend/scheduler"
 )
 
@@ -75,5 +76,62 @@ func TestApplyFromFileUpdatesUpstreamConfig(t *testing.T) {
 	}
 	if conn.cfg.UserAgent != "custom-agent" {
 		t.Fatalf("user agent = %q", conn.cfg.UserAgent)
+	}
+}
+
+func TestApplyFromFileKeepsIssuedLoginCaptcha(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	authCfg := config.AuthConfig{
+		Enabled:         true,
+		CaptchaEnabled:  true,
+		Username:        "admin",
+		Password:        "new-password",
+		TokenSecret:     "new-token-secret",
+		SessionTTLHours: 72,
+	}
+	if err := config.Save(path, &config.Config{Auth: authCfg}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	initialAuth, err := buildAuth(config.AuthConfig{
+		Enabled: true, Username: "admin", Password: "old-password",
+		TokenSecret: "old-token-secret", SessionTTLHours: 72,
+	}, "")
+	if err != nil {
+		t.Fatalf("build initial auth: %v", err)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := New(
+		path,
+		"",
+		log,
+		nil,
+		nil,
+		nil,
+		initialAuth,
+		nil,
+		config.ProxyConfig{},
+		config.UpstreamConfig{},
+		config.GatewayConfig{},
+		func(scfg config.SchedulerConfig, pcfg config.ProxyConfig) *scheduler.Scheduler {
+			return scheduler.New(scfg, nil, nil, nil, nil, nil, nil, nil, nil, pcfg, log)
+		},
+	)
+
+	// main.go 单独持有验证码 Store；这里模拟配置保存前已经签发的验证码。
+	captchaStore := logincaptcha.NewStore(logincaptcha.DefaultTTL)
+	t.Cleanup(captchaStore.Close)
+	if err := captchaStore.Set("issued-before-apply", "A1b2"); err != nil {
+		t.Fatalf("store captcha: %v", err)
+	}
+
+	if _, err := mgr.ApplyFromFile(); err != nil {
+		t.Fatalf("ApplyFromFile: %v", err)
+	}
+	if mgr.CurrentAuth() == initialAuth {
+		t.Fatal("auth service was not rebuilt")
+	}
+	if !captchaStore.Verify("issued-before-apply", "a1B2", true) {
+		t.Fatal("captcha issued before config apply is no longer valid")
 	}
 }

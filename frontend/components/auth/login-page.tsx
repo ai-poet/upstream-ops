@@ -21,14 +21,20 @@ export function LoginPage() {
   const [username, setUsername] = useState("")
   const [password, setPassword] = useState("")
   const [captcha, setCaptcha] = useState<CaptchaResponse | null>(null)
-  const [captchaEnabled, setCaptchaEnabled] = useState(true)
+  const [captchaEnabled, setCaptchaEnabled] = useState<boolean | null>(null)
   const [captchaCode, setCaptchaCode] = useState("")
   const [captchaLoading, setCaptchaLoading] = useState(true)
   const [captchaError, setCaptchaError] = useState<string | null>(null)
+  const [captchaImageFailed, setCaptchaImageFailed] = useState(false)
   const captchaRequest = useRef(0)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const appTitle = appVersion.data?.title?.trim() || "UpstreamOps"
+  const captchaImageUnavailable = captchaEnabled === true &&
+    !captchaLoading &&
+    (!captcha?.image_base64 || captchaImageFailed)
+  const captchaHint = captchaError ??
+    (captchaImageUnavailable ? "验证码图片不可用，可点击重试；也可以直接提交" : null)
 
   useEffect(() => {
     document.title = appTitle
@@ -38,6 +44,7 @@ export function LoginPage() {
     const requestID = ++captchaRequest.current
     setCaptchaLoading(true)
     setCaptchaError(null)
+    setCaptchaImageFailed(false)
     setCaptcha(null)
     setCaptchaCode("")
     try {
@@ -49,7 +56,7 @@ export function LoginPage() {
       setCaptcha(result.enabled ? result : null)
     } catch {
       if (requestID !== captchaRequest.current) return
-      setCaptchaError("验证码加载失败，请点击刷新")
+      setCaptchaError("验证码加载失败，可点击重试；也可以直接提交")
     } finally {
       if (requestID === captchaRequest.current) {
         setCaptchaLoading(false)
@@ -78,13 +85,16 @@ export function LoginPage() {
     } catch (err) {
       const e = err as ApiError
       const code = (e.body as { code?: string } | undefined)?.code
-      if (code === "captcha_invalid" || code === "captcha_required") {
+      if (code === "captcha_unavailable") {
+        setError("验证码服务暂时不可用，请刷新后重试")
+        await refreshCaptcha()
+      } else if (code === "captcha_invalid" || code === "captcha_required") {
         setError(code === "captcha_required" ? "请输入验证码" : "验证码错误或已过期，请重新输入")
         await refreshCaptcha()
       } else if (e.status === 401) {
         setError("账号或密码错误")
         // 校验账号密码前验证码已被一次性消费，失败后必须换一张。
-        if (captchaEnabled) await refreshCaptcha()
+        if (captchaEnabled === true) await refreshCaptcha()
       } else {
         setError(e.message || "登录失败")
       }
@@ -127,7 +137,7 @@ export function LoginPage() {
                 disabled={submitting}
               />
             </div>
-            {captchaEnabled ? (
+            {captchaEnabled === true ? (
               <div className="space-y-2">
                 <Label htmlFor="captcha">验证码</Label>
                 <div className="flex gap-2">
@@ -143,7 +153,7 @@ export function LoginPage() {
                     value={captchaCode}
                     onChange={(e) => setCaptchaCode(e.target.value)}
                     required
-                    disabled={submitting || captchaLoading || !captcha}
+                    disabled={submitting || captchaLoading || !captcha?.image_base64 || captchaImageFailed}
                   />
                   <button
                     type="button"
@@ -153,19 +163,20 @@ export function LoginPage() {
                     aria-label="刷新图形验证码"
                     title="点击刷新验证码"
                   >
-                    {captcha?.image_base64 ? (
+                    {captcha?.image_base64 && !captchaImageFailed ? (
                       <img
                         src={captcha.image_base64}
                         alt="图形验证码，点击刷新"
                         className="h-full w-full object-cover"
+                        onError={() => setCaptchaImageFailed(true)}
                       />
                     ) : (
-                      captchaLoading ? "加载中…" : "点击刷新"
+                      captchaLoading ? "加载中…" : "加载失败，点此重试"
                     )}
                   </button>
                 </div>
-                {captchaError ? (
-                  <p className="text-xs text-destructive" role="alert">{captchaError}</p>
+                {captchaHint ? (
+                  <p className="text-xs text-destructive" role="alert">{captchaHint}</p>
                 ) : null}
               </div>
             ) : null}
@@ -177,7 +188,7 @@ export function LoginPage() {
             <Button
               type="submit"
               className="w-full"
-              disabled={submitting || (captchaEnabled && (captchaLoading || !captcha))}
+              disabled={submitting}
             >
               {submitting ? "登录中…" : "登录"}
             </Button>

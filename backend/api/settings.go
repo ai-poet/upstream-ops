@@ -21,12 +21,44 @@ type settingsConfigView struct {
 
 type settingsConfigInput struct {
 	App           config.AppConfig           `json:"app" binding:"required"`
-	Auth          config.AuthConfig          `json:"auth" binding:"required"`
+	Auth          settingsAuthInput          `json:"auth" binding:"required"`
 	Scheduler     config.SchedulerConfig     `json:"scheduler" binding:"required"`
 	Notifications config.NotificationsConfig `json:"notifications" binding:"required"`
 	Proxy         config.ProxyConfig         `json:"proxy"`
 	Upstream      config.UpstreamConfig      `json:"upstream"`
 	Gateway       config.GatewayConfig       `json:"gateway"`
+}
+
+// settingsAuthInput 使用指针区分字段缺失与零值，避免部分保存时意外覆盖现有配置。
+type settingsAuthInput struct {
+	Enabled         *bool   `json:"enabled"`
+	CaptchaEnabled  *bool   `json:"captchaEnabled"`
+	Username        *string `json:"username"`
+	Password        *string `json:"password"`
+	TokenSecret     *string `json:"tokenSecret"`
+	SessionTTLHours *int    `json:"sessionTTLHours"`
+}
+
+func (in settingsAuthInput) apply(cfg *config.AuthConfig) {
+	if in.Enabled != nil {
+		cfg.Enabled = *in.Enabled
+	}
+	if in.CaptchaEnabled != nil {
+		cfg.CaptchaEnabled = *in.CaptchaEnabled
+	}
+	if in.Username != nil {
+		cfg.Username = *in.Username
+	}
+	// 密码留空表示不修改，避免设置页回传空密码时清空已有凭据。
+	if in.Password != nil && *in.Password != "" {
+		cfg.Password = *in.Password
+	}
+	if in.TokenSecret != nil {
+		cfg.TokenSecret = *in.TokenSecret
+	}
+	if in.SessionTTLHours != nil {
+		cfg.SessionTTLHours = *in.SessionTTLHours
+	}
 }
 
 func registerSettings(g *gin.RouterGroup, d *Deps) {
@@ -82,7 +114,7 @@ func saveSettingsConfig(c *gin.Context, d *Deps) {
 
 	cfg.App.Title = in.App.Title
 	cfg.App.NotificationPrefix = in.App.NotificationPrefix
-	cfg.Auth = in.Auth
+	in.Auth.apply(&cfg.Auth)
 	cfg.Scheduler = in.Scheduler
 	cfg.Notifications = in.Notifications
 	cfg.Proxy = in.Proxy
