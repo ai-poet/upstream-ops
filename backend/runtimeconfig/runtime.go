@@ -28,6 +28,7 @@ type Manager struct {
 	gatewaySvc       *gateway.Service
 	schedulerFactory SchedulerFactory
 	auth             *auth.Service
+	captchaEnabled   bool
 	scheduler        *scheduler.Scheduler
 	proxyConfig      config.ProxyConfig
 	upstreamConfig   config.UpstreamConfig
@@ -62,6 +63,7 @@ func New(
 		gatewaySvc:       gatewaySvc,
 		schedulerFactory: schedulerFactory,
 		auth:             authSvc,
+		captchaEnabled:   true,
 		scheduler:        schedulerSvc,
 		proxyConfig:      proxyConfig,
 		upstreamConfig:   upstreamConfig.WithDefaults(),
@@ -79,6 +81,20 @@ func (m *Manager) CurrentAuth() *auth.Service {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.auth
+}
+
+// SetLoginCaptchaEnabled 初始化登录验证码开关；后续热更新由 ApplyFromFile 维护。
+func (m *Manager) SetLoginCaptchaEnabled(enabled bool) {
+	m.mu.Lock()
+	m.captchaEnabled = enabled
+	m.mu.Unlock()
+}
+
+// LoginCaptchaEnabled 返回当前是否要求登录验证码。鉴权关闭时验证码不生效。
+func (m *Manager) LoginCaptchaEnabled() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.auth != nil && m.captchaEnabled
 }
 
 func (m *Manager) CurrentProxy() config.ProxyConfig {
@@ -101,9 +117,10 @@ func (m *Manager) CurrentGateway() config.GatewayConfig {
 
 func (m *Manager) AuthMiddleware() gin.HandlerFunc {
 	whitelist := map[string]struct{}{
-		"/healthz":        {},
-		"/api/version":    {},
-		"/api/auth/login": {},
+		"/healthz":          {},
+		"/api/version":      {},
+		"/api/auth/login":   {},
+		"/api/auth/captcha": {},
 	}
 	return func(c *gin.Context) {
 		if _, ok := whitelist[c.FullPath()]; ok {
@@ -178,6 +195,7 @@ func (m *Manager) ApplyFromFile() (*ApplyResult, error) {
 
 	m.mu.Lock()
 	m.auth = authSvc
+	m.captchaEnabled = cfg.Auth.CaptchaEnabled
 	m.scheduler = newScheduler
 	m.proxyConfig = cfg.Proxy
 	m.upstreamConfig = cfg.Upstream.WithDefaults()

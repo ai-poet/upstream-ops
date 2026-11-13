@@ -34,7 +34,7 @@ func TestSaveSettingsKeepsAppVersion(t *testing.T) {
 
 	body := `{
 		"app":{"title":"New","notificationPrefix":"[New] "},
-		"auth":{"enabled":false,"username":"admin","password":"","tokenSecret":"","sessionTTLHours":168},
+		"auth":{"enabled":false,"captchaEnabled":true,"username":"admin","password":"","tokenSecret":"","sessionTTLHours":168},
 		"scheduler":{"balanceCron":"37 */15 * * * *","rateCron":"13 */30 * * * *","concurrency":4,"retention":{"cron":"0 17 3 * * *","monitorLogsDays":30,"balanceSnapshotsDays":90,"notificationLogsDays":90,"announcementsDays":90}},
 		"notifications":{"minChangePct":0,"balanceLowCooldownMinutes":60,"subscriptionDailyRemainingThresholdPct":0,"subscriptionWeeklyRemainingThresholdPct":0,"subscriptionMonthlyRemainingThresholdPct":0,"subscriptionExpiryThresholdHours":0,"subscriptionAlertCooldownMinutes":1440,"sendMaxAttempts":3},
 		"proxy":{"enabled":true,"versionCheckEnabled":true,"protocol":"socks5","host":"127.0.0.1","port":1080,"username":"u","password":"p"},
@@ -67,5 +67,80 @@ func TestSaveSettingsKeepsAppVersion(t *testing.T) {
 	}
 	if got.Gateway.RouteBatchConcurrency != 8 || got.Gateway.ForwardTimeoutSeconds != 600 {
 		t.Fatalf("gateway = %#v", got.Gateway)
+	}
+}
+
+func TestSaveSettingsMergesAuthConfig(t *testing.T) {
+	original := config.AuthConfig{
+		Enabled:         true,
+		CaptchaEnabled:  true,
+		Username:        "admin",
+		Password:        "secret",
+		TokenSecret:     "old-token-secret",
+		SessionTTLHours: 72,
+	}
+	tests := []struct {
+		name     string
+		authJSON string
+		want     config.AuthConfig
+	}{
+		{
+			name:     "omitted fields keep original values",
+			authJSON: `{}`,
+			want:     original,
+		},
+		{
+			name:     "explicit false disables captcha",
+			authJSON: `{"captchaEnabled":false}`,
+			want: config.AuthConfig{
+				Enabled: true, CaptchaEnabled: false, Username: "admin", Password: "secret",
+				TokenSecret: "old-token-secret", SessionTTLHours: 72,
+			},
+		},
+		{
+			name:     "empty password keeps original and empty token secret clears fallback override",
+			authJSON: `{"password":"","tokenSecret":""}`,
+			want: config.AuthConfig{
+				Enabled: true, CaptchaEnabled: true, Username: "admin", Password: "secret",
+				TokenSecret: "", SessionTTLHours: 72,
+			},
+		},
+		{
+			name:     "explicit false disables auth and session ttl can change",
+			authJSON: `{"enabled":false,"sessionTTLHours":24}`,
+			want: config.AuthConfig{
+				Enabled: false, CaptchaEnabled: true, Username: "admin", Password: "secret",
+				TokenSecret: "old-token-secret", SessionTTLHours: 24,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			if err := config.Save(path, &config.Config{Auth: original}); err != nil {
+				t.Fatalf("save config: %v", err)
+			}
+			r := gin.New()
+			registerSettings(r.Group("/api"), &Deps{
+				Runtime: runtimeconfig.New(path, "", nil, nil, nil, nil, nil, nil, config.ProxyConfig{}, config.UpstreamConfig{}, config.GatewayConfig{}, nil),
+			})
+			body := `{"app":{},"auth":` + tt.authJSON + `,"scheduler":{},"notifications":{}}`
+			req := httptest.NewRequest(http.MethodPut, "/api/settings/config", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			r.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+			got, err := config.LoadFile(path)
+			if err != nil {
+				t.Fatalf("load config: %v", err)
+			}
+			if got.Auth != tt.want {
+				t.Fatalf("auth = %#v, want %#v", got.Auth, tt.want)
+			}
+		})
 	}
 }

@@ -22,7 +22,7 @@ interface AuthContextValue {
   username: string | null
   /** 后端关闭了鉴权（AUTH_ENABLED=false），整套 UI 当作"已登录"渲染。 */
   authDisabled: boolean
-  login: (username: string, password: string) => Promise<void>
+  login: (username: string, password: string, captchaID: string, captchaCode: string) => Promise<void>
   logout: () => void
 }
 
@@ -85,10 +85,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => setUnauthorizedHandler(null)
   }, [])
 
-  const login = useCallback(async (u: string, p: string) => {
+  const login = useCallback(async (u: string, p: string, captchaID: string, captchaCode: string) => {
     const res = await apiFetch<LoginResponse>("/auth/login", {
       method: "POST",
-      body: JSON.stringify({ username: u, password: p }),
+      body: JSON.stringify({
+        username: u,
+        password: p,
+        ...(captchaID ? { captcha_id: captchaID } : {}),
+        ...(captchaCode ? { captcha_code: captchaCode } : {}),
+      }),
       skipAuthErrorHandler: true,
     })
     if (res.token) {

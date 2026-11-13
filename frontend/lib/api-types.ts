@@ -251,6 +251,7 @@ export interface CostTrendPoint {
 
 export interface SystemAuthConfig {
   enabled: boolean
+  captchaEnabled: boolean
   username: string
   password: string
   tokenSecret: string

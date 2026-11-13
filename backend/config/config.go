@@ -80,6 +80,7 @@ type SecurityConfig struct {
 // 如果 TokenSecret 为空，会回退使用 Security.AppSecret，保证有合理默认。
 type AuthConfig struct {
 	Enabled         bool   `mapstructure:"enabled" yaml:"enabled" json:"enabled"`
+	CaptchaEnabled  bool   `mapstructure:"captchaEnabled" yaml:"captchaEnabled" json:"captchaEnabled"`
 	Username        string `mapstructure:"username" yaml:"username" json:"username"`
 	Password        string `mapstructure:"password" yaml:"password" json:"password"`
 	TokenSecret     string `mapstructure:"tokenSecret" yaml:"tokenSecret" json:"tokenSecret"`
@@ -480,6 +481,7 @@ func load(path string, withEnv bool) (*Config, string, error) {
 		// APP_SECRET / ADMIN_USERNAME / ADMIN_PASSWORD / AUTH_ENABLED 是独立约定的环境变量名，不带前缀。
 		_ = v.BindEnv("security.appSecret", "APP_SECRET")
 		_ = v.BindEnv("auth.enabled", "AUTH_ENABLED")
+		_ = v.BindEnv("auth.captchaEnabled", "AUTH_CAPTCHA_ENABLED")
 		_ = v.BindEnv("auth.username", "ADMIN_USERNAME")
 		_ = v.BindEnv("auth.password", "ADMIN_PASSWORD")
 		_ = v.BindEnv("auth.tokenSecret", "AUTH_TOKEN_SECRET")
@@ -578,6 +580,8 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.name", "upstreamops")
 	v.SetDefault("database.maxOpenConns", 20)
 	v.SetDefault("database.maxIdleConns", 5)
+
+	v.SetDefault("auth.captchaEnabled", true)
 
 	// CLAUDE.md 默认建议：余额 15 分钟，倍率 30 分钟。
 	v.SetDefault("scheduler.balanceCron", "37 */15 * * * *")
