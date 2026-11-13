@@ -464,6 +464,19 @@ export default function SettingsPage() {
                 <NoteBox title="热应用说明">
                   应用后新的鉴权配置立即生效，现有无效令牌会在后续请求时被拦截。
                 </NoteBox>
+                <InlineSwitch
+                  id="auth-captcha-enabled"
+                  label="启用登录图形验证码"
+                  description="开启后登录需输入 4 位图形验证码；关闭鉴权时不生效。"
+                  checked={form.auth.captchaEnabled ?? true}
+                  onCheckedChange={(checked) =>
+                    setForm((prev) =>
+                      prev
+                        ? { ...prev, auth: { ...prev.auth, captchaEnabled: checked } }
+                        : prev,
+                    )
+                  }
+                />
               </div>
               <div className="mt-4 grid gap-4 md:grid-cols-2">
                 <Field

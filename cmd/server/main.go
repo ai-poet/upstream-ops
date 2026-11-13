@@ -19,6 +19,7 @@ import (
 	"github.com/bejix/upstream-ops/backend/crypto"
 	"github.com/bejix/upstream-ops/backend/gateway"
 	"github.com/bejix/upstream-ops/backend/logger"
+	"github.com/bejix/upstream-ops/backend/logincaptcha"
 	"github.com/bejix/upstream-ops/backend/monitor"
 	"github.com/bejix/upstream-ops/backend/notify"
 	"github.com/bejix/upstream-ops/backend/runtimeconfig"
@@ -82,6 +83,10 @@ func main() {
 	} else {
 		log.Warn("auth disabled — all /api/* endpoints are open; set AUTH_ENABLED=true for production exposure")
 	}
+
+	// 登录验证码独立持有内存 Store，鉴权配置热更新不会将其清空。
+	loginCaptchaSvc := logincaptcha.NewService()
+	defer loginCaptchaSvc.Close()
 
 	db, err := storage.Open(cfg.Database.ToStorageConfig())
 	if err != nil {
@@ -159,6 +164,7 @@ func main() {
 		cfg.Gateway,
 		schedulerFactory,
 	)
+	runtimeMgr.SetLoginCaptchaEnabled(cfg.Auth.CaptchaEnabled)
 
 	gin.SetMode(cfg.Server.Mode)
 	router := gin.New()
@@ -182,6 +188,7 @@ func main() {
 		Cipher:        cipher,
 		Runtime:       runtimeMgr,
 		Channels:      channels,
+		LoginCaptcha:  loginCaptchaSvc,
 		Sessions:      authSessions,
 		Captchas:      captchas,
 		Notifies:      notifies,

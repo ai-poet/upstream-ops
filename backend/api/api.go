@@ -14,6 +14,7 @@ import (
 	"github.com/bejix/upstream-ops/backend/connector"
 	"github.com/bejix/upstream-ops/backend/crypto"
 	"github.com/bejix/upstream-ops/backend/gateway"
+	"github.com/bejix/upstream-ops/backend/logincaptcha"
 	"github.com/bejix/upstream-ops/backend/notify"
 	"github.com/bejix/upstream-ops/backend/runtimeconfig"
 	"github.com/bejix/upstream-ops/backend/storage"
@@ -55,6 +56,7 @@ type Deps struct {
 	Cipher        *crypto.Cipher
 	Runtime       *runtimeconfig.Manager
 	Channels      *storage.Channels
+	LoginCaptcha  *logincaptcha.Service
 	Sessions      *storage.AuthSessions
 	Captchas      *storage.Captchas
 	Notifies      *storage.Notifications
