@@ -137,6 +137,23 @@ export function LoginPage() {
                 disabled={submitting}
               />
             </div>
+            {captchaEnabled === null ? (
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs text-destructive" role="alert">
+                  {captchaLoading ? "正在检测验证码状态…" : captchaError}
+                </p>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-auto shrink-0 px-2 py-1 text-xs"
+                  onClick={() => void refreshCaptcha()}
+                  disabled={captchaLoading || submitting}
+                >
+                  重试
+                </Button>
+              </div>
+            ) : null}
             {captchaEnabled === true ? (
               <div className="space-y-2">
                 <Label htmlFor="captcha">验证码</Label>

@@ -16,7 +16,14 @@ type Service struct {
 
 // NewService 创建 4 位数字/字母图形验证码服务。
 func NewService() *Service {
-	store := NewStore(DefaultTTL)
+	return NewServiceWithStore(NewStore(DefaultTTL))
+}
+
+// NewServiceWithStore 使用指定 Store 创建验证码服务，便于共享验证码生命周期。
+func NewServiceWithStore(store *Store) *Service {
+	if store == nil {
+		store = NewStore(DefaultTTL)
+	}
 	driver := base64Captcha.NewDriverString(
 		80,
 		240,

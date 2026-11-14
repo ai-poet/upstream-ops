@@ -2,8 +2,11 @@ package api
 
 import (
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +15,7 @@ import (
 	"github.com/bejix/upstream-ops/backend/config"
 	"github.com/bejix/upstream-ops/backend/logincaptcha"
 	"github.com/bejix/upstream-ops/backend/runtimeconfig"
+	"github.com/bejix/upstream-ops/backend/scheduler"
 	"github.com/gin-gonic/gin"
 )
 
@@ -108,5 +112,94 @@ func TestCaptchaEndpointReturnsDataURI(t *testing.T) {
 	}
 	if !strings.HasPrefix(body.Data.ImageBase64, "data:image/png;base64,") {
 		t.Fatalf("image_base64 is not a PNG data URI: %q", body.Data.ImageBase64)
+	}
+}
+
+func TestApplyFromFileKeepsIssuedLoginCaptcha(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	authCfg := config.AuthConfig{
+		Enabled:         true,
+		CaptchaEnabled:  true,
+		Username:        "admin",
+		Password:        "new-password",
+		TokenSecret:     "new-token-secret",
+		SessionTTLHours: 72,
+	}
+	if err := config.Save(path, &config.Config{Auth: authCfg}); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	initialAuth, err := auth.New("admin", "old-password", "old-token-secret", 72*time.Hour)
+	if err != nil {
+		t.Fatalf("auth.New: %v", err)
+	}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := runtimeconfig.New(
+		path,
+		"",
+		log,
+		nil,
+		nil,
+		nil,
+		initialAuth,
+		nil,
+		config.ProxyConfig{},
+		config.UpstreamConfig{},
+		config.GatewayConfig{},
+		func(scfg config.SchedulerConfig, pcfg config.ProxyConfig) *scheduler.Scheduler {
+			return scheduler.New(scfg, nil, nil, nil, nil, nil, nil, nil, nil, pcfg, log)
+		},
+	)
+	mgr.SetLoginCaptchaEnabled(true)
+
+	// 与 main.go 一样，让签发和登录接口共享同一个验证码 Service 和 Store。
+	captchaStore := logincaptcha.NewStore(logincaptcha.DefaultTTL)
+	captchaSvc := logincaptcha.NewServiceWithStore(captchaStore)
+	t.Cleanup(captchaSvc.Close)
+	deps := &Deps{Runtime: mgr, LoginCaptcha: captchaSvc}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	registerAuth(r.Group("/api"), deps)
+
+	// 配置热更新前，通过真实接口签发验证码。
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/captcha", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("captcha status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var captchaBody struct {
+		Data struct {
+			CaptchaID string `json:"captcha_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &captchaBody); err != nil {
+		t.Fatalf("unmarshal captcha response: %v", err)
+	}
+	answer := captchaStore.Get(captchaBody.Data.CaptchaID, false)
+	if captchaBody.Data.CaptchaID == "" || answer == "" {
+		t.Fatal("captcha endpoint did not store an issued captcha")
+	}
+
+	if _, err := mgr.ApplyFromFile(); err != nil {
+		t.Fatalf("ApplyFromFile: %v", err)
+	}
+	if mgr.CurrentAuth() == initialAuth {
+		t.Fatal("auth service was not rebuilt")
+	}
+
+	// 热更新重建 auth.Service 后，原验证码仍须通过真实登录接口消费成功。
+	loginBody, err := json.Marshal(map[string]string{
+		"username":     "admin",
+		"password":     "new-password",
+		"captcha_id":   captchaBody.Data.CaptchaID,
+		"captcha_code": answer,
+	})
+	if err != nil {
+		t.Fatalf("marshal login request: %v", err)
+	}
+	loginRec := serveLogin(t, deps, string(loginBody))
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login status = %d, body = %s", loginRec.Code, loginRec.Body.String())
 	}
 }
