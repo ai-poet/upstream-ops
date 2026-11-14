@@ -202,4 +202,26 @@ func TestApplyFromFileKeepsIssuedLoginCaptcha(t *testing.T) {
 	if loginRec.Code != http.StatusOK {
 		t.Fatalf("login status = %d, body = %s", loginRec.Code, loginRec.Body.String())
 	}
+
+	// 只断言 200 无法区分「验证码校验通过」和「验证码校验被整个删掉」。
+	// 因此继续钉两件事：入场码必须被一次性消费、同一 id 重放必须被拒。
+	if consumed := captchaStore.Get(captchaBody.Data.CaptchaID, false); consumed != "" {
+		t.Fatalf("captcha %q was not consumed by a successful login", captchaBody.Data.CaptchaID)
+	}
+	replayBody, err := json.Marshal(map[string]string{
+		"username":     "admin",
+		"password":     "new-password",
+		"captcha_id":   captchaBody.Data.CaptchaID,
+		"captcha_code": answer,
+	})
+	if err != nil {
+		t.Fatalf("marshal replay login request: %v", err)
+	}
+	replayRec := serveLogin(t, deps, string(replayBody))
+	if replayRec.Code != http.StatusBadRequest {
+		t.Fatalf("replay login status = %d, want 400, body = %s", replayRec.Code, replayRec.Body.String())
+	}
+	if !strings.Contains(replayRec.Body.String(), "captcha_invalid") {
+		t.Fatalf("replay login body = %s, want captcha_invalid", replayRec.Body.String())
+	}
 }

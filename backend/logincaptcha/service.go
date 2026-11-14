@@ -20,6 +20,9 @@ func NewService() *Service {
 }
 
 // NewServiceWithStore 使用指定 Store 创建验证码服务，便于共享验证码生命周期。
+//
+// 所有权约定：Store 由调用方传入，因此由调用方负责关闭（Close）。
+// 本函数只在 store 为 nil 时自建一个，那种情况下关闭责任随 Service 的生命周期走。
 func NewServiceWithStore(store *Store) *Service {
 	if store == nil {
 		store = NewStore(DefaultTTL)
